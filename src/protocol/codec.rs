@@ -24,8 +24,7 @@ impl IdAllocator {
         // collision-avoidance tag (not cryptographic randomness).
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.subsec_nanos());
         let pid = std::process::id();
         // Mix: 4 bytes nanos + 2 bytes pid → 6 bytes hex prefix.
         // NOTE: prefix entropy is ~32 bits in practice (pid is constant
