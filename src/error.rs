@@ -120,11 +120,21 @@ pub struct ServerError {
 
 impl std::fmt::Display for ServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "server error [sqlstate={:?} sqlcode={:?}]: {}",
-            self.sqlstate, self.sqlcode, self.message
-        )
+        // Include `job_name` when present — it's the single most useful field
+        // for an IBM i operator chasing the failure in joblog. `diagnostics`
+        // stays out of `Display`; render it via `Debug` or a dedicated path.
+        match &self.job_name {
+            Some(job) => write!(
+                f,
+                "server error [sqlstate={:?} sqlcode={:?} job={job}]: {}",
+                self.sqlstate, self.sqlcode, self.message
+            ),
+            None => write!(
+                f,
+                "server error [sqlstate={:?} sqlcode={:?}]: {}",
+                self.sqlstate, self.sqlcode, self.message
+            ),
+        }
     }
 }
 
@@ -137,6 +147,11 @@ impl ServerError {
     pub fn is_transient(&self) -> bool {
         match self.sqlstate.as_deref() {
             Some(s) if s.starts_with("08") => true,
+            // `40001` / `57033` are individually transient codes within
+            // classes that are NOT wholly transient — `40xxx` is "transaction
+            // rollback" (many of which are non-recoverable) and `57xxx` is
+            // "resource not available" (`57014` "query cancelled" should not
+            // be retried). Don't widen these to class matches.
             Some("40001" | "57033") => true,
             _ => false,
         }
@@ -161,7 +176,10 @@ impl ServerError {
         }
     }
 
-    /// Returns true for "object not found" SQLSTATEs (`42704`, `42S02`).
+    /// Returns true for "table or view not found" SQLSTATEs (`42704`
+    /// Db2-native, `42S02` ODBC/IBM i flavor). Deliberately narrow —
+    /// column-not-found (`42703` / `42S22`) is a separate failure class
+    /// and gets its own predicate when a row layer needs to branch on it.
     #[must_use]
     pub fn is_object_not_found(&self) -> bool {
         matches!(self.sqlstate.as_deref(), Some("42704" | "42S02"))
@@ -187,7 +205,7 @@ pub struct DiagnosticItem {
     pub text: String,
 }
 
-// --- private From impls -------------------------------------------------
+// --- From impls into Error ----------------------------------------------
 
 impl From<TransportError> for Error {
     fn from(value: TransportError) -> Self {
@@ -277,6 +295,30 @@ mod tests {
         let s = format!("{e}");
         assert!(s.contains("23505"));
         assert!(s.contains('x'));
+    }
+
+    #[test]
+    fn server_error_display_includes_job_name_when_present() {
+        let mut e = srv(Some("23505"));
+        e.job_name = Some("QZDASOINIT/QUSER/123456".into());
+        let s = format!("{e}");
+        assert!(s.contains("QZDASOINIT/QUSER/123456"));
+        assert!(s.contains("23505"));
+    }
+
+    #[test]
+    fn error_server_display_is_transparent() {
+        // Locks in the `#[error(transparent)]` wiring on `Error::Server` —
+        // the top-level `Error` `Display` must surface the inner
+        // `ServerError` text (incl. sqlstate). Replacing `transparent`
+        // with a literal format string would compile but break this test.
+        let inner = srv(Some("23505"));
+        let err: Error = inner.into();
+        let s = format!("{err}");
+        assert!(
+            s.contains("23505"),
+            "expected sqlstate in transparent display, got: {s}"
+        );
     }
 
     #[test]
