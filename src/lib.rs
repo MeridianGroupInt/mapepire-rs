@@ -28,5 +28,7 @@ pub use crate::config::{BuilderError, DaemonServer, DaemonServerBuilder, TlsConf
 #[cfg(feature = "serde-config")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde-config")))]
 pub use crate::config::{DaemonServerSpec, SpecError, TlsConfigSpec};
-pub use crate::error::{Error, Result};
+pub use crate::error::{
+    DecodeError, DiagnosticItem, Error, ProtocolError, Result, ServerError, TransportError,
+};
 pub use crate::password::Password;
