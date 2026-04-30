@@ -68,6 +68,26 @@ pub enum Request {
         parameters: Option<Vec<serde_json::Value>>,
     },
 
+    /// Fetch the next page of rows from an open cursor.
+    #[serde(rename = "sqlmore")]
+    SqlMore {
+        /// Caller-supplied correlation id.
+        id: String,
+        /// Cursor / continuation handle from a prior `sql` or `execute`.
+        cont_id: String,
+        /// Number of additional rows to fetch.
+        rows: u32,
+    },
+
+    /// Close a server-side cursor.
+    #[serde(rename = "sqlclose")]
+    SqlClose {
+        /// Caller-supplied correlation id.
+        id: String,
+        /// Cursor / continuation handle.
+        cont_id: String,
+    },
+
     /// Health check.
     Ping {
         /// Caller-supplied correlation id.
@@ -194,5 +214,33 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, Request::Execute { cont_id, .. } if cont_id == "stmt-7"));
+    }
+
+    #[test]
+    fn sqlmore_round_trips() {
+        let r = Request::SqlMore {
+            id: "20".into(),
+            cont_id: "cur-1".into(),
+            rows: 100,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"sqlmore","id":"20","cont_id":"cur-1","rows":100}"#
+        );
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Request::SqlMore { rows, .. } if rows == 100));
+    }
+
+    #[test]
+    fn sqlclose_round_trips() {
+        let r = Request::SqlClose {
+            id: "21".into(),
+            cont_id: "cur-1".into(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(json, r#"{"type":"sqlclose","id":"21","cont_id":"cur-1"}"#);
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Request::SqlClose { cont_id, .. } if cont_id == "cur-1"));
     }
 }
