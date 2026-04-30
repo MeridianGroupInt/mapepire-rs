@@ -1,0 +1,26 @@
+# Formatting policy for `mapepire`.
+#
+# Several options below are nightly-only — that is intentional. We commit to
+# `cargo +nightly fmt --all` as the formatter (matches `make format` /
+# `make format-check`). The nightly toolchain is installed via `make setup`.
+
+edition = "2024"
+max_width = 100
+tab_spaces = 4
+use_small_heuristics = "Default"
+
+# Imports
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+reorder_imports = true
+reorder_modules = true
+
+# Comments and docs
+wrap_comments = true
+format_code_in_doc_comments = true
+comment_width = 100
+normalize_doc_attributes = true
+
+# Misc
+use_field_init_shorthand = true
+use_try_shorthand = true

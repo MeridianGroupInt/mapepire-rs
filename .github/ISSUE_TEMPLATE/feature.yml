@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Suggestions are welcome. Pre-1.0 the crate is shaped around
+        sibling-SDK parity — features that match an existing
+        Mapepire SDK's behavior are easier to land than net-new ones.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed solution
+      description: API sketch, code sample, or rough behavior description.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+
+  - type: dropdown
+    id: parity
+    attributes:
+      label: Sibling SDK parity?
+      description: Does another Mapepire SDK already do something similar?
+      options:
+        - "Yes — name the SDK in the description"
+        - "No — net-new feature"
+        - "Unsure"
+    validations:
+      required: true

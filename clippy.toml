@@ -1,0 +1,12 @@
+# Clippy configuration for `mapepire`.
+#
+# Per-lint level (warn/deny/allow) is set in `Cargo.toml [lints.clippy]`.
+# This file holds *threshold* values for lints that take numeric arguments.
+
+# Stricter than the clippy default (25). Functions with cognitive
+# complexity above this should be refactored or split.
+cognitive-complexity-threshold = 25
+
+# Functions with more than this many positional arguments are flagged.
+# Builders or structs are usually a better answer past this point.
+too-many-arguments-threshold = 10

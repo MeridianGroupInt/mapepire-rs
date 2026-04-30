@@ -1,0 +1,77 @@
+name: Bug report
+description: Report something that doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Before submitting:
+
+        - **Don't include credentials, real SQL with sensitive data, or
+          production config** in this report. Public issues are public.
+        - For **security issues**, use [private vulnerability reporting](https://github.com/MeridianGroupInt/mapepire-rs/security/advisories/new)
+          instead. See [`SECURITY.md`](https://github.com/MeridianGroupInt/mapepire-rs/blob/main/SECURITY.md).
+
+  - type: input
+    id: crate_version
+    attributes:
+      label: Crate version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: rust_version
+    attributes:
+      label: Rust version
+      description: Output of `rustc --version`
+      placeholder: "rustc 1.85.0 (a1b2c3d4e 2026-04-01)"
+    validations:
+      required: true
+
+  - type: input
+    id: ibmi_version
+    attributes:
+      label: IBM i version
+      description: e.g., "IBM i 7.5 TR3"; leave blank if not applicable
+    validations:
+      required: false
+
+  - type: input
+    id: daemon_version
+    attributes:
+      label: Mapepire daemon version
+      description: From `getversion` or your install
+      placeholder: "2.3.5"
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Clear description, including the error message if any.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproducer
+      description: Smallest code that reproduces the issue. Sanitize connection details.
+      render: rust
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Network setup, container image, anything that might be relevant.
+    validations:
+      required: false
