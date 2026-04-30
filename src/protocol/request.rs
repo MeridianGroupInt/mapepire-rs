@@ -88,6 +88,54 @@ pub enum Request {
         cont_id: String,
     },
 
+    /// Run an IBM i CL command.
+    Cl {
+        /// Caller-supplied correlation id.
+        id: String,
+        /// CL command text — e.g., `WRKACTJOB`.
+        cmd: String,
+    },
+
+    /// Retrieve the daemon version.
+    #[serde(rename = "getversion")]
+    GetVersion {
+        /// Caller-supplied correlation id.
+        id: String,
+    },
+
+    /// Retrieve the current Db2 job name.
+    #[serde(rename = "getdbjob")]
+    GetDbJob {
+        /// Caller-supplied correlation id.
+        id: String,
+    },
+
+    /// Configure server-side tracing.
+    #[serde(rename = "setconfig")]
+    SetConfig {
+        /// Caller-supplied correlation id.
+        id: String,
+        /// Tracing level — opaque server-defined string.
+        tracelevel: String,
+        /// Trace destination — opaque server-defined string.
+        tracedest: String,
+    },
+
+    /// Retrieve accumulated trace data.
+    #[serde(rename = "gettracedata")]
+    GetTraceData {
+        /// Caller-supplied correlation id.
+        id: String,
+    },
+
+    /// Visual Explain — request an execution-plan tree for a SQL statement.
+    Dove {
+        /// Caller-supplied correlation id.
+        id: String,
+        /// SQL statement to explain.
+        sql: String,
+    },
+
     /// Health check.
     Ping {
         /// Caller-supplied correlation id.
@@ -242,5 +290,75 @@ mod tests {
         assert_eq!(json, r#"{"type":"sqlclose","id":"21","cont_id":"cur-1"}"#);
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, Request::SqlClose { cont_id, .. } if cont_id == "cur-1"));
+    }
+
+    #[test]
+    fn cl_round_trips() {
+        let r = Request::Cl {
+            id: "30".into(),
+            cmd: "WRKACTJOB".into(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(json, r#"{"type":"cl","id":"30","cmd":"WRKACTJOB"}"#);
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Request::Cl { cmd, .. } if cmd == "WRKACTJOB"));
+    }
+
+    #[test]
+    fn metadata_requests_round_trip_with_bare_tags() {
+        // Pin the bare-form wire tags for each metadata variant — the
+        // per-variant #[serde(rename)] overrides exist precisely so these
+        // serialize as `getversion`/`getdbjob`/`gettracedata` rather than
+        // the snake_case auto-rename's `get_version`/etc.
+        let cases: [(Request, &str); 3] = [
+            (
+                Request::GetVersion { id: "40".into() },
+                r#"{"type":"getversion","id":"40"}"#,
+            ),
+            (
+                Request::GetDbJob { id: "41".into() },
+                r#"{"type":"getdbjob","id":"41"}"#,
+            ),
+            (
+                Request::GetTraceData { id: "42".into() },
+                r#"{"type":"gettracedata","id":"42"}"#,
+            ),
+        ];
+        for (r, expected) in cases {
+            let json = serde_json::to_string(&r).unwrap();
+            assert_eq!(json, expected);
+            // Round-trip back through the wire and confirm the tag still parses.
+            let _back: Request = serde_json::from_str(&json).unwrap();
+        }
+    }
+
+    #[test]
+    fn setconfig_round_trips() {
+        let r = Request::SetConfig {
+            id: "50".into(),
+            tracelevel: "DATASTREAM".into(),
+            tracedest: "FILE".into(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"setconfig","id":"50","tracelevel":"DATASTREAM","tracedest":"FILE"}"#
+        );
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(back, Request::SetConfig { tracelevel, .. } if tracelevel == "DATASTREAM")
+        );
+    }
+
+    #[test]
+    fn dove_round_trips() {
+        let r = Request::Dove {
+            id: "60".into(),
+            sql: "SELECT * FROM T".into(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(json, r#"{"type":"dove","id":"60","sql":"SELECT * FROM T"}"#);
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Request::Dove { id, .. } if id == "60"));
     }
 }
