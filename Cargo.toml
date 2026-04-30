@@ -29,7 +29,6 @@ base64 = { version = "0.22", optional = true }
 insta = { version = "1", features = ["json", "yaml"] }
 proptest = "1"
 pretty_assertions = "1"
-toml = "0.9"
 
 [package.metadata.docs.rs]
 all-features = true

@@ -317,16 +317,23 @@ pub enum SpecError {
 
 #[cfg(all(test, feature = "serde-config"))]
 mod spec_tests {
+    //! Tests use JSON via `serde_json` (already in `[dependencies]`) rather
+    //! than introducing a TOML parser as a dev-dep — the `toml` 0.9 crate
+    //! pulls `winnow` 1.x and conflicts with the `winnow` 0.7.x already in
+    //! the tree via `insta`/`toml_edit`, which trips
+    //! `multiple-versions = "deny"` in `deny.toml`. The serde derives are
+    //! format-agnostic, so JSON exercises the same code path.
+
     use super::*;
 
     #[test]
-    fn parses_minimal_toml() {
-        let toml_str = r#"
-            host = "ibmi.example.com"
-            user = "DCURTIS"
-            password = "hunter2"
-        "#;
-        let spec: DaemonServerSpec = toml::from_str(toml_str).expect("parse");
+    fn parses_minimal_json() {
+        let json = r#"{
+            "host": "ibmi.example.com",
+            "user": "DCURTIS",
+            "password": "hunter2"
+        }"#;
+        let spec: DaemonServerSpec = serde_json::from_str(json).expect("parse");
         let server = spec.try_into_server().expect("convert");
         assert_eq!(server.host, "ibmi.example.com");
         assert_eq!(server.port, DaemonServer::DEFAULT_PORT);
@@ -334,14 +341,14 @@ mod spec_tests {
 
     #[test]
     fn parses_with_explicit_port_and_insecure_tls() {
-        let toml_str = r#"
-            host = "h"
-            port = 9000
-            user = "u"
-            password = "p"
-            tls = "insecure"
-        "#;
-        let spec: DaemonServerSpec = toml::from_str(toml_str).expect("parse");
+        let json = r#"{
+            "host": "h",
+            "port": 9000,
+            "user": "u",
+            "password": "p",
+            "tls": "insecure"
+        }"#;
+        let spec: DaemonServerSpec = serde_json::from_str(json).expect("parse");
         let server = spec.try_into_server().expect("convert");
         assert_eq!(server.port, 9000);
         assert!(matches!(server.tls, TlsConfig::Insecure));
