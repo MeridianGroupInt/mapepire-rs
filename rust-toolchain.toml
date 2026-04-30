@@ -1,0 +1,9 @@
+# Pin the default toolchain so every contributor builds against the same
+# Rust version. Nightly is installed separately via `make setup` for
+# `cargo +nightly fmt --all` (we use nightly rustfmt for unstable
+# formatting options; the build itself is stable).
+
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "default"

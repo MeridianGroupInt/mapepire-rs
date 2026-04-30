@@ -1,0 +1,19 @@
+# Default — text files use LF; binary files keep their bytes.
+* text=auto eol=lf
+
+# Rust source — better diff hunks than the default.
+*.rs text diff=rust
+
+# Snapshot files (insta) — text but never auto-merge; review the diff.
+*.snap text -merge
+
+# Lock files — prefer manual resolution over a 3-way merge.
+Cargo.lock merge=binary
+
+# Common binary file types kept verbatim.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
