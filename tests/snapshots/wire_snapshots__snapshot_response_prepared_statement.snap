@@ -1,0 +1,12 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 233
+expression: r
+---
+{
+  "type": "prepared_statement",
+  "id": "test",
+  "success": true,
+  "cont_id": "stmt-7",
+  "execution_time": 0.3
+}

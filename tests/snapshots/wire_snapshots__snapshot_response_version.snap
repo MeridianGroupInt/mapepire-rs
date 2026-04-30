@@ -1,0 +1,11 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 252
+expression: r
+---
+{
+  "type": "version",
+  "id": "test",
+  "success": true,
+  "version": "2.3.5"
+}

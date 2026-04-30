@@ -1,0 +1,10 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 242
+expression: r
+---
+{
+  "type": "sql_closed",
+  "id": "test",
+  "success": true
+}

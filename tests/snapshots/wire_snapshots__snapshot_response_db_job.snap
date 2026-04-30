@@ -1,0 +1,11 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 262
+expression: r
+---
+{
+  "type": "db_job",
+  "id": "test",
+  "success": true,
+  "job": "QZDASOINIT/QUSER/123456"
+}

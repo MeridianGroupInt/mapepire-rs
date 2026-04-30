@@ -196,3 +196,101 @@ fn snapshot_response_cl_result() {
     };
     insta::assert_json_snapshot!(r);
 }
+
+// The remaining response variants below are pinned at their current
+// snake_case auto-rename shape. The Mapepire daemon may use bare-form
+// tags (e.g., `sqlclosed`, `dbjob`, `configset`, `tracedata`); when
+// integration tests against a live daemon — or v0.2 transport work —
+// surfaces the actual tags, the per-variant `#[serde(rename)]` overrides
+// land in `src/protocol/response.rs` and these snapshots get updated.
+// The .snap diff is what tells you what changed; pinning the current
+// shape now makes that diff loud and reviewable.
+
+#[test]
+fn snapshot_response_connected() {
+    let r = Response::Connected {
+        id: "test".into(),
+        version: "2.3.5".into(),
+        job: "QZDASOINIT/QUSER/123456".into(),
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_response_pong_exited() {
+    insta::assert_json_snapshot!("pong", Response::Pong { id: "test".into() });
+    insta::assert_json_snapshot!("exited", Response::Exited { id: "test".into() });
+}
+
+#[test]
+fn snapshot_response_prepared_statement() {
+    let r = Response::PreparedStatement {
+        id: "test".into(),
+        success: true,
+        cont_id: "stmt-7".into(),
+        execution_time: 0.3,
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_response_sql_closed() {
+    let r = Response::SqlClosed {
+        id: "test".into(),
+        success: true,
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_response_version() {
+    let r = Response::Version {
+        id: "test".into(),
+        success: true,
+        version: "2.3.5".into(),
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_response_db_job() {
+    let r = Response::DbJob {
+        id: "test".into(),
+        success: true,
+        job: "QZDASOINIT/QUSER/123456".into(),
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_response_config_set() {
+    let r = Response::ConfigSet {
+        id: "test".into(),
+        success: true,
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_response_trace_data() {
+    let r = Response::TraceData {
+        id: "test".into(),
+        success: true,
+        tracedata: "+++ trace start +++\nrow 1\nrow 2".into(),
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_response_dove_result() {
+    let r = Response::DoveResult {
+        id: "test".into(),
+        success: true,
+        result: serde_json::json!({
+            "operator": "TableScan",
+            "table": "ORDERS",
+            "estimated_rows": 1000
+        }),
+    };
+    insta::assert_json_snapshot!(r);
+}

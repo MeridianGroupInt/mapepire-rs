@@ -1,0 +1,11 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 281
+expression: r
+---
+{
+  "type": "trace_data",
+  "id": "test",
+  "success": true,
+  "tracedata": "+++ trace start +++\nrow 1\nrow 2"
+}

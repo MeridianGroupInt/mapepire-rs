@@ -1,0 +1,10 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 271
+expression: r
+---
+{
+  "type": "config_set",
+  "id": "test",
+  "success": true
+}

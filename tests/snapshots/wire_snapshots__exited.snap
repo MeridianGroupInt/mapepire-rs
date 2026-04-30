@@ -1,0 +1,9 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 222
+expression: "Response::Exited { id: \"test\".into() }"
+---
+{
+  "type": "exited",
+  "id": "test"
+}
