@@ -1,0 +1,9 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+{
+  "type": "prepare_sql",
+  "id": "test",
+  "sql": "SELECT * FROM T WHERE ID=?"
+}

@@ -1,0 +1,15 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 295
+expression: r
+---
+{
+  "type": "dove_result",
+  "id": "test",
+  "success": true,
+  "result": {
+    "estimated_rows": 1000,
+    "operator": "TableScan",
+    "table": "ORDERS"
+  }
+}

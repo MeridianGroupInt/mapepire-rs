@@ -1,0 +1,11 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 216
+expression: r
+---
+{
+  "type": "connected",
+  "id": "test",
+  "version": "2.3.5",
+  "job": "QZDASOINIT/QUSER/123456"
+}

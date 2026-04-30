@@ -1,0 +1,9 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+{
+  "type": "cl",
+  "id": "test",
+  "cmd": "WRKACTJOB"
+}

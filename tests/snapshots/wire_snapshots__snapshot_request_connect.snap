@@ -1,0 +1,10 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+{
+  "type": "connect",
+  "id": "test",
+  "user": "DCURTIS",
+  "password": "hunter2"
+}

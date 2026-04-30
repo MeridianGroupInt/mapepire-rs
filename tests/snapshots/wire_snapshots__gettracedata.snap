@@ -1,0 +1,8 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Request::GetTraceData { id: \"test\".into() }"
+---
+{
+  "type": "gettracedata",
+  "id": "test"
+}

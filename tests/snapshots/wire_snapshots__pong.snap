@@ -1,0 +1,9 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 221
+expression: "Response::Pong { id: \"test\".into() }"
+---
+{
+  "type": "pong",
+  "id": "test"
+}

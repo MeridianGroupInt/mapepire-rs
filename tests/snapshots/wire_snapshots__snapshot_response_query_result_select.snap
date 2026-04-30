@@ -1,0 +1,32 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Response::QueryResult(q)"
+---
+{
+  "type": "query_result",
+  "id": "test",
+  "success": true,
+  "has_results": true,
+  "update_count": -1,
+  "cont_id": "cur-1",
+  "is_done": false,
+  "metadata": {
+    "column_count": 1,
+    "columns": [
+      {
+        "name": "ID",
+        "label": null,
+        "type": "INTEGER",
+        "display_size": 11,
+        "precision": 10,
+        "scale": 0
+      }
+    ]
+  },
+  "data": [
+    {
+      "ID": 42
+    }
+  ],
+  "execution_time": 1.23
+}

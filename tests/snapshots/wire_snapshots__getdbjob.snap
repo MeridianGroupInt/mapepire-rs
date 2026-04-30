@@ -1,0 +1,8 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Request::GetDbJob { id: \"test\".into() }"
+---
+{
+  "type": "getdbjob",
+  "id": "test"
+}
