@@ -54,6 +54,10 @@ mod tests {
             job: "QZDASOINIT/QUSER/123456".into(),
         };
         let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"connected","id":"2","version":"2.3.5","job":"QZDASOINIT/QUSER/123456"}"#
+        );
         let back: Response = serde_json::from_str(&json).unwrap();
         match back {
             Response::Connected { version, job, .. } => {
@@ -69,5 +73,7 @@ mod tests {
         let r = Response::Exited { id: "3".into() };
         let json = serde_json::to_string(&r).unwrap();
         assert_eq!(json, r#"{"type":"exited","id":"3"}"#);
+        let back: Response = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Response::Exited { id } if id == "3"));
     }
 }

@@ -69,5 +69,7 @@ mod tests {
         let r = Request::Exit { id: "3".into() };
         let json = serde_json::to_string(&r).unwrap();
         assert_eq!(json, r#"{"type":"exit","id":"3"}"#);
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Request::Exit { id } if id == "3"));
     }
 }
