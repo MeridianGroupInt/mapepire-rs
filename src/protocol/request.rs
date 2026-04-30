@@ -130,6 +130,10 @@ mod tests {
             parameters: Some(vec![serde_json::json!(42)]),
         };
         let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"sql","id":"10","sql":"SELECT * FROM ORDERS WHERE ID = ?","rows":100,"parameters":[42]}"#
+        );
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, Request::Sql { id, .. } if id == "10"));
     }
@@ -172,7 +176,11 @@ mod tests {
             rows: None,
         };
         let json = serde_json::to_string(&r).unwrap();
-        assert!(json.contains(r#"[[1,"a"],[2,"b"]]"#));
+        // `rows` is None → elided per skip_serializing_if; full shape pinned.
+        assert_eq!(
+            json,
+            r#"{"type":"prepare_sql_execute","id":"13","sql":"INSERT INTO T VALUES(?,?)","parameters":[[1,"a"],[2,"b"]]}"#
+        );
         let _back: Request = serde_json::from_str(&json).unwrap();
     }
 
