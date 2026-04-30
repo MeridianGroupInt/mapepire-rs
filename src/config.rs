@@ -237,3 +237,113 @@ mod tests {
         assert!(matches!(s.tls, TlsConfig::Insecure));
     }
 }
+
+/// Serializable counterpart to [`DaemonServer`] for loading config from files.
+///
+/// Available only with the `serde-config` feature. Convert into the runtime
+/// type via [`DaemonServerSpec::try_into_server`].
+#[cfg(feature = "serde-config")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde-config")))]
+#[derive(Debug, serde::Deserialize)]
+pub struct DaemonServerSpec {
+    /// Hostname or IP of the IBM i system.
+    pub host: String,
+    /// TCP port; defaults to [`DaemonServer::DEFAULT_PORT`] when absent.
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// IBM i user profile.
+    pub user: String,
+    /// IBM i user password (plain text in config — handle the file accordingly).
+    pub password: String,
+    /// TLS mode. `"verified"`, `"insecure"`, or `{ "ca": "<base64-DER>" }`
+    /// in the config file.
+    #[serde(default)]
+    pub tls: TlsConfigSpec,
+}
+
+/// TLS configuration as it appears in serialized config.
+#[cfg(feature = "serde-config")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde-config")))]
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsConfigSpec {
+    /// Verify against system roots.
+    #[default]
+    Verified,
+    /// Pin a CA from the given DER bytes (base64-encoded in the config).
+    Ca(String),
+    /// Skip verification.
+    Insecure,
+}
+
+#[cfg(feature = "serde-config")]
+impl DaemonServerSpec {
+    /// Convert into a runtime [`DaemonServer`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SpecError`] if the TLS CA bytes fail to decode from base64.
+    pub fn try_into_server(self) -> Result<DaemonServer, SpecError> {
+        use base64::Engine;
+        let tls = match self.tls {
+            TlsConfigSpec::Verified => TlsConfig::Verified,
+            TlsConfigSpec::Insecure => TlsConfig::Insecure,
+            TlsConfigSpec::Ca(b64) => {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&b64)
+                    .map_err(SpecError::InvalidCaBase64)?;
+                TlsConfig::Ca(bytes)
+            }
+        };
+        Ok(DaemonServer {
+            host: self.host,
+            port: self.port.unwrap_or(DaemonServer::DEFAULT_PORT),
+            user: self.user,
+            password: Password::new(self.password),
+            tls,
+        })
+    }
+}
+
+/// Errors returned by [`DaemonServerSpec::try_into_server`].
+#[cfg(feature = "serde-config")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde-config")))]
+#[derive(Debug, thiserror::Error)]
+pub enum SpecError {
+    /// The base64-encoded CA bytes failed to decode.
+    #[error("invalid base64 in tls.ca: {0}")]
+    InvalidCaBase64(#[source] base64::DecodeError),
+}
+
+#[cfg(all(test, feature = "serde-config"))]
+mod spec_tests {
+    use super::*;
+
+    #[test]
+    fn parses_minimal_toml() {
+        let toml_str = r#"
+            host = "ibmi.example.com"
+            user = "DCURTIS"
+            password = "hunter2"
+        "#;
+        let spec: DaemonServerSpec = toml::from_str(toml_str).expect("parse");
+        let server = spec.try_into_server().expect("convert");
+        assert_eq!(server.host, "ibmi.example.com");
+        assert_eq!(server.port, DaemonServer::DEFAULT_PORT);
+    }
+
+    #[test]
+    fn parses_with_explicit_port_and_insecure_tls() {
+        let toml_str = r#"
+            host = "h"
+            port = 9000
+            user = "u"
+            password = "p"
+            tls = "insecure"
+        "#;
+        let spec: DaemonServerSpec = toml::from_str(toml_str).expect("parse");
+        let server = spec.try_into_server().expect("convert");
+        assert_eq!(server.port, 9000);
+        assert!(matches!(server.tls, TlsConfig::Insecure));
+    }
+}
