@@ -24,6 +24,6 @@ pub mod error;
 pub mod password;
 pub mod protocol;
 
-pub use crate::config::{DaemonServer, DaemonServerBuilder, TlsConfig};
+pub use crate::config::{BuilderError, DaemonServer, DaemonServerBuilder, TlsConfig};
 pub use crate::error::{Error, Result};
 pub use crate::password::Password;

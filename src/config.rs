@@ -222,4 +222,18 @@ mod tests {
         let a: Arc<DaemonServer> = s.into();
         assert_eq!(a.host, "h");
     }
+
+    #[test]
+    fn builder_overrides_port_and_tls() {
+        let s = DaemonServer::builder()
+            .host("h")
+            .user("u")
+            .password("p".to_string())
+            .port(9999)
+            .tls(TlsConfig::Insecure)
+            .build()
+            .expect("build");
+        assert_eq!(s.port, 9999);
+        assert!(matches!(s.tls, TlsConfig::Insecure));
+    }
 }
