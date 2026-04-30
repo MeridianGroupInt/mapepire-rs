@@ -32,4 +32,7 @@ pub use crate::error::{
     DecodeError, DiagnosticItem, Error, ProtocolError, Result, ServerError, TransportError,
 };
 pub use crate::password::Password;
-pub use crate::protocol::{IdAllocator, Request, RequestId, Response};
+pub use crate::protocol::{
+    ClMessage, Column, ErrorResponse, IdAllocator, QueryMetaData, QueryResult, Request, RequestId,
+    Response,
+};
