@@ -1,4 +1,5 @@
-//! Daemon connection configuration. Expanded in Task 4 / Task 5.
+//! Daemon connection configuration. `DaemonServer` and `DaemonServerBuilder`
+//! are filled in Task 5.
 
 /// TLS verification mode for the connection to the Mapepire daemon.
 ///
@@ -20,8 +21,9 @@ pub enum TlsConfig {
 
     /// Pin a specific CA certificate (DER-encoded bytes).
     ///
-    /// Use this with the bytes returned by `DaemonServer::fetch_certificate`
-    /// (added in v0.2) to bootstrap trust on a self-signed daemon.
+    /// In v0.2, use this with the bytes returned by
+    /// `DaemonServer::fetch_certificate` to bootstrap trust on a self-signed
+    /// daemon. v0.1 only declares the variant.
     Ca(Vec<u8>),
 
     /// Skip server-cert verification entirely. Available only when the crate
