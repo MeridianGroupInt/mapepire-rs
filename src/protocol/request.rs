@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 /// Discriminated union of all request types the client can send.
 ///
-/// Tagged on the wire by the `type` field. Variants are filled in
-/// Tasks 9–14.
+/// Tagged on the wire by the `type` field. Variants are added in
+/// subsequent protocol tasks.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

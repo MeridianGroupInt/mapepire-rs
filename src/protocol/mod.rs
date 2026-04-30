@@ -4,8 +4,8 @@
 //! `id` (string), and each response echoes the same `id` so they can be
 //! correlated. Multiple requests may be in flight on one socket.
 //!
-//! Variants are filled in across Tasks 9–14; this file lays the discriminated-
-//! union scaffolding (`Request`, `Response`, `IdAllocator`).
+//! Variants are added in subsequent protocol tasks; this file lays the
+//! discriminated-union scaffolding (`Request`, `Response`, `IdAllocator`).
 
 pub mod codec;
 pub mod request;

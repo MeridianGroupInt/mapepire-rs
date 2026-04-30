@@ -28,6 +28,13 @@ impl IdAllocator {
             .unwrap_or(0);
         let pid = std::process::id();
         // Mix: 4 bytes nanos + 2 bytes pid → 6 bytes hex prefix.
+        // NOTE: prefix entropy is ~32 bits in practice (pid is constant
+        // within a process). Two `IdAllocator`s constructed in the same
+        // nanosecond would share a prefix; uniqueness from that point
+        // depends on the per-allocator counter. v0.1 has one `IdAllocator`
+        // per `Job`, so the only collision risk is two `Job`s constructed
+        // back-to-back in the same nanosecond — covered by the
+        // `two_allocators_have_distinct_prefixes` regression test.
         bytes[..4].copy_from_slice(&nanos.to_le_bytes());
         bytes[4..6].copy_from_slice(&pid.to_le_bytes()[..2]);
         let prefix = bytes.iter().fold(String::with_capacity(12), |mut s, b| {
