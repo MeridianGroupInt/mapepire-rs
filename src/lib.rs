@@ -13,6 +13,12 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[cfg(not(any(feature = "rustls-tls", feature = "native-tls")))]
+compile_error!(
+    "mapepire requires one of: feature `rustls-tls` (default) or feature `native-tls`. \
+     Disable default features only when explicitly enabling another TLS backend."
+);
+
 pub mod config;
 pub mod error;
 pub mod password;

@@ -12,7 +12,10 @@ keywords = ["ibm-i", "db2", "mapepire", "database", "websocket"]
 categories = ["database", "asynchronous"]
 
 [features]
-default = []
+default = ["rustls-tls"]
+rustls-tls = []
+native-tls = []
+insecure-tls = []
 serde-config = []
 
 [dependencies]
