@@ -1,0 +1,8 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Request::Exit { id: \"test\".into() }"
+---
+{
+  "type": "exit",
+  "id": "test"
+}

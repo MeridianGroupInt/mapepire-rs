@@ -1,0 +1,13 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+{
+  "type": "error",
+  "id": "test",
+  "success": false,
+  "sqlstate": "23505",
+  "sqlcode": -803,
+  "error": "duplicate key",
+  "job": "QZDASOINIT/QUSER/123456"
+}

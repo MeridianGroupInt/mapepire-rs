@@ -1,0 +1,8 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Request::Ping { id: \"test\".into() }"
+---
+{
+  "type": "ping",
+  "id": "test"
+}

@@ -1,0 +1,19 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Response::QueryResult(q)"
+---
+{
+  "type": "query_result",
+  "id": "test",
+  "success": true,
+  "has_results": false,
+  "update_count": 3,
+  "cont_id": null,
+  "is_done": true,
+  "metadata": {
+    "column_count": 0,
+    "columns": []
+  },
+  "data": [],
+  "execution_time": 0.5
+}

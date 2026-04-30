@@ -1,0 +1,9 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Request::SqlClose { id: \"test\".into(), cont_id: \"cur-1\".into(), }"
+---
+{
+  "type": "sqlclose",
+  "id": "test",
+  "cont_id": "cur-1"
+}

@@ -1,0 +1,19 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+{
+  "type": "prepare_sql_execute",
+  "id": "test",
+  "sql": "INSERT INTO T VALUES(?,?)",
+  "parameters": [
+    [
+      1,
+      "a"
+    ],
+    [
+      2,
+      "b"
+    ]
+  ]
+}

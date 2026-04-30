@@ -1,0 +1,10 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Request::SetConfig\n{\n    id: \"test\".into(), tracelevel: \"DATASTREAM\".into(), tracedest:\n    \"FILE\".into(),\n}"
+---
+{
+  "type": "setconfig",
+  "id": "test",
+  "tracelevel": "DATASTREAM",
+  "tracedest": "FILE"
+}

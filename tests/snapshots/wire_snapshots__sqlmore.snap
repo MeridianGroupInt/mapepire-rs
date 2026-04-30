@@ -1,0 +1,10 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Request::SqlMore { id: \"test\".into(), cont_id: \"cur-1\".into(), rows: 100, }"
+---
+{
+  "type": "sqlmore",
+  "id": "test",
+  "cont_id": "cur-1",
+  "rows": 100
+}

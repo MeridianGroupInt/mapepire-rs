@@ -1,0 +1,8 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Request::GetVersion { id: \"test\".into() }"
+---
+{
+  "type": "getversion",
+  "id": "test"
+}

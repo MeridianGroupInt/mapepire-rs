@@ -1,0 +1,9 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Request::Dove\n{ id: \"test\".into(), sql: \"SELECT 1 FROM SYSIBM.SYSDUMMY1\".into(), }"
+---
+{
+  "type": "dove",
+  "id": "test",
+  "sql": "SELECT 1 FROM SYSIBM.SYSDUMMY1"
+}

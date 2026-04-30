@@ -1,0 +1,12 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+{
+  "type": "execute",
+  "id": "test",
+  "cont_id": "stmt-7",
+  "parameters": [
+    "hello"
+  ]
+}

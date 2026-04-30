@@ -1,0 +1,13 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+{
+  "type": "sql",
+  "id": "test",
+  "sql": "SELECT * FROM T WHERE ID=?",
+  "rows": 50,
+  "parameters": [
+    42
+  ]
+}

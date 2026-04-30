@@ -1,0 +1,16 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+{
+  "type": "cl_result",
+  "id": "test",
+  "success": true,
+  "messages": [
+    {
+      "id": "CPF1234",
+      "type": "INFO",
+      "text": "ok"
+    }
+  ]
+}
