@@ -252,8 +252,10 @@ These must always hold:
 
 1. **`Password`** is never `Clone`, `Serialize`, `Deserialize`,
    `Display`, `PartialEq`, or `Hash`. Buffer is zeroized on drop. The
-   `drop_zeroizes_buffer` test in `src/password.rs` is the regression
-   guard — do not delete or weaken it.
+   `zeroize_clears_buffer` test in `src/password.rs` is the regression
+   guard — it uses `ManuallyDrop` to suspend deallocation, calls
+   `Zeroize::zeroize()` on the inner buffer, and asserts the bytes are
+   zero while the allocation is still live. Do not delete or weaken it.
 2. **TLS is mandatory.** No plaintext path. The `TlsConfig::Insecure`
    variant requires the `insecure-tls` feature flag at compile time and
    emits a runtime warning the first time it's used.
