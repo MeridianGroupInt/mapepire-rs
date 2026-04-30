@@ -16,13 +16,14 @@ default = ["rustls-tls"]
 rustls-tls = []
 native-tls = []
 insecure-tls = []
-serde-config = []
+serde-config = ["dep:base64"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
+base64 = { version = "0.22", optional = true }
 
 [dev-dependencies]
 insta = { version = "1", features = ["json", "yaml"] }

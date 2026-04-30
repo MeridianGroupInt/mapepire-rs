@@ -25,5 +25,8 @@ pub mod password;
 pub mod protocol;
 
 pub use crate::config::{BuilderError, DaemonServer, DaemonServerBuilder, TlsConfig};
+#[cfg(feature = "serde-config")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde-config")))]
+pub use crate::config::{DaemonServerSpec, SpecError, TlsConfigSpec};
 pub use crate::error::{Error, Result};
 pub use crate::password::Password;
