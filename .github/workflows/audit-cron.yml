@@ -15,10 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Generate Cargo.lock for audit
         run: cargo generate-lockfile
+      # TODO(PRO-395): bump when Node-24 release available — currently on Node 20 (deprecated 2026-09-16)
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
