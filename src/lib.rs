@@ -81,4 +81,4 @@ pub use crate::protocol::{
     ClMessage, Column, ErrorResponse, IdAllocator, QueryMetaData, QueryResult, Request, RequestId,
     Response,
 };
-pub use crate::query::{Query, Rows};
+pub use crate::query::{Query, Row, Rows};
