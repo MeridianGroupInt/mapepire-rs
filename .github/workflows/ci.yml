@@ -152,9 +152,14 @@ jobs:
       - name: Generate Cargo.lock for audit
         run: cargo generate-lockfile
       # TODO(PRO-395): bump when Node-24 release available — currently on Node 20 (deprecated 2026-09-16)
+      # Ignored advisory: rcgen (dev-dep) pulls time 0.3.45 which has a
+      # stack-exhaustion CVE in RFC-2822 parsing. rcgen never invokes
+      # parsing, only DER serialization — unreachable code path.
+      # Justification + analysis lives in deny.toml's [advisories.ignore].
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ignore: RUSTSEC-2026-0009
 
   deny:
     name: deny

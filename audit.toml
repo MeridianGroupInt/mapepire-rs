@@ -1,0 +1,10 @@
+# Ignored advisories — the same set tracked in deny.toml's [advisories.ignore].
+# Maintain in sync; both cargo audit (audit job) and cargo deny check (deny job)
+# must agree on suppressions.
+#
+# Justification details live in deny.toml next to each entry. This file exists
+# solely because `rustsec/audit-check` (the `audit` CI job) runs `cargo audit`
+# directly and does not read deny.toml.
+
+[advisories]
+ignore = ["RUSTSEC-2026-0009"]

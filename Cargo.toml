@@ -67,6 +67,19 @@ proptest = "1"
 pretty_assertions = "1"
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-test = "0.4"
+# Mock TLS+WebSocket server harness (Task 21 / PRO-417).
+# rcgen mints self-signed certs at test time; tokio-rustls drives the
+# server-side TLS acceptor. Both are dev-only — they never ship in the
+# published crate. tokio-rustls version is pinned to match the regular dep
+# exactly so cargo-deny's multiple-versions = "deny" stays clean.
+rcgen = "0.14"
+tokio-rustls = { version = "0.26", default-features = false }
+# Enable rustls' ring provider so the process-level CryptoProvider is
+# populated when running tests. rcgen pulls ring into the dep tree, but
+# rustls only auto-selects a provider when exactly one of its own
+# `ring`/`aws_lc_rs` features is active. This dev-dep activates `ring`
+# on the same rustls version, resolving the ambiguity at test time only.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [package.metadata.docs.rs]
 all-features = true
