@@ -109,6 +109,140 @@ impl Job {
         self.handle.clone()
     }
 
+    /// Execute a SQL statement and return the [`crate::query::Rows`] handle.
+    ///
+    /// For DML (INSERT/UPDATE/DELETE), `rows.update_count()` returns
+    /// `Some(n)` (Task 16). For SELECT, iterate via `rows.stream()` or
+    /// materialize via `rows.into_typed::<T>()` / `rows.into_dynamic()`
+    /// (Tasks 16-17).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Server`] for daemon-side SQL errors (with SQLSTATE);
+    /// [`Error::Transport`]/[`Error::Protocol`] for connection issues.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job.execute("SELECT * FROM SYSIBM.SYSDUMMY1").await?;
+    /// drop(rows);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn execute(&self, sql: &str) -> Result<crate::query::Rows, Error> {
+        self.execute_inner(sql, None).await
+    }
+
+    /// Execute a parameterized SQL statement.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::execute`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job
+    ///     .execute_with(
+    ///         "SELECT * FROM ORDERS WHERE CUSTNO = ?",
+    ///         &[serde_json::json!(42)],
+    ///     )
+    ///     .await?;
+    /// drop(rows);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn execute_with(
+        &self,
+        sql: &str,
+        params: &[serde_json::Value],
+    ) -> Result<crate::query::Rows, Error> {
+        self.execute_inner(sql, Some(params.to_vec())).await
+    }
+
+    async fn execute_inner(
+        &self,
+        sql: &str,
+        params: Option<Vec<serde_json::Value>>,
+    ) -> Result<crate::query::Rows, Error> {
+        let id = self.ids.next();
+        let request = Request::Sql {
+            id: id.clone(),
+            sql: sql.to_owned(),
+            rows: None,
+            parameters: params,
+        };
+        let resp = self.send(request).await?;
+        match resp {
+            Response::QueryResult(q) if q.id == id => {
+                Ok(crate::query::Rows::new(q, self.handle.clone()))
+            }
+            Response::Error(e) => Err(server_error(e)),
+            ref other => Err(unexpected(other)),
+        }
+    }
+
+    /// Prepare a SQL statement for repeated execution.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::execute`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let query = job.prepare("SELECT * FROM ORDERS WHERE CUSTNO = ?").await?;
+    /// drop(query);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn prepare(&self, sql: &str) -> Result<crate::query::Query, Error> {
+        let id = self.ids.next();
+        let resp = self
+            .send(Request::PrepareSql {
+                id: id.clone(),
+                sql: sql.to_owned(),
+            })
+            .await?;
+        match resp {
+            Response::PreparedStatement {
+                id: got, cont_id, ..
+            } if got == id => Ok(crate::query::Query::new(cont_id, self.handle.clone())),
+            Response::Error(e) => Err(server_error(e)),
+            ref other => Err(unexpected(other)),
+        }
+    }
+
     /// Round-trip a `ping` to the daemon. Returns the ping RTT.
     ///
     /// The RTT is measured from just before the request is handed to the
@@ -199,6 +333,19 @@ fn server_failed(method: &str) -> Error {
         sqlstate: None,
         sqlcode: None,
         job_name: None,
+        diagnostics: vec![],
+    })
+}
+
+fn server_error(e: crate::protocol::ErrorResponse) -> Error {
+    use crate::error::ServerError;
+    Error::from(ServerError {
+        message: e
+            .error
+            .unwrap_or_else(|| "daemon returned error response with no message".to_string()),
+        sqlstate: e.sqlstate,
+        sqlcode: e.sqlcode,
+        job_name: e.job,
         diagnostics: vec![],
     })
 }
