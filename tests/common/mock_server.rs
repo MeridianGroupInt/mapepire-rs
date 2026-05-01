@@ -59,8 +59,8 @@ pub enum MockBehavior {
     /// the first entry in `pages`. Subsequent [`Request::SqlMore`] requests
     /// consume additional entries. Any other request after connect gets a
     /// [`Response::Pong`].
-    // NOTE: used by Tasks 24 (PRO-420), 25 (PRO-421), 26 (PRO-422) integration tests
-    // for SQL one-shot, prepared statement, and paging respectively.
+    // NOTE: used by Tasks 24 (PRO-420), 26 (PRO-422) integration tests
+    // for SQL one-shot and paging respectively.
     Pages(Vec<QueryResult>),
 
     /// Accept connect with success, then respond to the very next request
@@ -74,6 +74,23 @@ pub enum MockBehavior {
     /// scenario for timeout tests.
     // NOTE: used by Task 30 (PRO-426) integration test for half-open socket.
     HalfOpen,
+
+    /// Accept connect with success, then respond to the protocol sequence for
+    /// prepared statements:
+    /// - The next [`Request::PrepareSql`] request: emit [`Response::PreparedStatement`] with
+    ///   `cont_id`.
+    /// - Each subsequent [`Request::Execute`]: pop the next [`QueryResult`] from `results`, stamp
+    ///   its `id`, and send as [`Response::QueryResult`].
+    /// - Each [`Request::SqlClose`]: emit [`Response::SqlClosed`] and continue (Drop-for-Query may
+    ///   fire one per test after assertions).
+    /// - [`Request::Exit`]: emit [`Response::Exited`] and close.
+    // NOTE: used by Task 25 (PRO-421) integration test for prepared statements.
+    PrepareAndExecute {
+        /// Server-side prepared-statement handle sent back in `PreparedStatement`.
+        cont_id: String,
+        /// Canned `QueryResult` values consumed in order by each `Execute`.
+        results: Vec<QueryResult>,
+    },
 }
 
 /// Mock daemon version string echoed in [`Response::Connected`].
@@ -302,6 +319,52 @@ where
                 match msg {
                     Ok(Message::Close(_)) | Err(_) => break,
                     _ => {} // silently discard
+                }
+            }
+        }
+
+        MockBehavior::PrepareAndExecute {
+            cont_id,
+            mut results,
+        } => {
+            send_response!(Response::Connected {
+                id: connect_id,
+                version: MOCK_VERSION.into(),
+                job: MOCK_JOB.into(),
+            });
+            let mut results_iter = results.drain(..);
+            loop {
+                match recv_request!() {
+                    None => break,
+                    Some(Request::Exit { id }) => {
+                        send_response!(Response::Exited { id });
+                        let _ = sink.send(Message::Close(None)).await;
+                        break;
+                    }
+                    Some(Request::PrepareSql { id, .. }) => {
+                        send_response!(Response::PreparedStatement {
+                            id,
+                            success: true,
+                            cont_id: cont_id.clone(),
+                            execution_time: 0.0,
+                        });
+                    }
+                    Some(Request::Execute { id, .. }) => {
+                        let mut qr = results_iter
+                            .next()
+                            .expect("mock PrepareAndExecute ran out of pre-baked results");
+                        qr.id = id;
+                        send_response!(Response::QueryResult(qr));
+                    }
+                    Some(Request::SqlClose { id, .. }) => {
+                        // Continue rather than break — Drop for Query fires SqlClose
+                        // after the test's assertions and must not stall the server.
+                        send_response!(Response::SqlClosed { id, success: true });
+                    }
+                    Some(req) => {
+                        let id = request_id(&req);
+                        send_response!(Response::Pong { id });
+                    }
                 }
             }
         }
