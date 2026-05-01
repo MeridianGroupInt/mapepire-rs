@@ -384,6 +384,45 @@ expected to:
 - Default to small files and small functions. If a file goes over ~500
   lines, suggest splitting it.
 
+### Multi-agent review cadence
+
+When work is dispatched to subagents (implementer + reviewer pattern),
+both reviews happen on the implementer's **local branch**, not on an
+already-opened PR:
+
+1. Implementer commits the work locally and self-reviews.
+2. A spec-compliance reviewer reads the local diff and verifies it
+   matches what the task asked for (no missing pieces, no extras).
+3. A code-quality reviewer reads the local diff and flags real issues
+   (correctness, security, clarity, patterns).
+4. The implementer resolves **every** issue raised by either reviewer
+   on the same local branch.
+5. **Only then** is the PR opened.
+
+Once a PR exists, CI is the merge gate — not a review surface. Don't
+push fix-up commits driven by reviewer feedback after the PR is up;
+that pollutes the audit trail and forces every reviewer iteration
+through the full 14-job CI matrix. Reviewer-driven changes belong on
+the local branch *before* the PR; CI-driven fixes (a fmt/clippy/test
+failure that the local pre-PR sweep didn't catch) are the only thing
+that should land on an open PR.
+
+Pre-PR sweep — the minimum the implementer runs locally before
+opening the PR:
+
+```sh
+cargo +nightly fmt --all -- --check
+RUSTFLAGS="-D warnings" cargo check --no-default-features --features rustls-tls
+RUSTFLAGS="-D warnings" cargo clippy --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+cargo test --all-features
+```
+
+`make pre-pr` covers most of this and adds `audit` + `deny`. The
+explicit `RUSTFLAGS="-D warnings" cargo check` against the non-default
+TLS backend catches feature-gated unused-import drift that a default-
+features build silently masks.
+
 The donation goal is the north star. When a tradeoff is unclear, pick
 the option that makes the crate easier for the Mapepire-IBMi org to
 adopt.
