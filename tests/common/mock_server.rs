@@ -35,8 +35,11 @@ use tokio_tungstenite::tungstenite::Message;
 /// and issues requests. The mock echoes each request's `id` field in every
 /// response so the client-side dispatcher's correlation logic works correctly.
 ///
-/// Variants beyond `AcceptAndConnect` are unused in this PR but exist for
-/// Phase 6 integration tests (Tasks 22–30) that reference this enum.
+/// Phase 6 integration tests (Tasks 22–30) each use a different variant.
+/// Because each test binary compiles `common` independently, the dead-code
+/// lint sees variants that are live in other binaries as unused. The enum-level
+/// `#[allow(dead_code)]` silences this without per-variant noise.
+#[allow(dead_code)]
 #[derive(Clone)]
 pub enum MockBehavior {
     /// Accept the WebSocket upgrade and respond to a [`Request::Connect`]
@@ -49,8 +52,6 @@ pub enum MockBehavior {
     /// Accept the WebSocket upgrade but respond to [`Request::Connect`] with
     /// a [`Response::Error`] carrying the provided message. Simulates an
     /// authentication-rejection scenario.
-    // NOTE: used by Task 23 (PRO-419) integration test for auth failure.
-    #[allow(dead_code)]
     AuthFail(String),
 
     /// Accept connect with success, then respond to the first
@@ -60,21 +61,18 @@ pub enum MockBehavior {
     /// [`Response::Pong`].
     // NOTE: used by Tasks 24 (PRO-420), 25 (PRO-421), 26 (PRO-422) integration tests
     // for SQL one-shot, prepared statement, and paging respectively.
-    #[allow(dead_code)]
     Pages(Vec<QueryResult>),
 
     /// Accept connect with success, then respond to the very next request
     /// (of any type) with the provided [`ErrorResponse`]. After that, exit
     /// cleanly — do not respond to further requests.
     // NOTE: used by Task 29 (PRO-425) integration test for server-side error classification.
-    #[allow(dead_code)]
     ReturnError(ErrorResponse),
 
     /// Accept connect with success, then silently drop the request loop
     /// without closing the socket. Simulates a half-open / server-stall
     /// scenario for timeout tests.
     // NOTE: used by Task 30 (PRO-426) integration test for half-open socket.
-    #[allow(dead_code)]
     HalfOpen,
 }
 
