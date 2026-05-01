@@ -4,6 +4,7 @@
 //! Backend selection is compile-time via the `rustls-tls` (default) /
 //! `native-tls` feature flags.
 
+#[cfg(feature = "rustls-tls")]
 use std::sync::Arc;
 
 use tokio::net::TcpStream;
