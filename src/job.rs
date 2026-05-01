@@ -18,11 +18,7 @@ use crate::transport::{self, ConnectedDispatcher, Dispatcher, DispatcherHandle};
 /// `Job`). Use a connection pool — added in v0.3 — to share work
 /// across multiple connections.
 pub struct Job {
-    // NOTE: `handle` and `ids` are unused until Task 9 adds `Job::ping`,
-    // `Job::execute`, etc. The `allow` keeps `-D warnings` clean on this branch.
-    #[allow(dead_code)]
     handle: DispatcherHandle,
-    #[allow(dead_code)]
     ids: Arc<IdAllocator>,
     /// Daemon-reported version string from the `Connected` response.
     pub version: String,
@@ -93,8 +89,6 @@ impl Job {
     /// Send a request through the dispatcher and await the response.
     /// Internal helper — public methods build the appropriate `Request`
     /// variant and call this.
-    // NOTE: unused until Task 9 adds callers; allow keeps `-D warnings` clean.
-    #[allow(dead_code)]
     pub(crate) async fn send(&self, request: Request) -> Result<Response, Error> {
         self.handle.send(request).await
     }
@@ -114,4 +108,97 @@ impl Job {
     pub(crate) fn handle(&self) -> DispatcherHandle {
         self.handle.clone()
     }
+
+    /// Round-trip a `ping` to the daemon. Returns the ping RTT.
+    ///
+    /// The RTT is measured from just before the request is handed to the
+    /// dispatcher through to the moment the response is received. It
+    /// therefore includes serialization, async-channel enqueue, socket
+    /// write, server processing, socket read, deserialization, and
+    /// oneshot delivery — appropriate for a health-check heartbeat, but
+    /// not a low-level network latency measurement.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Transport`] if the socket is closed; [`Error::Protocol`]
+    /// if the response shape is unexpected.
+    pub async fn ping(&self) -> Result<std::time::Duration, Error> {
+        let id = self.ids.next();
+        let start = std::time::Instant::now();
+        let resp = self.send(Request::Ping { id: id.clone() }).await?;
+        match resp {
+            Response::Pong { id: got } if got == id => Ok(start.elapsed()),
+            ref other => Err(unexpected(other)),
+        }
+    }
+
+    /// Retrieve the daemon's reported version string.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::ping`], plus [`Error::Server`] if the daemon's response
+    /// carries `success: false`.
+    pub async fn server_version(&self) -> Result<String, Error> {
+        let id = self.ids.next();
+        let resp = self.send(Request::GetVersion { id: id.clone() }).await?;
+        match resp {
+            Response::Version {
+                id: got,
+                success,
+                version,
+                ..
+            } if got == id => {
+                if success {
+                    Ok(version)
+                } else {
+                    Err(server_failed("server_version"))
+                }
+            }
+            ref other => Err(unexpected(other)),
+        }
+    }
+
+    /// Retrieve the current Db2 job name on the daemon.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::ping`], plus [`Error::Server`] if the daemon's response
+    /// carries `success: false`.
+    pub async fn db_job_name(&self) -> Result<String, Error> {
+        let id = self.ids.next();
+        let resp = self.send(Request::GetDbJob { id: id.clone() }).await?;
+        match resp {
+            Response::DbJob {
+                id: got,
+                success,
+                job,
+                ..
+            } if got == id => {
+                if success {
+                    Ok(job)
+                } else {
+                    Err(server_failed("db_job_name"))
+                }
+            }
+            ref other => Err(unexpected(other)),
+        }
+    }
+}
+
+fn unexpected(response: &Response) -> Error {
+    use crate::error::ProtocolError;
+    Error::from(ProtocolError::UnknownResponseType(format!(
+        "unexpected variant: {response:?}"
+    )))
+}
+
+fn server_failed(method: &str) -> Error {
+    use crate::error::ServerError;
+    Error::from(ServerError {
+        message: format!("daemon returned success=false for {method}"),
+        sqlstate: None,
+        sqlcode: None,
+        job_name: None,
+        diagnostics: vec![],
+    })
 }
