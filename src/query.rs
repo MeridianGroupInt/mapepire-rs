@@ -397,6 +397,111 @@ impl Rows {
             },
         )
     }
+
+    /// Eagerly materialize all rows into `Vec<T>` via `serde::Deserialize`.
+    ///
+    /// Consumes `self`, drives [`Rows::stream`] to exhaustion, and
+    /// deserializes each row's JSON object into `T`.
+    ///
+    /// Stream-level errors (transport, protocol, server-side) propagate
+    /// before per-row decode errors: the stream is fully collected first,
+    /// then each [`Result<T, Error>`] is folded via [`Iterator::collect`].
+    ///
+    /// # Note
+    ///
+    /// The entire result set is held in memory until the returned `Vec`
+    /// is dropped. For large result sets prefer [`Rows::stream`] to
+    /// process rows incrementally.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Transport`] / [`Error::Protocol`] / [`Error::Server`] for
+    /// paging failures; [`Error::Decode`] for per-row deserialization
+    /// failures.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// #[derive(serde::Deserialize)]
+    /// struct Stat {
+    ///     name: String,
+    ///     count: i64,
+    /// }
+    /// let rows = job.execute("SELECT name, count FROM stats").await?;
+    /// let stats: Vec<Stat> = rows.into_typed().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn into_typed<T>(self) -> Result<Vec<T>, Error>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        use futures::TryStreamExt;
+        self.stream()
+            .map_ok(|row| {
+                serde_json::from_value::<T>(serde_json::Value::Object(row.data)).map_err(|e| {
+                    Error::Decode {
+                        column: None,
+                        source: crate::error::DecodeError::Serde(e.to_string()),
+                    }
+                })
+            })
+            .try_collect::<Vec<Result<T, Error>>>()
+            .await?
+            .into_iter()
+            .collect()
+    }
+
+    /// Eagerly materialize all rows into `Vec<Row>`.
+    ///
+    /// Consumes `self` and drives [`Rows::stream`] to exhaustion via
+    /// [`futures::TryStreamExt::try_collect`].
+    ///
+    /// # Note
+    ///
+    /// The entire result set is held in memory until the returned `Vec`
+    /// is dropped. For large result sets prefer [`Rows::stream`] to
+    /// process rows incrementally.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Transport`] / [`Error::Protocol`] / [`Error::Server`] for
+    /// paging failures.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, Row, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job
+    ///     .execute("SELECT EMPNO, FIRSTNME FROM CORPDATA.EMPLOYEE")
+    ///     .await?;
+    /// let all_rows: Vec<Row> = rows.into_dynamic().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn into_dynamic(self) -> Result<Vec<Row>, Error> {
+        use futures::TryStreamExt;
+        self.stream().try_collect().await
+    }
 }
 
 /// A single result-set row returned by [`Rows::stream`].
