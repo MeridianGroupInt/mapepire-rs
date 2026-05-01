@@ -10,6 +10,37 @@
 //!
 //! See `AGENTS.md` at the repository root for contributor and AI-assistant
 //! conventions.
+//!
+//! ## Building a `DaemonServer`
+//!
+//! ```
+//! use mapepire::{DaemonServer, TlsConfig};
+//!
+//! let server = DaemonServer::builder()
+//!     .host("ibmi.example.com")
+//!     .user("DCURTIS")
+//!     .password("hunter2".to_string())
+//!     .tls(TlsConfig::Verified)
+//!     .build()
+//!     .expect("missing required field");
+//!
+//! assert_eq!(server.port, DaemonServer::DEFAULT_PORT);
+//! ```
+//!
+//! ## Encoding a request
+//!
+//! ```
+//! use mapepire::protocol::request::Request;
+//!
+//! let r = Request::Sql {
+//!     id: "1".into(),
+//!     sql: "SELECT 1 FROM SYSIBM.SYSDUMMY1".into(),
+//!     rows: None,
+//!     parameters: None,
+//! };
+//! let json = serde_json::to_string(&r).expect("serialize");
+//! assert!(json.contains(r#""type":"sql""#));
+//! ```
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
