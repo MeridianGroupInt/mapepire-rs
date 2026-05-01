@@ -20,6 +20,7 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
     "ISC",
     "Unicode-DFS-2016",
     "Unicode-3.0",
@@ -32,7 +33,16 @@ exceptions = []
 multiple-versions = "deny"
 wildcards = "deny"
 highlight = "all"
-skip = []
+skip = [
+    # WASI-only deps pulled twice via getrandom 0.3 (proptest path) and
+    # getrandom 0.4 (tempfile path). They are cfg(target_os = "wasi")-only
+    # so the duplicates never reach our supported Linux/macOS/Windows
+    # builds. Re-evaluate when the upstream `tempfile` / `proptest` /
+    # `rand` deps converge their getrandom major versions.
+    { crate = "getrandom" },
+    { crate = "r-efi" },
+    { crate = "wit-bindgen" },
+]
 skip-tree = []
 
 [sources]
