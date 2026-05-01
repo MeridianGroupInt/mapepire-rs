@@ -55,6 +55,8 @@ pub mod error;
 pub mod password;
 pub mod protocol;
 
+pub(crate) mod transport;
+
 pub use crate::config::{BuilderError, DaemonServer, DaemonServerBuilder, TlsConfig};
 #[cfg(feature = "serde-config")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde-config")))]
