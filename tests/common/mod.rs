@@ -34,6 +34,13 @@ pub use mock_server::{MockBehavior, spawn_mock};
 /// Uses `TlsConfig::Ca` so this works without the `insecure-tls` feature,
 /// mirroring the production pattern of calling `fetch_certificate` then
 /// pinning the returned DER bytes.
+///
+/// # Note on dead-code lint
+///
+/// Each test binary compiles `common` independently. Test binaries that call
+/// [`spawn_mock`] directly (e.g. `auth_failure.rs`) don't use this helper, so
+/// the lint fires for those compilation units. The allow suppresses that noise.
+#[allow(dead_code)]
 pub async fn spawn_mock_and_connect() -> Job {
     let (addr, cert_der) = spawn_mock(MockBehavior::AcceptAndConnect);
     let server = DaemonServer::builder()
