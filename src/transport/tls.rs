@@ -69,7 +69,7 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> Result<TlsStrea
         TlsConfig::Insecure => {
             return Err(Error::Internal(
                 "TlsConfig::Insecure requires the `insecure-tls` Cargo feature".into(),
-            ))
+            ));
         }
     };
 
@@ -107,7 +107,7 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> Result<TlsStrea
         TlsConfig::Insecure => {
             return Err(Error::Internal(
                 "TlsConfig::Insecure requires the `insecure-tls` Cargo feature".into(),
-            ))
+            ));
         }
     }
 
