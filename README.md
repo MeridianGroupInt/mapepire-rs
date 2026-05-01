@@ -28,6 +28,50 @@ Sibling SDKs exist for [Node.js](https://github.com/Mapepire-IBMi/mapepire-js),
 [C#/.NET](https://github.com/Mapepire-IBMi/mapepire-csharp). This crate
 fills the Rust gap with a parity-first design.
 
+## Quick look
+
+```rust
+use mapepire::{DaemonServer, TlsConfig};
+
+let server = DaemonServer::builder()
+    .host("ibmi.example.com")
+    .user("DCURTIS")
+    .password(std::env::var("MAPEPIRE_PASSWORD").unwrap())
+    .tls(TlsConfig::Verified)
+    .build()
+    .expect("missing required field");
+```
+
+The `password` setter takes ownership of a `String` and immediately moves
+it into a zeroizing buffer (`Password`). The `DaemonServer` struct is
+intentionally not `Clone` — wrap in `Arc<DaemonServer>` to share across
+multiple pools.
+
+## Cargo features
+
+| Feature | Default | Purpose |
+|---|---|---|
+| `rustls-tls` | **on** | Pure-Rust TLS via `rustls` (target for v0.2 transport) |
+| `native-tls` | off | OS-platform TLS via `native-tls` (alternate v0.2 backend) |
+| `insecure-tls` | off | Compile-time gate for `TlsConfig::Insecure` (skip server-cert validation; **never use in production**) |
+| `serde-config` | off | `DaemonServerSpec` DTO for loading from config files (TOML/YAML/JSON via consumer's choice of parser) |
+
+A `compile_error!` guard fires when neither `rustls-tls` nor `native-tls`
+is enabled — disabling default features requires an explicit alternate
+TLS backend selection.
+
+## Roadmap
+
+- **v0.1** *(in progress)* — protocol foundation (types, error taxonomy,
+  configuration; full Request/Response wire surface; insta + proptest
+  coverage).
+- **v0.2** — transport, `Job::connect`, `Pool` skeleton.
+- **v0.3** — full pool with `deadpool` integration and reserved
+  connections for transactions.
+- **v0.4** — `tracing` and `metrics` feature flags.
+- **v1.0** — examples, real-IBM-i CI, donation proposal to the
+  [Mapepire-IBMi](https://github.com/Mapepire-IBMi) GitHub org.
+
 ## Documentation
 
 - [`AGENTS.md`](AGENTS.md) — contributor and AI-assistant guide
