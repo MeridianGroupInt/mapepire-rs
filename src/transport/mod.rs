@@ -7,6 +7,7 @@
 //! See `docs/superpowers/specs/2026-04-29-mapepire-rust-design.md` §6 for
 //! the lifecycle and dispatcher diagrams.
 
+pub(crate) mod socket;
 pub(crate) mod tls;
 
 use std::pin::Pin;
