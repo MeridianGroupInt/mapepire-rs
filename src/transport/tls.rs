@@ -16,16 +16,13 @@ use crate::error::{Error, TransportError};
 /// backend; callers see only the trait bounds the WebSocket layer needs
 /// (`AsyncRead` + `AsyncWrite` + `Unpin` + `Send`).
 #[cfg(feature = "rustls-tls")]
-#[allow(dead_code)]
 pub(crate) type TlsStream = tokio_rustls::client::TlsStream<TcpStream>;
 
 #[cfg(all(not(feature = "rustls-tls"), feature = "native-tls"))]
-#[allow(dead_code)]
 pub(crate) type TlsStream = tokio_native_tls::TlsStream<TcpStream>;
 
 /// Establish a TCP connection then complete the TLS handshake to the
 /// daemon. The returned stream is ready for HTTP/1.1 Upgrade.
-#[allow(dead_code)]
 pub(crate) async fn connect(server: &DaemonServer) -> Result<TlsStream, Error> {
     let addr = format!("{}:{}", server.host, server.port);
     let tcp = TcpStream::connect(&addr)
@@ -36,7 +33,6 @@ pub(crate) async fn connect(server: &DaemonServer) -> Result<TlsStream, Error> {
 }
 
 #[cfg(feature = "rustls-tls")]
-#[allow(dead_code)]
 async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> Result<TlsStream, Error> {
     use rustls::{ClientConfig, RootCertStore};
     use rustls_pki_types::ServerName;
@@ -84,7 +80,6 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> Result<TlsStrea
 }
 
 #[cfg(all(not(feature = "rustls-tls"), feature = "native-tls"))]
-#[allow(dead_code)]
 async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> Result<TlsStream, Error> {
     let mut builder = native_tls::TlsConnector::builder();
 
@@ -123,7 +118,6 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> Result<TlsStrea
 }
 
 #[cfg(all(feature = "insecure-tls", feature = "rustls-tls"))]
-#[allow(dead_code)]
 #[derive(Debug)]
 struct NoVerify;
 
@@ -171,7 +165,6 @@ impl rustls::client::danger::ServerCertVerifier for NoVerify {
 }
 
 #[cfg(feature = "insecure-tls")]
-#[allow(dead_code)]
 fn tracing_warn_insecure_once() {
     use std::sync::Once;
     static WARNED: Once = Once::new();
