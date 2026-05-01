@@ -27,11 +27,6 @@ use crate::transport::tls;
 ///
 /// `Job` receives one of these from [`connect`] and holds the fields for
 /// the lifetime of the connection.
-// NOTE: `#[allow(dead_code)]` until Task 8 adds `Job::connect`, which
-// is the first external caller of `connect`. The internal call graph
-// from `connect` → Dispatcher::spawn / WsTransport::new / tls::connect
-// is live; only this struct and `connect` itself are still un-called.
-#[allow(dead_code)]
 pub(crate) struct ConnectedDispatcher {
     /// Live dispatcher task; owns the WebSocket connection.
     pub(crate) dispatcher: Dispatcher,
@@ -58,7 +53,6 @@ pub(crate) struct ConnectedDispatcher {
 /// [`Error::Internal`] if the WebSocket upgrade fails,
 /// [`Error::Auth`] if the daemon rejects the credentials, or
 /// [`Error::Protocol`] if the response does not match the expected shape.
-#[allow(dead_code)]
 pub(crate) async fn connect(server: &DaemonServer) -> Result<ConnectedDispatcher, Error> {
     // 1. TCP + TLS.
     let tls_stream = tls::connect(server).await?;

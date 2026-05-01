@@ -4,9 +4,17 @@
 //! cloud-friendly access layer for **Db2 for IBM i** that exposes the database
 //! over TLS-secured `WebSockets`.
 //!
-//! This crate is the v0.1 protocol foundation: types, error taxonomy, and
-//! configuration. Transport, connection, and pooling land in subsequent
-//! milestones.
+//! `mapepire` is the Rust client SDK for the Mapepire IBM i Db2 access
+//! daemon. v0.2 ships:
+//!
+//! - The wire protocol types (`Request`, `Response`, `QueryResult`, …).
+//! - The crate-wide [`Error`] taxonomy with classification predicates.
+//! - [`DaemonServer`] / [`DaemonServerBuilder`] for connection configuration; [`TlsConfig`] for the
+//!   verification mode.
+//! - [`Password`] — zeroize-on-drop credential newtype.
+//! - [`Job`] — a single open connection to a Mapepire daemon, established via [`Job::connect`].
+//!
+//! Connection pooling lands in v0.3; observability features in v0.4.
 //!
 //! See `AGENTS.md` at the repository root for contributor and AI-assistant
 //! conventions.
@@ -55,6 +63,7 @@ pub mod error;
 pub mod password;
 pub mod protocol;
 
+pub mod job;
 pub(crate) mod transport;
 
 pub use crate::config::{BuilderError, DaemonServer, DaemonServerBuilder, TlsConfig};
@@ -64,6 +73,7 @@ pub use crate::config::{DaemonServerSpec, SpecError, TlsConfigSpec};
 pub use crate::error::{
     DecodeError, DiagnosticItem, Error, ProtocolError, Result, ServerError, TransportError,
 };
+pub use crate::job::Job;
 pub use crate::password::Password;
 pub use crate::protocol::{
     ClMessage, Column, ErrorResponse, IdAllocator, QueryMetaData, QueryResult, Request, RequestId,

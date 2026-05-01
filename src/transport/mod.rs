@@ -43,9 +43,6 @@ impl<T> Transport for T where
 /// Type alias for a boxed dynamic transport — used by `Dispatcher::spawn`.
 pub(crate) type BoxedTransport = Pin<Box<dyn Transport>>;
 
-// Re-exports for `Job` (Task 8). The `unused_imports` allow keeps
-// clippy/rustc happy until Task 8 constructs `Job` via `connect`.
-#[allow(unused_imports)]
+// Re-exports for `Job`.
 pub(crate) use dispatcher::{Dispatcher, DispatcherHandle};
-#[allow(unused_imports)]
 pub(crate) use handshake::{ConnectedDispatcher, connect};
