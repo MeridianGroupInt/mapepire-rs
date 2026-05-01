@@ -32,14 +32,24 @@ impl Password {
         Self(Zeroizing::new(value.into_boxed_str()))
     }
 
-    /// Crate-private accessor for the protocol layer's `connect` request.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Consumed by protocol::request::connect (added in a later task)."
-        )
-    )]
+    /// Borrow the plaintext for wire serialization.
+    ///
+    /// This is the only escape hatch out of the `Zeroize` guarantee.
+    /// Returning `&str` keeps the borrow tied to `self`'s lifetime, so
+    /// the bytes are not extended past the `Password` itself — **as
+    /// long as the caller does not derive an owned copy**. Calling
+    /// `.to_string()` / `.into()` / `.as_bytes().to_vec()` on the
+    /// returned slice creates a non-zeroizing copy on the heap that
+    /// outlives the source `Password`.
+    ///
+    /// The only call site in v0.2 is `transport::handshake::connect`,
+    /// which clones the bytes into the `Connect` wire request via
+    /// `.to_string()`. The cloned `String` lives until the request is
+    /// serialized into outgoing JSON and dropped. The bytes sit in
+    /// unreclaimed heap memory until the allocator reuses the page.
+    /// This is an accepted tradeoff at the wire-protocol boundary,
+    /// documented in `SECURITY.md`. A future revision could thread
+    /// `Zeroizing<String>` through `Request::Connect` to close the gap.
     pub(crate) fn expose(&self) -> &str {
         &self.0
     }

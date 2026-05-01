@@ -30,14 +30,8 @@ use crate::transport::BoxedTransport;
 /// Revisit if real workloads expose contention.
 const SEND_QUEUE_CAPACITY: usize = 64;
 
-// NOTE: every item below carries `#[allow(dead_code)]` because Task 5
-// only lands the dispatcher in isolation; Task 6 (handshake) is what
-// actually invokes `Dispatcher::spawn` and `DispatcherHandle::send`.
-// The allows come off as Task 6 wires real callers in.
-
 /// Outbound message: the serialized request bytes + a slot to deliver
 /// the response into.
-#[allow(dead_code)]
 struct Outbound {
     /// Caller-supplied correlation id used to route the response back.
     id: String,
@@ -49,13 +43,11 @@ struct Outbound {
 }
 
 /// Caller-facing handle for issuing requests through the dispatcher.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct DispatcherHandle {
     tx: mpsc::Sender<Outbound>,
 }
 
-#[allow(dead_code)]
 impl DispatcherHandle {
     /// Send a `Request`. Returns a future that resolves once the matching
     /// `Response` arrives. Dropping the future is cancellation-safe: the
@@ -85,13 +77,11 @@ impl DispatcherHandle {
 
 /// Dispatcher task handle (for joining on shutdown). `Job` keeps it for
 /// the lifetime of the connection; dropping it aborts the dispatcher.
-#[allow(dead_code)]
 pub(crate) struct Dispatcher {
     handle: DispatcherHandle,
     join: JoinHandle<()>,
 }
 
-#[allow(dead_code)]
 impl Dispatcher {
     /// Returns a fresh `DispatcherHandle` cloned from the internal one.
     /// Cheap — `mpsc::Sender` is `Arc`-backed.
@@ -128,7 +118,6 @@ impl Drop for Dispatcher {
 // per-variant id resolution (e.g., a future variant pulling id from a
 // nested struct field) which a merged arm would have to be re-split
 // for anyway.
-#[allow(dead_code)]
 #[allow(clippy::match_same_arms)]
 fn request_id(request: &Request) -> &str {
     match request {
@@ -160,7 +149,6 @@ fn request_id(request: &Request) -> &str {
 //
 // `clippy::match_same_arms`: same rationale as `request_id` — keep one
 // arm per variant as a compile-time exhaustiveness reminder.
-#[allow(dead_code)]
 #[allow(clippy::match_same_arms)]
 fn response_id(response: &Response) -> &str {
     match response {
@@ -180,7 +168,6 @@ fn response_id(response: &Response) -> &str {
     }
 }
 
-#[allow(dead_code)]
 async fn run(mut transport: BoxedTransport, mut rx: mpsc::Receiver<Outbound>) {
     let mut pending: HashMap<String, oneshot::Sender<Result<Response, Error>>> = HashMap::new();
 
@@ -248,7 +235,6 @@ async fn run(mut transport: BoxedTransport, mut rx: mpsc::Receiver<Outbound>) {
     }
 }
 
-#[allow(dead_code)]
 fn drain_pending(
     pending: &mut HashMap<String, oneshot::Sender<Result<Response, Error>>>,
     closed: TransportError,
@@ -262,7 +248,6 @@ fn drain_pending(
     }
 }
 
-#[allow(dead_code)]
 fn drain_pending_with_error(
     pending: &mut HashMap<String, oneshot::Sender<Result<Response, Error>>>,
     err: Error,

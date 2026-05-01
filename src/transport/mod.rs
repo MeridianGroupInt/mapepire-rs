@@ -8,6 +8,7 @@
 //! the lifecycle and dispatcher diagrams.
 
 pub(crate) mod dispatcher;
+pub(crate) mod handshake;
 pub(crate) mod socket;
 pub(crate) mod tls;
 
@@ -23,7 +24,6 @@ use futures::{Sink, Stream};
 /// The `Transport` trait keeps the dispatcher decoupled from the concrete
 /// WebSocket library so we can substitute a mock in unit tests without
 /// spinning a real TLS server.
-#[allow(dead_code)]
 pub(crate) trait Transport:
     Sink<Bytes, Error = crate::error::TransportError>
     + Stream<Item = Result<Bytes, crate::error::TransportError>>
@@ -41,12 +41,11 @@ impl<T> Transport for T where
 }
 
 /// Type alias for a boxed dynamic transport — used by `Dispatcher::spawn`.
-#[allow(dead_code)]
 pub(crate) type BoxedTransport = Pin<Box<dyn Transport>>;
 
-// Re-exports for callers in Task 6 (handshake) and Task 8 (`Job`). The
-// `unused_imports` allow keeps clippy/rustc happy until Task 6 wires
-// `Dispatcher::spawn` into a code path that's actually exercised; the
-// dispatcher chain otherwise remains dead through the end of Task 5.
+// Re-exports for `Job` (Task 8). The `unused_imports` allow keeps
+// clippy/rustc happy until Task 8 constructs `Job` via `connect`.
 #[allow(unused_imports)]
 pub(crate) use dispatcher::{Dispatcher, DispatcherHandle};
+#[allow(unused_imports)]
+pub(crate) use handshake::{ConnectedDispatcher, connect};

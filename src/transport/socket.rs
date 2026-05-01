@@ -19,14 +19,12 @@ pin_project! {
     /// Adapter that exposes a `tokio_tungstenite::WebSocketStream` as a
     /// `Sink<Bytes>` + `Stream<Item = Result<Bytes>>` so the dispatcher
     /// stays oblivious to WebSocket framing details.
-    #[allow(dead_code)]
     pub(crate) struct WsTransport {
         #[pin]
         inner: WebSocketStream<TlsStream>,
     }
 }
 
-#[allow(dead_code)]
 impl WsTransport {
     /// Wrap an established `WebSocketStream`. Called by the handshake
     /// helper (Task 6) once the TLS upgrade completes.
@@ -93,7 +91,6 @@ impl Stream for WsTransport {
     }
 }
 
-#[allow(dead_code)]
 fn map_ws_err(e: tokio_tungstenite::tungstenite::Error) -> TransportError {
     use tokio_tungstenite::tungstenite::Error as T;
     match e {

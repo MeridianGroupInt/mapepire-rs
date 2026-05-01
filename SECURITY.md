@@ -31,6 +31,14 @@ regressions are treated as **P0**:
 
 - `Password` is never `Clone`, `Serialize`, `Deserialize`, `Display`,
   `PartialEq`, or `Hash`. Its inner buffer is zeroized on drop.
+- **Wire-protocol boundary (accepted tradeoff):** `Password::expose() -> &str`
+  is called by `transport::handshake::connect` to materialize the plaintext
+  into a `String` field of `Request::Connect`. The cloned `String` is not
+  zeroized — it lives in heap memory until dropped after JSON serialization
+  and the allocator reuses the page. A future revision may thread
+  `Zeroizing<String>` through `Request::Connect` to close this gap. This
+  leak is bounded to the connection-establishment moment; the `Password`
+  itself remains zeroize-on-drop.
 - TLS is mandatory. There is no plaintext path to the daemon. The
   `TlsConfig::Insecure` variant must be opted into via the `insecure-tls`
   Cargo feature at compile time and emits a runtime warning when used.
