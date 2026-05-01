@@ -55,3 +55,27 @@ pub async fn spawn_mock_and_connect() -> Job {
         .await
         .expect("Job::connect to mock server")
 }
+
+/// Spawn a mock with the given `behavior`, build a [`DaemonServer`] pointing
+/// at the bound address (with [`TlsConfig::Ca`]`(cert_der)` so the
+/// verified-TLS path is exercised), call [`Job::connect`], and return the
+/// connected [`Job`].
+///
+/// The generalized version of [`spawn_mock_and_connect`] — accepts any
+/// [`MockBehavior`], not just `AcceptAndConnect`. Future Phase 6 tests that
+/// need `Pages`, `ReturnError`, `HalfOpen`, etc. use this directly.
+#[allow(dead_code)]
+pub async fn connect_to_mock(behavior: MockBehavior) -> Job {
+    let (addr, cert_der) = spawn_mock(behavior);
+    let server = DaemonServer::builder()
+        .host(addr.ip().to_string())
+        .port(addr.port())
+        .user("USER")
+        .password("PASS".to_string())
+        .tls(TlsConfig::Ca(cert_der))
+        .build()
+        .expect("test builder fields all set");
+    Job::connect(&server)
+        .await
+        .expect("Job::connect against mock")
+}
