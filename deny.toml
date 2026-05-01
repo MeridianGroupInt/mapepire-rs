@@ -11,7 +11,14 @@ all-features = true
 
 [advisories]
 yanked = "deny"
-ignore = []
+ignore = [
+    # RUSTSEC-2026-0009: time v0.3.45 stack exhaustion via RFC 2822 parsing.
+    # Only affects user-controlled RFC 2822 input — rcgen uses time for X.509
+    # validity dates, not for parsing untrusted strings, so the attack surface
+    # does not apply. The fix (0.3.47) requires Rust 1.88.0; this crate targets
+    # Rust 1.85 and cannot upgrade until the MSRV is raised in a future release.
+    { id = "RUSTSEC-2026-0009", reason = "time is used by rcgen (dev-only) for X.509 date encoding, not RFC 2822 parsing; unreachable code path. Fix requires Rust 1.88.0 which exceeds our MSRV 1.85." },
+]
 
 [licenses]
 allow = [
@@ -42,6 +49,12 @@ skip = [
     { crate = "getrandom" },
     { crate = "r-efi" },
     { crate = "wit-bindgen" },
+    # windows-sys 0.52 is pulled by `ring` (via rcgen dev-dep) and
+    # windows-sys 0.61 by tokio/mio/rustix/etc. The 0.52 copy is
+    # compile-time Windows-only sys glue inside ring's build and never
+    # coexists at link time with the 0.61 copy on our supported targets.
+    # Re-evaluate when ring upgrades its windows-sys dependency.
+    { crate = "windows-sys" },
 ]
 skip-tree = []
 
