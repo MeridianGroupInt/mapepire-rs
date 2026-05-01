@@ -202,6 +202,32 @@ impl Query {
     }
 }
 
+impl Drop for Query {
+    fn drop(&mut self) {
+        // Best-effort sqlclose. We can't await in Drop, so spawn a
+        // fire-and-forget task. If the originating `Job` has already
+        // been dropped, the dispatcher's mpsc receiver is gone —
+        // `handle.send(SqlClose)` returns `TransportError::Closed`
+        // and the `let _` swallows it. The server-side prepared
+        // statement then leaks until the daemon's idle timer reaps it,
+        // matching the protocol's normal idle-expiry path. Acceptable
+        // for v0.2.
+        //
+        // See `spawn_best_effort` for runtime-guard rationale.
+        let handle = self.handle.clone();
+        let cont_id = self.cont_id.clone();
+        // cont_id is server-issued and unique per prepared statement,
+        // so `close-{cont_id}` is also unique among pending dispatcher
+        // entries — no IdAllocator coupling needed.
+        let id = format!("close-{cont_id}");
+        crate::job_helpers::spawn_best_effort(async move {
+            let _ = handle
+                .send(crate::protocol::Request::SqlClose { id, cont_id })
+                .await;
+        });
+    }
+}
+
 /// Result-set rows and paging cursor. Constructed by [`crate::Job::execute`],
 /// [`crate::Job::execute_with`], and [`Query::execute_with`].
 ///

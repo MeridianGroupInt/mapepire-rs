@@ -386,22 +386,16 @@ impl Job {
 impl Drop for Job {
     fn drop(&mut self) {
         // Best-effort exit. We can't await in Drop, so spawn a fire-and-
-        // forget task that issues the Exit. The dispatcher will be aborted
-        // by its own Drop on the `_dispatcher` field immediately after this
-        // fn returns, so the Exit may or may not get through depending on
-        // the runtime's task schedule.
+        // forget task. The dispatcher will be aborted by its own Drop on
+        // the `_dispatcher` field immediately after this fn returns; the
+        // Exit may or may not get through depending on the runtime's task
+        // schedule.
         //
-        // `Handle::try_current()` returns `Err` if no Tokio runtime is
-        // present in the calling thread (e.g., panic-driven test teardown,
-        // or `Job` moved out to a blocking thread). In that case we skip
-        // the Exit silently rather than panicking from a destructor —
-        // which would `process::abort` if anything else were unwinding.
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            let handle = self.handle.clone();
-            let id = self.ids.next();
-            rt.spawn(async move {
-                let _ = handle.send(Request::Exit { id }).await;
-            });
-        }
+        // See `spawn_best_effort` for runtime-guard rationale.
+        let handle = self.handle.clone();
+        let id = self.ids.next();
+        crate::job_helpers::spawn_best_effort(async move {
+            let _ = handle.send(Request::Exit { id }).await;
+        });
     }
 }
