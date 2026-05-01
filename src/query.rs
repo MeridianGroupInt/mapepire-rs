@@ -1,10 +1,25 @@
-//! Prepared-statement handle (`Query`) + result-set types (`Rows`).
+//! Prepared-statement handle (`Query`) + result-set types (`Rows`, `Row`).
 //!
-//! Entry points (`Job::prepare`, `Job::execute`) land in Task 13.
+//! Entry points (`Job::prepare`, `Job::execute`) were added in Task 13.
+//! Paging via `sqlmore` and row-level access land in Task 16.
+
+use std::sync::Arc;
 
 use crate::error::Error;
 use crate::protocol::{IdAllocator, QueryResult, Request, Response};
 use crate::transport::DispatcherHandle;
+
+/// Internal state machine for [`Rows::stream`].
+///
+/// Kept at module level so the closure in `unfold` doesn't define a struct
+/// after local `let` statements (clippy `items_after_statements`).
+struct StreamState {
+    rows: std::vec::IntoIter<serde_json::Map<String, serde_json::Value>>,
+    cont_id: Option<String>,
+    done: bool,
+    handle: DispatcherHandle,
+    ids: Arc<IdAllocator>,
+}
 
 /// Server-side prepared-statement handle.
 ///
@@ -190,22 +205,48 @@ impl Query {
 /// Result-set rows and paging cursor. Constructed by [`crate::Job::execute`],
 /// [`crate::Job::execute_with`], and [`Query::execute_with`].
 ///
-/// The first page of rows is available immediately on the `inner` field.
-/// Additional pages are fetched lazily via `sqlmore` (Task 16).
+/// The first page of rows is available immediately in the `inner` field.
+/// Additional pages are fetched lazily on demand by [`Rows::stream`] via
+/// `sqlmore`.
 ///
 /// Like [`Query`], `Rows` is `!Clone` — it owns the server-side result-set
 /// state. Dropping a fully-consumed `Rows` does not need to issue a close;
 /// dropping a partially-consumed one issues a best-effort `sqlclose`
 /// (Task 18).
-// NOTE: doc example deferred until Task 16/17 adds Row accessors.
-#[allow(dead_code)] // NOTE: fields read first in Task 16 (Rows paging + Row::get/try_get).
+///
+/// # Example
+///
+/// ```no_run
+/// # use mapepire::{DaemonServer, Job, Row, TlsConfig};
+/// # use futures::{StreamExt, pin_mut};
+/// # async fn example() -> mapepire::Result<()> {
+/// # let server = DaemonServer::builder()
+/// #     .host("ibmi.example.com")
+/// #     .user("MYUSER")
+/// #     .password("s3cret".to_string())
+/// #     .tls(TlsConfig::Verified)
+/// #     .build()
+/// #     .expect("missing required field");
+/// let job = Job::connect(&server).await?;
+/// let rows = job
+///     .execute("SELECT EMPNO, FIRSTNME FROM CORPDATA.EMPLOYEE")
+///     .await?;
+/// let stream = rows.stream();
+/// pin_mut!(stream);
+/// while let Some(result) = stream.next().await {
+///     let row: Row = result?;
+///     let empno: String = row.get("EMPNO")?;
+///     let name: String = row.get("FIRSTNME")?;
+///     println!("{empno}: {name}");
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct Rows {
     /// The first page of rows from the initial SQL response.
-    // NOTE: first used in Task 16 (paging / Row accessors).
     inner: QueryResult,
     /// Cloned dispatcher handle for issuing `sqlmore` / `sqlclose`.
-    // NOTE: first used in Task 16 (sqlmore paging).
     handle: DispatcherHandle,
 }
 
@@ -214,5 +255,278 @@ impl Rows {
     /// the connection's [`DispatcherHandle`].
     pub(crate) fn new(inner: QueryResult, handle: DispatcherHandle) -> Self {
         Self { inner, handle }
+    }
+
+    /// Number of rows affected for INSERT/UPDATE/DELETE; `None` for SELECT.
+    #[must_use]
+    pub fn update_count(&self) -> Option<i64> {
+        if self.inner.has_results || self.inner.update_count < 0 {
+            None
+        } else {
+            Some(self.inner.update_count)
+        }
+    }
+
+    /// `true` if the query produced a result set (SELECT), `false` for DML / DDL.
+    #[must_use]
+    pub fn has_results(&self) -> bool {
+        self.inner.has_results
+    }
+
+    /// Wall-clock execution time on the server.
+    ///
+    /// The server reports duration in milliseconds; this method converts
+    /// to [`std::time::Duration`].
+    #[must_use]
+    pub fn execution_time(&self) -> std::time::Duration {
+        std::time::Duration::from_secs_f64(self.inner.execution_time / 1000.0)
+    }
+
+    /// Stream rows as a [`futures::Stream`].
+    ///
+    /// Yields rows from the in-memory first page first. When the first page is
+    /// exhausted and `is_done` is `false`, sends a `sqlmore` request for the
+    /// next page (100 rows per fetch) and continues. Repeats until `is_done`.
+    ///
+    /// Each `Rows::stream` call creates a **fresh [`IdAllocator`]** scoped to
+    /// the stream — this avoids contention with the [`crate::Job`]-level
+    /// allocator. The `cont_id` is the only persistent server-side identifier;
+    /// the per-stream id sequence is safe as long as each call's ids are
+    /// unique within that stream, which the allocator guarantees.
+    ///
+    /// Dropping the stream mid-fetch cancels the in-flight `sqlmore` future.
+    /// The dispatcher will silently discard the response when it arrives —
+    /// no resource leak occurs. (Task 18 will issue a best-effort `sqlclose`
+    /// from [`Rows`]'s `Drop` impl.)
+    ///
+    /// If the server returns an empty page **without** setting `is_done`, the
+    /// stream yields [`Error::Internal`] and halts — this indicates a daemon
+    /// bug and we surface it loudly to prevent an infinite poll loop.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, Row, TlsConfig};
+    /// # use futures::{StreamExt, pin_mut};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job.execute("SELECT EMPNO FROM CORPDATA.EMPLOYEE").await?;
+    /// let stream = rows.stream();
+    /// pin_mut!(stream);
+    /// while let Some(result) = stream.next().await {
+    ///     let row: Row = result?;
+    ///     let empno: String = row.get("EMPNO")?;
+    ///     println!("{empno}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn stream(self) -> impl futures::Stream<Item = Result<Row, Error>> {
+        use futures::stream::unfold;
+
+        let handle = self.handle;
+        let ids = Arc::new(IdAllocator::new());
+
+        unfold(
+            StreamState {
+                rows: self.inner.data.into_iter(),
+                cont_id: self.inner.cont_id,
+                done: self.inner.is_done,
+                handle,
+                ids,
+            },
+            |mut state| async move {
+                if let Some(row_data) = state.rows.next() {
+                    return Some((Ok(Row { data: row_data }), state));
+                }
+                if state.done {
+                    return None;
+                }
+                let cont_id = match &state.cont_id {
+                    Some(c) => c.clone(),
+                    None => return None,
+                };
+                let id = state.ids.next();
+                let resp = state
+                    .handle
+                    .send(Request::SqlMore {
+                        id: id.clone(),
+                        cont_id,
+                        rows: 100,
+                    })
+                    .await;
+                match resp {
+                    Ok(Response::QueryResult(q)) if q.id == id => {
+                        state.rows = q.data.into_iter();
+                        state.done = q.is_done;
+                        state.cont_id = q.cont_id;
+                        if let Some(row_data) = state.rows.next() {
+                            Some((Ok(Row { data: row_data }), state))
+                        } else if state.done {
+                            None
+                        } else {
+                            // Empty page without is_done is a daemon bug. Surface it as
+                            // Error::Internal and terminate the stream — set done = true so a
+                            // careless caller who polls again gets None instead of repeatedly
+                            // re-issuing sqlmore against the same misbehaving cursor.
+                            state.done = true;
+                            Some((
+                                Err(Error::Internal(
+                                    "server returned empty page without is_done".into(),
+                                )),
+                                state,
+                            ))
+                        }
+                    }
+                    Ok(Response::Error(e)) => {
+                        Some((Err(crate::job_helpers::server_error(e)), state))
+                    }
+                    // Defensive catch-all: the dispatcher routes responses by id, so a
+                    // mismatched-id QueryResult or any other variant arriving here would
+                    // indicate a dispatcher routing bug. Surface as Error::Protocol.
+                    Ok(other) => Some((Err(crate::job_helpers::unexpected(&other)), state)),
+                    Err(e) => Some((Err(e), state)),
+                }
+            },
+        )
+    }
+}
+
+/// A single result-set row returned by [`Rows::stream`].
+///
+/// Values are stored as a JSON object keyed by column name. Use [`Row::get`]
+/// to deserialize a column value into a Rust type, or [`Row::try_get`] when
+/// you want to distinguish "column absent" from "decode failure".
+///
+/// `Row` derives `Clone`, which deep-copies the inner column map. For
+/// wide rows or large text/CLOB columns this can be expensive — prefer
+/// borrowing where possible.
+///
+/// # Example
+///
+/// ```no_run
+/// # use mapepire::{DaemonServer, Job, Row, TlsConfig};
+/// # use futures::{StreamExt, pin_mut};
+/// # async fn example() -> mapepire::Result<()> {
+/// # let server = DaemonServer::builder()
+/// #     .host("ibmi.example.com")
+/// #     .user("MYUSER")
+/// #     .password("s3cret".to_string())
+/// #     .tls(TlsConfig::Verified)
+/// #     .build()
+/// #     .expect("missing required field");
+/// let job = Job::connect(&server).await?;
+/// let rows = job
+///     .execute("SELECT EMPNO, SALARY FROM CORPDATA.EMPLOYEE")
+///     .await?;
+/// let stream = rows.stream();
+/// pin_mut!(stream);
+/// if let Some(result) = stream.next().await {
+///     let row: Row = result?;
+///     let empno: String = row.get("EMPNO")?;
+///     let salary: Option<f64> = row.try_get("SALARY").and_then(|r| r.ok());
+///     println!("{empno}: {salary:?}");
+/// }
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct Row {
+    data: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Row {
+    /// Get a typed value by column name.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Decode`] if the column is missing or the value can't be
+    /// deserialized as `T`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, Row, TlsConfig};
+    /// # use futures::{StreamExt, pin_mut};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job.execute("SELECT 1 AS N FROM SYSIBM.SYSDUMMY1").await?;
+    /// let stream = rows.stream();
+    /// pin_mut!(stream);
+    /// if let Some(result) = stream.next().await {
+    ///     let row = result?;
+    ///     let n: i64 = row.get("N")?;
+    ///     assert_eq!(n, 1);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get<T: serde::de::DeserializeOwned>(&self, column: &str) -> Result<T, Error> {
+        use crate::error::DecodeError;
+        let value = self.data.get(column).ok_or_else(|| Error::Decode {
+            column: Some(column.to_owned()),
+            source: DecodeError::MissingColumn(column.to_owned()),
+        })?;
+        T::deserialize(value).map_err(|e| Error::Decode {
+            column: Some(column.to_owned()),
+            source: DecodeError::Serde(e.to_string()),
+        })
+    }
+
+    /// Same as [`Row::get`] but returns `None` if the column is missing
+    /// (instead of [`Error::Decode`]), and `Some(Err(...))` if the value
+    /// exists but cannot be deserialized as `T`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, Row, TlsConfig};
+    /// # use futures::{StreamExt, pin_mut};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job.execute("SELECT SALARY FROM CORPDATA.EMPLOYEE").await?;
+    /// let stream = rows.stream();
+    /// pin_mut!(stream);
+    /// if let Some(result) = stream.next().await {
+    ///     let row = result?;
+    ///     // Returns None if "SALARY" column is absent; Some(Err) if present
+    ///     // but not deserializable as f64.
+    ///     let salary: Option<f64> = row.try_get("SALARY").transpose()?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn try_get<T: serde::de::DeserializeOwned>(
+        &self,
+        column: &str,
+    ) -> Option<Result<T, Error>> {
+        use crate::error::DecodeError;
+        let value = self.data.get(column)?;
+        Some(T::deserialize(value).map_err(|e| Error::Decode {
+            column: Some(column.to_owned()),
+            source: DecodeError::Serde(e.to_string()),
+        }))
     }
 }
