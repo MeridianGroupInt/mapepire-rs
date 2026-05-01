@@ -11,6 +11,19 @@ readme = "README.md"
 keywords = ["ibm-i", "db2", "mapepire", "database", "websocket"]
 categories = ["database", "asynchronous"]
 
+# Whitelist what ships in the published package. Cargo always includes
+# Cargo.toml, Cargo.lock, .cargo_vcs_info.json, and Cargo.toml.orig
+# regardless of this list. Everything else (tests/, .github/, contributor
+# docs, dev tooling, snap fixtures, etc.) stays in the repo for
+# contributors and gets dropped from the crates.io tarball.
+include = [
+    "src/**/*.rs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
 [features]
 default = ["rustls-tls"]
 rustls-tls = []
