@@ -177,3 +177,160 @@ fn tracing_warn_insecure_once() {
         );
     });
 }
+
+/// Open a TLS connection with verification **disabled**, capture the server's
+/// leaf certificate, and return its DER-encoded bytes.
+///
+/// This is the canonical bootstrap helper for self-signed Mapepire daemons.
+/// Pin the returned bytes via [`crate::config::TlsConfig::Ca`] for all
+/// subsequent verified connections.
+///
+/// **Security warning:** The connection that returns the bytes is itself
+/// unverified, so a man-in-the-middle attacker could substitute their own
+/// certificate. Always verify the returned DER bytes out-of-band before
+/// trusting them. **Never** skip that verification step in production.
+/// Concretely: compute the SHA-256 fingerprint of the returned DER bytes
+/// (e.g., `openssl x509 -in <der> -inform DER -fingerprint -sha256 -noout`)
+/// and compare against the value the daemon admin reports out-of-band.
+///
+/// Fires the once-per-process insecure-TLS warning so the verification bypass
+/// is visible in the process logs.
+///
+/// # Errors
+///
+/// - [`crate::error::Error::Transport`] for TCP / TLS failures.
+/// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+///
+/// # Example
+///
+/// ```no_run
+/// # async fn example() -> mapepire::Result<()> {
+/// use mapepire::{DaemonServer, TlsConfig};
+///
+/// // Bootstrap: fetch the daemon's self-signed cert (UNVERIFIED).
+/// let der = DaemonServer::fetch_certificate("daemon.example.com", 8076).await?;
+///
+/// // Pin it for subsequent verified connections.
+/// let server = DaemonServer::builder()
+///     .host("daemon.example.com")
+///     .port(8076)
+///     .user("USER")
+///     .password("…".to_string())
+///     .tls(TlsConfig::Ca(der))
+///     .build()
+///     .expect("all fields set");
+/// # Ok(()) }
+/// ```
+#[cfg(all(feature = "insecure-tls", feature = "rustls-tls"))]
+pub async fn fetch_certificate(host: &str, port: u16) -> Result<Vec<u8>, Error> {
+    use rustls::ClientConfig;
+    use rustls_pki_types::ServerName;
+    use tokio_rustls::TlsConnector;
+
+    let addr = format!("{host}:{port}");
+    let tcp = TcpStream::connect(&addr)
+        .await
+        .map_err(|e| Error::from(TransportError::Io(e)))?;
+    tcp.set_nodelay(true).ok();
+
+    tracing_warn_insecure_once();
+
+    let config = ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerify))
+        .with_no_client_auth();
+
+    let connector = TlsConnector::from(Arc::new(config));
+    let dns = ServerName::try_from(host.to_string())
+        .map_err(|_| Error::Internal(format!("invalid hostname: {host}")))?;
+    let stream = connector
+        .connect(dns, tcp)
+        .await
+        .map_err(|e| Error::from(TransportError::Io(e)))?;
+
+    let (_io, session) = stream.get_ref();
+    let chain = session
+        .peer_certificates()
+        .ok_or_else(|| Error::Internal("server did not present a certificate chain".into()))?;
+    let leaf = chain
+        .first()
+        .ok_or_else(|| Error::Internal("server presented an empty certificate chain".into()))?;
+    Ok(leaf.as_ref().to_vec())
+}
+
+/// Open a TLS connection with verification **disabled**, capture the server's
+/// leaf certificate, and return its DER-encoded bytes.
+///
+/// This is the canonical bootstrap helper for self-signed Mapepire daemons.
+/// Pin the returned bytes via [`crate::config::TlsConfig::Ca`] for all
+/// subsequent verified connections.
+///
+/// **Security warning:** The connection that returns the bytes is itself
+/// unverified, so a man-in-the-middle attacker could substitute their own
+/// certificate. Always verify the returned DER bytes out-of-band before
+/// trusting them. **Never** skip that verification step in production.
+/// Concretely: compute the SHA-256 fingerprint of the returned DER bytes
+/// (e.g., `openssl x509 -in <der> -inform DER -fingerprint -sha256 -noout`)
+/// and compare against the value the daemon admin reports out-of-band.
+///
+/// Fires the once-per-process insecure-TLS warning so the verification bypass
+/// is visible in the process logs.
+///
+/// # Errors
+///
+/// - [`crate::error::Error::Transport`] for TCP / TLS failures.
+/// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+///
+/// # Example
+///
+/// ```no_run
+/// # async fn example() -> mapepire::Result<()> {
+/// use mapepire::{DaemonServer, TlsConfig};
+///
+/// // Bootstrap: fetch the daemon's self-signed cert (UNVERIFIED).
+/// let der = DaemonServer::fetch_certificate("daemon.example.com", 8076).await?;
+///
+/// // Pin it for subsequent verified connections.
+/// let server = DaemonServer::builder()
+///     .host("daemon.example.com")
+///     .port(8076)
+///     .user("USER")
+///     .password("…".to_string())
+///     .tls(TlsConfig::Ca(der))
+///     .build()
+///     .expect("all fields set");
+/// # Ok(()) }
+/// ```
+#[cfg(all(
+    feature = "insecure-tls",
+    not(feature = "rustls-tls"),
+    feature = "native-tls"
+))]
+pub async fn fetch_certificate(host: &str, port: u16) -> Result<Vec<u8>, Error> {
+    let addr = format!("{host}:{port}");
+    let tcp = TcpStream::connect(&addr)
+        .await
+        .map_err(|e| Error::from(TransportError::Io(e)))?;
+    tcp.set_nodelay(true).ok();
+
+    tracing_warn_insecure_once();
+
+    let connector = native_tls::TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_hostnames(true)
+        .build()
+        .map_err(|e| Error::Internal(format!("native-tls builder: {e}")))?;
+    let connector = tokio_native_tls::TlsConnector::from(connector);
+    let stream = connector
+        .connect(host, tcp)
+        .await
+        .map_err(|e| Error::Internal(format!("native-tls handshake: {e}")))?;
+
+    let cert = stream
+        .get_ref()
+        .peer_certificate()
+        .map_err(|e| Error::from(TransportError::Io(std::io::Error::other(e))))?
+        .ok_or_else(|| Error::Internal("server did not present a certificate".into()))?;
+    cert.to_der()
+        .map_err(|e| Error::from(TransportError::Io(std::io::Error::other(e))))
+}

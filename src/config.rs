@@ -66,6 +66,58 @@ impl DaemonServer {
     }
 }
 
+/// TLS certificate bootstrap methods.
+#[cfg(feature = "insecure-tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "insecure-tls")))]
+impl DaemonServer {
+    /// Connect to the daemon with TLS verification disabled and return the
+    /// server's leaf certificate as DER bytes. Pin the bytes via
+    /// [`TlsConfig::Ca`] for subsequent verified connections — the canonical
+    /// bootstrap workflow for self-signed daemons.
+    ///
+    /// **Never** use this in production without immediately pinning the
+    /// returned cert. The connection that returns the bytes is itself
+    /// unverified, so a man-in-the-middle attacker could substitute their own
+    /// cert. Verify the returned bytes out-of-band before trusting them.
+    /// Concretely: compute the SHA-256 fingerprint of the returned DER bytes
+    /// (e.g., `openssl x509 -in <der> -inform DER -fingerprint -sha256 -noout`)
+    /// and compare against the value the daemon admin reports out-of-band.
+    ///
+    /// This is an associated function (no `&self`) because callers are
+    /// bootstrapping — they don't have a fully-built [`DaemonServer`] yet.
+    ///
+    /// Requires the `insecure-tls` Cargo feature.
+    ///
+    /// # Errors
+    ///
+    /// - [`crate::error::Error::Transport`] for TCP / TLS failures.
+    /// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> mapepire::Result<()> {
+    /// use mapepire::{DaemonServer, TlsConfig};
+    ///
+    /// // Bootstrap: fetch the daemon's self-signed cert (UNVERIFIED).
+    /// let der = DaemonServer::fetch_certificate("daemon.example.com", 8076).await?;
+    ///
+    /// // Pin it for subsequent verified connections.
+    /// let server = DaemonServer::builder()
+    ///     .host("daemon.example.com")
+    ///     .port(8076)
+    ///     .user("USER")
+    ///     .password("…".to_string())
+    ///     .tls(TlsConfig::Ca(der))
+    ///     .build()
+    ///     .expect("all fields set");
+    /// # Ok(()) }
+    /// ```
+    pub async fn fetch_certificate(host: &str, port: u16) -> Result<Vec<u8>, crate::error::Error> {
+        crate::transport::tls::fetch_certificate(host, port).await
+    }
+}
+
 /// Fluent builder for [`DaemonServer`].
 #[derive(Debug, Default)]
 pub struct DaemonServerBuilder {
