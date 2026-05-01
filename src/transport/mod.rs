@@ -7,6 +7,7 @@
 //! See `docs/superpowers/specs/2026-04-29-mapepire-rust-design.md` §6 for
 //! the lifecycle and dispatcher diagrams.
 
+pub(crate) mod dispatcher;
 pub(crate) mod socket;
 pub(crate) mod tls;
 
@@ -42,3 +43,10 @@ impl<T> Transport for T where
 /// Type alias for a boxed dynamic transport — used by `Dispatcher::spawn`.
 #[allow(dead_code)]
 pub(crate) type BoxedTransport = Pin<Box<dyn Transport>>;
+
+// Re-exports for callers in Task 6 (handshake) and Task 8 (`Job`). The
+// `unused_imports` allow keeps clippy/rustc happy until Task 6 wires
+// `Dispatcher::spawn` into a code path that's actually exercised; the
+// dispatcher chain otherwise remains dead through the end of Task 5.
+#[allow(unused_imports)]
+pub(crate) use dispatcher::{Dispatcher, DispatcherHandle};
