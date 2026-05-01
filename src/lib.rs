@@ -64,6 +64,7 @@ pub mod password;
 pub mod protocol;
 
 pub mod job;
+pub mod query;
 pub(crate) mod transport;
 
 pub use crate::config::{BuilderError, DaemonServer, DaemonServerBuilder, TlsConfig};
@@ -79,3 +80,4 @@ pub use crate::protocol::{
     ClMessage, Column, ErrorResponse, IdAllocator, QueryMetaData, QueryResult, Request, RequestId,
     Response,
 };
+pub use crate::query::{Query, Rows};

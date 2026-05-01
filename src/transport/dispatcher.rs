@@ -43,7 +43,7 @@ struct Outbound {
 }
 
 /// Caller-facing handle for issuing requests through the dispatcher.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct DispatcherHandle {
     tx: mpsc::Sender<Outbound>,
 }
