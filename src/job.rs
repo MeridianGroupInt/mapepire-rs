@@ -93,11 +93,13 @@ impl Job {
         self.handle.send(request).await
     }
 
-    /// Crate-private accessor for the `IdAllocator` (used by `Query` to
-    /// stamp ids on `execute` / `sqlmore` / `sqlclose` requests).
-    // NOTE: unused until the SQL tasks (Task 13+) are added.
-    #[allow(dead_code)]
-    pub(crate) fn ids(&self) -> &IdAllocator {
+    /// Return the [`IdAllocator`] shared by this connection.
+    ///
+    /// Consumers pass this to [`crate::Query::execute`] /
+    /// [`crate::Query::execute_with`] / [`crate::Query::execute_batch`] so
+    /// that correlation ids are unique across all requests on the same `Job`.
+    #[must_use]
+    pub fn ids(&self) -> &IdAllocator {
         &self.ids
     }
 
@@ -197,8 +199,8 @@ impl Job {
             Response::QueryResult(q) if q.id == id => {
                 Ok(crate::query::Rows::new(q, self.handle.clone()))
             }
-            Response::Error(e) => Err(server_error(e)),
-            ref other => Err(unexpected(other)),
+            Response::Error(e) => Err(crate::job_helpers::server_error(e)),
+            ref other => Err(crate::job_helpers::unexpected(other)),
         }
     }
 
@@ -238,8 +240,8 @@ impl Job {
             Response::PreparedStatement {
                 id: got, cont_id, ..
             } if got == id => Ok(crate::query::Query::new(cont_id, self.handle.clone())),
-            Response::Error(e) => Err(server_error(e)),
-            ref other => Err(unexpected(other)),
+            Response::Error(e) => Err(crate::job_helpers::server_error(e)),
+            ref other => Err(crate::job_helpers::unexpected(other)),
         }
     }
 
@@ -262,7 +264,7 @@ impl Job {
         let resp = self.send(Request::Ping { id: id.clone() }).await?;
         match resp {
             Response::Pong { id: got } if got == id => Ok(start.elapsed()),
-            ref other => Err(unexpected(other)),
+            ref other => Err(crate::job_helpers::unexpected(other)),
         }
     }
 
@@ -285,10 +287,10 @@ impl Job {
                 if success {
                     Ok(version)
                 } else {
-                    Err(server_failed("server_version"))
+                    Err(crate::job_helpers::server_failed("server_version"))
                 }
             }
-            ref other => Err(unexpected(other)),
+            ref other => Err(crate::job_helpers::unexpected(other)),
         }
     }
 
@@ -311,41 +313,10 @@ impl Job {
                 if success {
                     Ok(job)
                 } else {
-                    Err(server_failed("db_job_name"))
+                    Err(crate::job_helpers::server_failed("db_job_name"))
                 }
             }
-            ref other => Err(unexpected(other)),
+            ref other => Err(crate::job_helpers::unexpected(other)),
         }
     }
-}
-
-fn unexpected(response: &Response) -> Error {
-    use crate::error::ProtocolError;
-    Error::from(ProtocolError::UnknownResponseType(format!(
-        "unexpected variant: {response:?}"
-    )))
-}
-
-fn server_failed(method: &str) -> Error {
-    use crate::error::ServerError;
-    Error::from(ServerError {
-        message: format!("daemon returned success=false for {method}"),
-        sqlstate: None,
-        sqlcode: None,
-        job_name: None,
-        diagnostics: vec![],
-    })
-}
-
-fn server_error(e: crate::protocol::ErrorResponse) -> Error {
-    use crate::error::ServerError;
-    Error::from(ServerError {
-        message: e
-            .error
-            .unwrap_or_else(|| "daemon returned error response with no message".to_string()),
-        sqlstate: e.sqlstate,
-        sqlcode: e.sqlcode,
-        job_name: e.job,
-        diagnostics: vec![],
-    })
 }

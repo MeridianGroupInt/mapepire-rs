@@ -64,6 +64,7 @@ pub mod password;
 pub mod protocol;
 
 pub mod job;
+pub(crate) mod job_helpers;
 pub mod query;
 pub(crate) mod transport;
 
