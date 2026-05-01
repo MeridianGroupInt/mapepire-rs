@@ -319,4 +319,89 @@ impl Job {
             ref other => Err(crate::job_helpers::unexpected(other)),
         }
     }
+
+    /// Run an IBM i CL command.
+    ///
+    /// Returns the first [`crate::protocol::ClMessage`] from the daemon's
+    /// response. The full message list surfaces in a future v0.3+ typed
+    /// `CommandResult`; for v0.2 this is a best-effort single-message view.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::execute`], plus [`Error::Server`] if the daemon returns
+    /// `success: false`, or [`Error::Internal`] if the daemon returns an
+    /// empty message list despite `success: true`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// // DSPLIB emits a CPF2102 completion message — a single ClMessage.
+    /// let msg = job.cl("DSPLIB MYLIB").await?;
+    /// if let Some(text) = msg.text {
+    ///     println!("CL message: {text}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn cl(&self, command: &str) -> Result<crate::protocol::ClMessage, Error> {
+        let id = self.ids.next();
+        let resp = self
+            .send(Request::Cl {
+                id: id.clone(),
+                cmd: command.to_owned(),
+            })
+            .await?;
+        match resp {
+            Response::ClResult {
+                id: got,
+                success,
+                messages,
+                ..
+            } if got == id => {
+                if !success {
+                    return Err(crate::job_helpers::server_failed("cl"));
+                }
+                // Return the first message; the full message list surfaces
+                // in a future v0.3+ typed CommandResult (v0.2 limitation).
+                messages.into_iter().next().ok_or_else(|| {
+                    Error::Internal("daemon returned ClResult with no messages".to_string())
+                })
+            }
+            Response::Error(e) => Err(crate::job_helpers::server_error(e)),
+            ref other => Err(crate::job_helpers::unexpected(other)),
+        }
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        // Best-effort exit. We can't await in Drop, so spawn a fire-and-
+        // forget task that issues the Exit. The dispatcher will be aborted
+        // by its own Drop on the `_dispatcher` field immediately after this
+        // fn returns, so the Exit may or may not get through depending on
+        // the runtime's task schedule.
+        //
+        // `Handle::try_current()` returns `Err` if no Tokio runtime is
+        // present in the calling thread (e.g., panic-driven test teardown,
+        // or `Job` moved out to a blocking thread). In that case we skip
+        // the Exit silently rather than panicking from a destructor —
+        // which would `process::abort` if anything else were unwinding.
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let handle = self.handle.clone();
+            let id = self.ids.next();
+            rt.spawn(async move {
+                let _ = handle.send(Request::Exit { id }).await;
+            });
+        }
+    }
 }
