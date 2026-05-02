@@ -25,6 +25,7 @@ use mapepire::protocol::{ErrorResponse, QueryResult, Request, Response};
 use rustls::ServerConfig;
 use rustls_pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -95,6 +96,30 @@ pub enum MockBehavior {
     /// scenario for timeout tests.
     // NOTE: used by Task 30 (PRO-426) integration test for half-open socket.
     HalfOpen,
+
+    /// Accept connect with success, then on the FIRST [`Request::Ping`] received,
+    /// fire the contained oneshot signal and DROP the request without responding.
+    /// Subsequent requests are answered normally ([`Response::Pong`] for any
+    /// non-Exit request; clean close on [`Request::Exit`]).
+    ///
+    /// This variant powers the deterministic in-flight cancellation test in
+    /// `tests/cancellation.rs`. The test races a `biased` `tokio::select!` between
+    /// the signal receiver and the in-flight `job.ping()` future: once the mock
+    /// reports it has *seen* the request, the test arm is taken and the ping
+    /// future is dropped mid-await, exercising the dispatcher's cancellation
+    /// path (`oneshot::Receiver` drops; pending `HashMap` entry reaped on next reply).
+    ///
+    /// The sender is wrapped in `Arc<Mutex<Option<...>>>` so the variant can
+    /// still derive `Clone` (needed by the existing `MockBehavior` shape) and so
+    /// `run_mock` can `take()` it on first use. The mock takes the sender once;
+    /// all later pings see `None` and respond normally.
+    // NOTE: used by Cleanup E (PRO-???) deterministic cancellation integration test.
+    SwallowFirstPing {
+        /// One-shot signal fired by the mock the moment it has read (and is about
+        /// to discard) the first `Ping` request. Wrapped to satisfy `Clone` on
+        /// the enclosing enum; only the first take consumes it.
+        signal_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    },
 
     /// Accept connect with success, then respond to the protocol sequence for
     /// prepared statements:
@@ -360,6 +385,54 @@ where
                 match msg {
                     Ok(Message::Close(_)) | Err(_) => break,
                     _ => {} // silently discard
+                }
+            }
+        }
+
+        MockBehavior::SwallowFirstPing { signal_tx } => {
+            send_response!(Response::Connected {
+                id: connect_id,
+                version: MOCK_VERSION.into(),
+                job: MOCK_JOB.into(),
+            });
+            // Take the sender out of the Arc<Mutex<Option<...>>>. After the
+            // first ping fires it, every subsequent ping sees None and gets
+            // a normal Pong.
+            let signal_slot = signal_tx;
+            loop {
+                match recv_request!() {
+                    None => break,
+                    Some(Request::Exit { id }) => {
+                        send_response!(Response::Exited { id });
+                        let _ = sink.send(Message::Close(None)).await;
+                        break;
+                    }
+                    Some(Request::Ping { id }) => {
+                        let taken = signal_slot
+                            .lock()
+                            .expect("SwallowFirstPing signal mutex poisoned")
+                            .take();
+                        match taken {
+                            Some(tx) => {
+                                // Fire the signal AFTER reading the frame off
+                                // the wire. The test's biased select uses this
+                                // edge to cancel the in-flight ping future.
+                                // Send-failure is benign: it just means the
+                                // test already moved on (e.g., dropped the rx).
+                                let _ = tx.send(());
+                                // Intentionally DO NOT respond; the dispatcher's
+                                // pending entry will be reaped when a later
+                                // (matched) response arrives or on shutdown.
+                            }
+                            None => {
+                                send_response!(Response::Pong { id });
+                            }
+                        }
+                    }
+                    Some(req) => {
+                        let id = request_id(&req);
+                        send_response!(Response::Pong { id });
+                    }
                 }
             }
         }

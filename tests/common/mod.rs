@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex};
 use mapepire::protocol::{QueryResult, Request};
 use mapepire::{DaemonServer, Job, TlsConfig};
 pub use mock_server::{MockBehavior, RequestRecorder, spawn_mock};
+use tokio::sync::oneshot;
 
 /// Spawn a mock with [`MockBehavior::AcceptAndConnect`], build a
 /// [`DaemonServer`] pointing at the bound address (with
@@ -52,6 +53,39 @@ pub async fn spawn_mock_and_connect() -> Job {
         .user("TESTUSER")
         .password("testpass".to_string())
         .tls(TlsConfig::Ca(cert_der))    // pin the mock's self-signed cert
+        .build()
+        .expect("build DaemonServer");
+    Job::connect(&server)
+        .await
+        .expect("Job::connect to mock server")
+}
+
+/// Spawn a mock with [`MockBehavior::SwallowFirstPing`] holding the given
+/// `signal_tx`, build a [`DaemonServer`] with [`TlsConfig::Ca`] pinning, call
+/// [`Job::connect`], and return the connected [`Job`].
+///
+/// The mock fires `signal_tx` exactly once — on the first [`Request::Ping`]
+/// it observes — and *does not* send a `Pong` for that ping. The deterministic
+/// cancellation test in `tests/cancellation.rs` uses this edge to drop the
+/// in-flight ping future via a `biased` `tokio::select!`, exercising the
+/// dispatcher's cancellation-safety path. Subsequent pings receive normal
+/// [`Response::Pong`] replies, so the test can verify the connection still
+/// works after the cancelled ping.
+///
+/// [`Request::Ping`]: mapepire::protocol::Request::Ping
+/// [`Response::Pong`]: mapepire::protocol::Response::Pong
+#[allow(dead_code)]
+pub async fn spawn_mock_swallow_first_ping_and_connect(signal_tx: oneshot::Sender<()>) -> Job {
+    let behavior = MockBehavior::SwallowFirstPing {
+        signal_tx: Arc::new(Mutex::new(Some(signal_tx))),
+    };
+    let (addr, cert_der) = spawn_mock(behavior);
+    let server = DaemonServer::builder()
+        .host("127.0.0.1")
+        .port(addr.port())
+        .user("TESTUSER")
+        .password("testpass".to_string())
+        .tls(TlsConfig::Ca(cert_der))
         .build()
         .expect("build DaemonServer");
     Job::connect(&server)
