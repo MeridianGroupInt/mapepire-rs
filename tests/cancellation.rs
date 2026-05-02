@@ -79,10 +79,10 @@ async fn test_inflight_ping_cancellation_preserves_connection() {
             // Mock confirmed receipt; dropping the ping future happens
             // implicitly when the select's other arm is discarded.
         }
-        _ = job.ping() => {
+        result = job.ping() => {
             panic!(
-                "ping must not complete: mock SwallowFirstPing is configured to \
-                 swallow the first ping without replying"
+                "ping arm fired unexpectedly: mock SwallowFirstPing never replies \
+                 to the first ping, so this future must remain pending. result = {result:?}"
             );
         }
     }
