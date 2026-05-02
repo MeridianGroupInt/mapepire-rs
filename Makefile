@@ -12,7 +12,7 @@ help:
 	@echo "    build         cargo build (debug)"
 	@echo "    build-release cargo build --release"
 	@echo "    test          cargo test --all-features"
-	@echo "    test-min      cargo test --no-default-features (verifies feature gating)"
+	@echo "    test-min      verifies both rustls-tls and native-tls feature combinations compile and test cleanly"
 	@echo "    test-doc      cargo test --doc"
 	@echo ""
 	@echo "  Code quality:"
@@ -67,7 +67,8 @@ test:
 	cargo test --all-features
 
 test-min:
-	cargo test --no-default-features
+	cargo test --no-default-features --features rustls-tls
+	cargo test --no-default-features --features native-tls
 
 test-doc:
 	cargo test --doc --all-features
