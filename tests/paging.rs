@@ -1,7 +1,7 @@
 //! Phase 6 integration test: paging via sqlmore.
 //!
 //! Spawns a mock with two-page `QueryResult` data: 50 rows on the initial
-//! page (is_done = false, cont_id = Some), 50 more on the next, is_done = true
+//! page (`is_done` = false, `cont_id` = Some), 50 more on the next, `is_done` = true
 //! on the second. Verifies `Rows::stream()` yields all 100 rows in order
 //! across the page boundary.
 
@@ -57,8 +57,8 @@ fn page(start: i64, count: i64, cont_id: Option<&str>, is_done: bool) -> mapepir
 ///
 /// The "exactly 1 sqlmore was sent" assertion is implicit via the row count:
 /// - Zero sqlmores → only the first 50 rows are yielded → `collected.len() == 50`.
-/// - Two sqlmores → the mock's iterator exhausts and triggers its
-///   `expect("mock Pages ran out of pre-baked pages")` panic → test failure.
+/// - Two sqlmores → the mock's iterator exhausts and triggers its `expect("mock Pages ran out of
+///   pre-baked pages")` panic → test failure.
 /// - Exactly one sqlmore → 100 rows total, which is what we assert.
 #[cfg(feature = "rustls-tls")]
 #[tokio::test]
@@ -78,7 +78,10 @@ async fn test_paging_across_two_pages() {
         .execute("SELECT n FROM SCHEMA.NUMBERS")
         .await
         .expect("execute");
-    assert!(rows.has_results(), "SELECT should report has_results = true");
+    assert!(
+        rows.has_results(),
+        "SELECT should report has_results = true"
+    );
 
     let stream = rows.stream();
     pin_mut!(stream);
