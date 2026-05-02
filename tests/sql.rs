@@ -82,9 +82,10 @@ fn dml_query_result(id: &str, count: i64) -> mapepire::QueryResult {
 async fn test_select_returns_rows_with_data() {
     // The mock writes the request id into the QueryResult.id at response time,
     // so we can give a placeholder id here.
-    let job = common::connect_to_mock(common::MockBehavior::Pages(vec![select_query_result(
-        "placeholder",
-    )]))
+    let job = common::connect_to_mock(common::MockBehavior::Pages {
+        pages: vec![select_query_result("placeholder")],
+        recorder: None,
+    })
     .await;
 
     let rows = job
@@ -113,10 +114,10 @@ async fn test_select_returns_rows_with_data() {
 #[cfg(feature = "rustls-tls")]
 #[tokio::test]
 async fn test_dml_returns_update_count() {
-    let job = common::connect_to_mock(common::MockBehavior::Pages(vec![dml_query_result(
-        "placeholder",
-        3,
-    )]))
+    let job = common::connect_to_mock(common::MockBehavior::Pages {
+        pages: vec![dml_query_result("placeholder", 3)],
+        recorder: None,
+    })
     .await;
 
     let rows = job

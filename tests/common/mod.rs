@@ -19,8 +19,11 @@
 
 pub mod mock_server;
 
+use std::sync::{Arc, Mutex};
+
+use mapepire::protocol::{QueryResult, Request};
 use mapepire::{DaemonServer, Job, TlsConfig};
-pub use mock_server::{MockBehavior, spawn_mock};
+pub use mock_server::{MockBehavior, RequestRecorder, spawn_mock};
 
 /// Spawn a mock with [`MockBehavior::AcceptAndConnect`], build a
 /// [`DaemonServer`] pointing at the bound address (with
@@ -78,4 +81,28 @@ pub async fn connect_to_mock(behavior: MockBehavior) -> Job {
     Job::connect(&server)
         .await
         .expect("Job::connect against mock")
+}
+
+/// Spawn a mock with [`MockBehavior::Pages`] wired to a fresh
+/// [`RequestRecorder`], connect a [`Job`], and hand both back to the
+/// caller.
+///
+/// Used by Cleanup D's drop-rows tests: the test consumes the `Job`
+/// (executing SQL, dropping `Rows`) and then asserts on the recorded
+/// requests via the returned `Arc<Mutex<Vec<Request>>>`.
+///
+/// Note: `spawn_close` (the close-firing path) is fire-and-forget — the
+/// `SqlClose` request may not have transited by the time the test thread
+/// runs assertions. Use a bounded polling pattern (see `wait_for` in
+/// `tests/drop_rows.rs`) rather than a fixed sleep, which is fragile
+/// under CI scheduler jitter.
+#[allow(dead_code)]
+pub async fn connect_to_mock_with_recorder(pages: Vec<QueryResult>) -> (Job, RequestRecorder) {
+    let recorder: RequestRecorder = Arc::new(Mutex::new(Vec::<Request>::new()));
+    let behavior = MockBehavior::Pages {
+        pages,
+        recorder: Some(Arc::clone(&recorder)),
+    };
+    let job = connect_to_mock(behavior).await;
+    (job, recorder)
 }

@@ -18,7 +18,7 @@
 //! throughout since panics become test failures.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::{SinkExt, StreamExt};
 use mapepire::protocol::{ErrorResponse, QueryResult, Request, Response};
@@ -28,6 +28,14 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
+
+/// Optional recorder that captures every [`Request`] received by the mock.
+///
+/// Tests that need to assert "the mock observed a particular request" share
+/// the inner `Vec<Request>` between the mock task and the test thread by
+/// cloning the `Arc`. Used by Cleanup D's drop-rows tests to confirm that
+/// best-effort `SqlClose` requests reached the wire.
+pub type RequestRecorder = Arc<Mutex<Vec<Request>>>;
 
 /// Pre-programmed response behavior for a mock server instance.
 ///
@@ -57,11 +65,24 @@ pub enum MockBehavior {
     /// Accept connect with success, then respond to the first
     /// SQL-variant request (`Sql`, `PrepareSqlExecute`, or `Execute`) with
     /// the first entry in `pages`. Subsequent [`Request::SqlMore`] requests
-    /// consume additional entries. Any other request after connect gets a
-    /// [`Response::Pong`].
-    // NOTE: used by Tasks 24 (PRO-420), 26 (PRO-422) integration tests
-    // for SQL one-shot and paging respectively.
-    Pages(Vec<QueryResult>),
+    /// consume additional entries. [`Request::SqlClose`] is acknowledged
+    /// with [`Response::SqlClosed`] (so dispatcher correlation is exercised
+    /// rather than falling through to the catch-all Pong arm). Any other
+    /// request after connect gets a [`Response::Pong`].
+    ///
+    /// When `recorder` is `Some`, every received [`Request`] (after the
+    /// initial Connect) is appended to the shared `Vec`. Tests retain a
+    /// clone of the `Arc` to assert what the mock observed.
+    // NOTE: used by Tasks 24 (PRO-420), 26 (PRO-422), and Cleanup D's
+    // drop-rows tests for SQL one-shot, paging, and cursor-close
+    // observability respectively.
+    Pages {
+        /// Pre-baked [`QueryResult`] pages drained in order.
+        pages: Vec<QueryResult>,
+        /// Optional recorder — when `Some`, every [`Request`] (after
+        /// connect) is appended to the shared `Vec` for test assertions.
+        recorder: Option<RequestRecorder>,
+    },
 
     /// Accept connect with success, then respond to the very next request
     /// (of any type) with the provided [`ErrorResponse`]. After that, exit
@@ -249,36 +270,56 @@ where
             }
         }
 
-        MockBehavior::Pages(mut pages) => {
+        MockBehavior::Pages {
+            pages: mut pages_vec,
+            recorder,
+        } => {
             send_response!(Response::Connected {
                 id: connect_id,
                 version: MOCK_VERSION.into(),
                 job: MOCK_JOB.into(),
             });
-            let mut pages_iter = pages.drain(..);
+            let mut pages_iter = pages_vec.drain(..);
             loop {
                 match recv_request!() {
                     None => break,
-                    Some(Request::Exit { id }) => {
-                        send_response!(Response::Exited { id });
-                        let _ = sink.send(Message::Close(None)).await;
-                        break;
-                    }
-                    Some(
-                        Request::Sql { id, .. }
-                        | Request::PrepareSqlExecute { id, .. }
-                        | Request::Execute { id, .. }
-                        | Request::SqlMore { id, .. },
-                    ) => {
-                        let mut page = pages_iter
-                            .next()
-                            .expect("mock Pages ran out of pre-baked pages");
-                        page.id = id;
-                        send_response!(Response::QueryResult(page));
-                    }
                     Some(req) => {
-                        let id = request_id(&req);
-                        send_response!(Response::Pong { id });
+                        if let Some(rec) = &recorder {
+                            // Test holds the read end of this Mutex and may
+                            // be polling concurrently — push, then release
+                            // the lock immediately. Clone is cheap; Request
+                            // is one heap allocation per text/SQL field.
+                            rec.lock()
+                                .expect("recorder mutex not poisoned")
+                                .push(req.clone());
+                        }
+                        match req {
+                            Request::Exit { id } => {
+                                send_response!(Response::Exited { id });
+                                let _ = sink.send(Message::Close(None)).await;
+                                break;
+                            }
+                            Request::Sql { id, .. }
+                            | Request::PrepareSqlExecute { id, .. }
+                            | Request::Execute { id, .. }
+                            | Request::SqlMore { id, .. } => {
+                                let mut page = pages_iter
+                                    .next()
+                                    .expect("mock Pages ran out of pre-baked pages");
+                                page.id = id;
+                                send_response!(Response::QueryResult(page));
+                            }
+                            Request::SqlClose { id, .. } => {
+                                // Explicit ack so the dispatcher's
+                                // correlation logic isn't relying on the
+                                // Pong fallback.
+                                send_response!(Response::SqlClosed { id, success: true });
+                            }
+                            other => {
+                                let id = request_id(&other);
+                                send_response!(Response::Pong { id });
+                            }
+                        }
                     }
                 }
             }
