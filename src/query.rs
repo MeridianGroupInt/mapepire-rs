@@ -21,6 +21,20 @@ struct StreamState {
     ids: Arc<IdAllocator>,
 }
 
+impl Drop for StreamState {
+    fn drop(&mut self) {
+        // If the stream was dropped mid-iteration with the cursor still
+        // open, fire a best-effort sqlclose. `done` is set when the
+        // server reports `is_done = true` (see `unfold` body), so we
+        // skip the close in the natural-exhaustion path.
+        if !self.done {
+            if let Some(cont_id) = self.cont_id.take() {
+                spawn_close(self.handle.clone(), cont_id);
+            }
+        }
+    }
+}
+
 /// Server-side prepared-statement handle.
 ///
 /// Constructed by [`crate::Job::prepare`]. Holds the `cont_id` assigned by
@@ -204,28 +218,35 @@ impl Query {
 
 impl Drop for Query {
     fn drop(&mut self) {
-        // Best-effort sqlclose. We can't await in Drop, so spawn a
-        // fire-and-forget task. If the originating `Job` has already
-        // been dropped, the dispatcher's mpsc receiver is gone —
-        // `handle.send(SqlClose)` returns `TransportError::Closed`
-        // and the `let _` swallows it. The server-side prepared
-        // statement then leaks until the daemon's idle timer reaps it,
-        // matching the protocol's normal idle-expiry path. Acceptable
-        // for v0.2.
-        //
-        // See `spawn_best_effort` for runtime-guard rationale.
-        let handle = self.handle.clone();
-        let cont_id = self.cont_id.clone();
-        // cont_id is server-issued and unique per prepared statement,
-        // so `close-{cont_id}` is also unique among pending dispatcher
-        // entries — no IdAllocator coupling needed.
-        let id = format!("close-{cont_id}");
-        crate::job_helpers::spawn_best_effort(async move {
-            let _ = handle
-                .send(crate::protocol::Request::SqlClose { id, cont_id })
-                .await;
-        });
+        // Best-effort sqlclose — share the helper with `Drop for Rows`
+        // and the inner `StreamState` so all three call sites use the
+        // same semantics (id format, runtime guard, error swallowing).
+        spawn_close(self.handle.clone(), self.cont_id.clone());
     }
+}
+
+/// Issue a fire-and-forget `sqlclose` for `cont_id` on `handle`.
+///
+/// Shared between `Drop for Query`, `Drop for Rows`, and the inner
+/// `Drop for StreamState` so every cursor-owning destructor uses the
+/// same id format and runtime guard.
+///
+/// If the originating `Job` has already been dropped, the dispatcher's
+/// mpsc receiver is gone — `handle.send(SqlClose)` returns
+/// `TransportError::Closed` and the `let _` swallows it. The server-side
+/// cursor then leaks until the daemon's idle timer reaps it, matching the
+/// protocol's normal idle-expiry path. Acceptable for v0.2.
+///
+/// See [`crate::job_helpers::spawn_best_effort`] for the runtime-guard
+/// rationale.
+pub(crate) fn spawn_close(handle: DispatcherHandle, cont_id: String) {
+    // cont_id is server-issued and unique per cursor / prepared
+    // statement, so `close-{cont_id}` is also unique among pending
+    // dispatcher entries — no IdAllocator coupling needed.
+    let id = format!("close-{cont_id}");
+    crate::job_helpers::spawn_best_effort(async move {
+        let _ = handle.send(Request::SqlClose { id, cont_id }).await;
+    });
 }
 
 /// Result-set rows and paging cursor. Constructed by [`crate::Job::execute`],
@@ -236,9 +257,12 @@ impl Drop for Query {
 /// `sqlmore`.
 ///
 /// Like [`Query`], `Rows` is `!Clone` — it owns the server-side result-set
-/// state. Dropping a fully-consumed `Rows` does not need to issue a close;
-/// dropping a partially-consumed one issues a best-effort `sqlclose`
-/// (Task 18).
+/// state. Dropping a fully-consumed `Rows` (the server set `is_done`) does
+/// not issue a close; dropping a partially-consumed one issues a
+/// best-effort `sqlclose` to release the server-side cursor. Once
+/// [`Rows::stream`] is called the cursor moves into the returned stream's
+/// state, and the same best-effort `sqlclose` fires if the stream is
+/// dropped before exhaustion.
 ///
 /// # Example
 ///
@@ -322,8 +346,11 @@ impl Rows {
     ///
     /// Dropping the stream mid-fetch cancels the in-flight `sqlmore` future.
     /// The dispatcher will silently discard the response when it arrives —
-    /// no resource leak occurs. (Task 18 will issue a best-effort `sqlclose`
-    /// from [`Rows`]'s `Drop` impl.)
+    /// no resource leak occurs. The stream's internal `Drop` then issues a
+    /// best-effort `sqlclose` for the cursor (no `await`, no panic, no
+    /// runtime requirement); if the originating [`crate::Job`] has already
+    /// been dropped the close is dropped too and the daemon's idle timer
+    /// reaps the cursor.
     ///
     /// If the server returns an empty page **without** setting `is_done`, the
     /// stream yields [`Error::Internal`] and halts — this indicates a daemon
@@ -354,16 +381,25 @@ impl Rows {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn stream(self) -> impl futures::Stream<Item = crate::Result<Row>> {
+    pub fn stream(mut self) -> impl futures::Stream<Item = crate::Result<Row>> {
         use futures::stream::unfold;
 
-        let handle = self.handle;
+        // We own the cursor through `self.inner.cont_id`, but we cannot move
+        // fields out of `self` because `Rows` has a `Drop` impl. Instead:
+        //  * `take()` the cont_id (leaves `None`) so `Drop for Rows` no-ops when `self` drops at
+        //    the end of this function — the cursor ownership has transferred to `StreamState`
+        //    cleanly.
+        //  * `take()` the data Vec (leaves an empty Vec) so we don't clone the first page.
+        //  * `clone()` the dispatcher handle (cheap — Arc<…> internally).
+        let cont_id = self.inner.cont_id.take();
+        let data = std::mem::take(&mut self.inner.data);
+        let handle = self.handle.clone();
         let ids = Arc::new(IdAllocator::new());
 
         unfold(
             StreamState {
-                rows: self.inner.data.into_iter(),
-                cont_id: self.inner.cont_id,
+                rows: data.into_iter(),
+                cont_id,
                 done: self.inner.is_done,
                 handle,
                 ids,
@@ -527,6 +563,26 @@ impl Rows {
     pub async fn into_dynamic(self) -> crate::Result<Vec<Row>> {
         use futures::TryStreamExt;
         self.stream().try_collect().await
+    }
+}
+
+impl Drop for Rows {
+    fn drop(&mut self) {
+        // Best-effort sqlclose for the server-side cursor when the user
+        // drops `Rows` *without* having called `stream()` /
+        // `into_typed()` / `into_dynamic()` (each of which transfers
+        // ownership of the cursor into a `StreamState`).
+        //
+        // Skip when the result set was fully delivered in the first
+        // page (`is_done == true`) — the server has already released
+        // the cursor and there's nothing to close. Skip when
+        // `cont_id` is `None` for the same reason, including the
+        // post-`stream()` case where `stream` already `take()`d it.
+        if !self.inner.is_done {
+            if let Some(cont_id) = self.inner.cont_id.take() {
+                spawn_close(self.handle.clone(), cont_id);
+            }
+        }
     }
 }
 

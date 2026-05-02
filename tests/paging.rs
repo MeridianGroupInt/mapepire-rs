@@ -72,7 +72,11 @@ async fn test_paging_across_two_pages() {
         page(50, 50, None, true),
     ];
 
-    let job = common::connect_to_mock(common::MockBehavior::Pages(pages)).await;
+    let job = common::connect_to_mock(common::MockBehavior::Pages {
+        pages,
+        recorder: None,
+    })
+    .await;
 
     let rows = job
         .execute("SELECT n FROM SCHEMA.NUMBERS")
