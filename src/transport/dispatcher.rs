@@ -53,7 +53,7 @@ impl DispatcherHandle {
     /// `Response` arrives. Dropping the future is cancellation-safe: the
     /// pending entry is removed when the receiver drops; any response
     /// that arrives after is silently discarded.
-    pub(crate) async fn send(&self, request: Request) -> Result<Response, Error> {
+    pub(crate) async fn send(&self, request: Request) -> crate::Result<Response> {
         let id = request_id(&request).to_string();
         let bytes = serde_json::to_vec(&request)
             .map(Bytes::from)

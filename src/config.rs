@@ -113,7 +113,7 @@ impl DaemonServer {
     ///     .expect("all fields set");
     /// # Ok(()) }
     /// ```
-    pub async fn fetch_certificate(host: &str, port: u16) -> Result<Vec<u8>, crate::error::Error> {
+    pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> {
         crate::transport::tls::fetch_certificate(host, port).await
     }
 }
