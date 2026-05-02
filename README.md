@@ -15,10 +15,8 @@ Async Rust client SDK for [Mapepire](https://mapepire-ibmi.github.io/) —
 a cloud-friendly access layer for **Db2 for IBM i** that exposes the
 database over TLS-secured WebSockets.
 
-> **Status:** v0.1 in progress (protocol foundation). Not yet on
-> [crates.io](https://crates.io). The full v1.0 surface (transport,
-> connection, pool, observability, examples) lands across the
-> v0.1 → v1.0 milestones.
+> **Status:** v0.2 — transport + Job. Connection works against a Mapepire
+> daemon. Pool / observability arrive in v0.3 and v0.4.
 
 Sibling SDKs exist for [Node.js](https://github.com/Mapepire-IBMi/mapepire-js),
 [Python](https://github.com/Mapepire-IBMi/mapepire-python),
@@ -30,22 +28,41 @@ fills the Rust gap with a parity-first design.
 
 ## Quick look
 
-```rust
-use mapepire::{DaemonServer, TlsConfig};
+```rust,no_run
+use futures::StreamExt;
+use mapepire::{DaemonServer, Job, TlsConfig};
 
-let server = DaemonServer::builder()
-    .host("ibmi.example.com")
-    .user("DCURTIS")
-    .password(std::env::var("MAPEPIRE_PASSWORD").unwrap())
-    .tls(TlsConfig::Verified)
-    .build()
-    .expect("missing required field");
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server = DaemonServer::builder()
+        .host("daemon.example.com")
+        .port(8076)
+        .user("USER")
+        .password("…".to_string())
+        .tls(TlsConfig::Verified)
+        .build()
+        .expect("missing required field");
+
+    let job = Job::connect(&server).await?;
+    println!("connected to {} (job {})", job.version, job.initial_job);
+
+    let rows = job.execute("SELECT NAME, COUNT FROM SCHEMA.STATS").await?;
+    let dynamic = rows.into_dynamic().await?;
+    for row in dynamic {
+        let name: String = row.get("NAME")?;
+        let count: i64 = row.get("COUNT")?;
+        println!("{name}: {count}");
+    }
+    Ok(())
+}
 ```
 
+`Job::connect` performs the full TCP → TLS → WebSocket Upgrade →
+`Connect` handshake and resolves once the daemon confirms the session.
 The `password` setter takes ownership of a `String` and immediately moves
-it into a zeroizing buffer (`Password`). The `DaemonServer` struct is
-intentionally not `Clone` — wrap in `Arc<DaemonServer>` to share across
-multiple pools.
+it into a zeroizing buffer (`Password`). `DaemonServer` is intentionally
+not `Clone` — wrap in `Arc<DaemonServer>` to share across multiple
+connections (pooling lands in v0.3).
 
 ## Cargo features
 
@@ -62,15 +79,14 @@ TLS backend selection.
 
 ## Roadmap
 
-- **v0.1** *(in progress)* — protocol foundation (types, error taxonomy,
-  configuration; full Request/Response wire surface; insta + proptest
-  coverage).
-- **v0.2** — transport, `Job::connect`, `Pool` skeleton.
-- **v0.3** — full pool with `deadpool` integration and reserved
-  connections for transactions.
-- **v0.4** — `tracing` and `metrics` feature flags.
-- **v1.0** — examples, real-IBM-i CI, donation proposal to the
-  [Mapepire-IBMi](https://github.com/Mapepire-IBMi) GitHub org.
+- **v0.1** ✓ — protocol foundation (types, error taxonomy, configuration;
+  full Request/Response wire surface; insta + proptest coverage).
+- **v0.2** ✓ — transport + `Job::connect`; connection works against a
+  Mapepire daemon; full integration-test harness.
+- **v0.3** → connection pool, transactions, retry, `deadpool` integration.
+- **v0.4** → observability: `tracing` integration, OpenTelemetry semantic
+  conventions for database client calls.
+- **v1.0** → IBM-i nightly CI, full sibling-SDK parity, public benchmarks.
 
 ## Documentation
 
