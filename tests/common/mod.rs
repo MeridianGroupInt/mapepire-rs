@@ -91,10 +91,11 @@ pub async fn connect_to_mock(behavior: MockBehavior) -> Job {
 /// (executing SQL, dropping `Rows`) and then asserts on the recorded
 /// requests via the returned `Arc<Mutex<Vec<Request>>>`.
 ///
-/// A small grace sleep (`tokio::time::sleep(Duration::from_millis(50))`)
-/// is typically required at the assertion site, since `spawn_close` is
-/// fire-and-forget and the `SqlClose` may not have transited the wire by
-/// the time the test thread reaches the assertion.
+/// Note: `spawn_close` (the close-firing path) is fire-and-forget — the
+/// `SqlClose` request may not have transited by the time the test thread
+/// runs assertions. Use a bounded polling pattern (see `wait_for` in
+/// `tests/drop_rows.rs`) rather than a fixed sleep, which is fragile
+/// under CI scheduler jitter.
 #[allow(dead_code)]
 pub async fn connect_to_mock_with_recorder(pages: Vec<QueryResult>) -> (Job, RequestRecorder) {
     let recorder: RequestRecorder = Arc::new(Mutex::new(Vec::<Request>::new()));

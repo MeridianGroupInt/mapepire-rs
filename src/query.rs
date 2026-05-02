@@ -434,10 +434,15 @@ impl Rows {
                         } else if state.done {
                             None
                         } else {
-                            // Empty page without is_done is a daemon bug. Surface it as
-                            // Error::Internal and terminate the stream — set done = true so a
-                            // careless caller who polls again gets None instead of repeatedly
-                            // re-issuing sqlmore against the same misbehaving cursor.
+                            // Empty page without is_done is a daemon bug. Issue a best-effort
+                            // close so the server-side cursor doesn't leak waiting for the idle
+                            // timer, then surface Error::Internal and terminate the stream —
+                            // set done = true so a careless caller who polls again gets None
+                            // instead of repeatedly re-issuing sqlmore against the same
+                            // misbehaving cursor.
+                            if let Some(cid) = state.cont_id.take() {
+                                spawn_close(state.handle.clone(), cid);
+                            }
                             state.done = true;
                             Some((
                                 Err(Error::Internal(
