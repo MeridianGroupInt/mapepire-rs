@@ -23,7 +23,7 @@ pub(crate) type TlsStream = tokio_native_tls::TlsStream<TcpStream>;
 
 /// Establish a TCP connection then complete the TLS handshake to the
 /// daemon. The returned stream is ready for HTTP/1.1 Upgrade.
-pub(crate) async fn connect(server: &DaemonServer) -> Result<TlsStream, Error> {
+pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<TlsStream> {
     let addr = format!("{}:{}", server.host, server.port);
     let tcp = TcpStream::connect(&addr)
         .await
@@ -33,7 +33,7 @@ pub(crate) async fn connect(server: &DaemonServer) -> Result<TlsStream, Error> {
 }
 
 #[cfg(feature = "rustls-tls")]
-async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> Result<TlsStream, Error> {
+async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> crate::Result<TlsStream> {
     use rustls::{ClientConfig, RootCertStore};
     use rustls_pki_types::ServerName;
     use tokio_rustls::TlsConnector;
@@ -80,7 +80,7 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> Result<TlsStrea
 }
 
 #[cfg(all(not(feature = "rustls-tls"), feature = "native-tls"))]
-async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> Result<TlsStream, Error> {
+async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> crate::Result<TlsStream> {
     let mut builder = native_tls::TlsConnector::builder();
 
     match &server.tls {
@@ -222,7 +222,7 @@ fn tracing_warn_insecure_once() {
 /// # Ok(()) }
 /// ```
 #[cfg(all(feature = "insecure-tls", feature = "rustls-tls"))]
-pub async fn fetch_certificate(host: &str, port: u16) -> Result<Vec<u8>, Error> {
+pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> {
     use rustls::ClientConfig;
     use rustls_pki_types::ServerName;
     use tokio_rustls::TlsConnector;
@@ -306,7 +306,7 @@ pub async fn fetch_certificate(host: &str, port: u16) -> Result<Vec<u8>, Error> 
     not(feature = "rustls-tls"),
     feature = "native-tls"
 ))]
-pub async fn fetch_certificate(host: &str, port: u16) -> Result<Vec<u8>, Error> {
+pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> {
     let addr = format!("{host}:{port}");
     let tcp = TcpStream::connect(&addr)
         .await

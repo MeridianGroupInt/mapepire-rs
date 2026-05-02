@@ -96,7 +96,7 @@ impl Query {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn execute(&self, ids: &IdAllocator) -> Result<Rows, Error> {
+    pub async fn execute(&self, ids: &IdAllocator) -> crate::Result<Rows> {
         self.execute_inner(ids, None).await
     }
 
@@ -132,7 +132,7 @@ impl Query {
         &self,
         ids: &IdAllocator,
         params: &[serde_json::Value],
-    ) -> Result<Rows, Error> {
+    ) -> crate::Result<Rows> {
         self.execute_inner(ids, Some(params.to_vec())).await
     }
 
@@ -140,7 +140,7 @@ impl Query {
         &self,
         ids: &IdAllocator,
         params: Option<Vec<serde_json::Value>>,
-    ) -> Result<Rows, Error> {
+    ) -> crate::Result<Rows> {
         let id = ids.next();
         let request = Request::Execute {
             id: id.clone(),
@@ -193,7 +193,7 @@ impl Query {
         &self,
         ids: &IdAllocator,
         batches: &[&[serde_json::Value]],
-    ) -> Result<Vec<Rows>, Error> {
+    ) -> crate::Result<Vec<Rows>> {
         let mut out = Vec::with_capacity(batches.len());
         for params in batches {
             out.push(self.execute_with(ids, params).await?);
@@ -354,7 +354,7 @@ impl Rows {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn stream(self) -> impl futures::Stream<Item = Result<Row, Error>> {
+    pub fn stream(self) -> impl futures::Stream<Item = crate::Result<Row>> {
         use futures::stream::unfold;
 
         let handle = self.handle;
@@ -468,7 +468,7 @@ impl Rows {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn into_typed<T>(self) -> Result<Vec<T>, Error>
+    pub async fn into_typed<T>(self) -> crate::Result<Vec<T>>
     where
         T: serde::de::DeserializeOwned,
     {
@@ -524,7 +524,7 @@ impl Rows {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn into_dynamic(self) -> Result<Vec<Row>, Error> {
+    pub async fn into_dynamic(self) -> crate::Result<Vec<Row>> {
         use futures::TryStreamExt;
         self.stream().try_collect().await
     }
@@ -606,7 +606,7 @@ impl Row {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get<T: serde::de::DeserializeOwned>(&self, column: &str) -> Result<T, Error> {
+    pub fn get<T: serde::de::DeserializeOwned>(&self, column: &str) -> crate::Result<T> {
         use crate::error::DecodeError;
         let value = self.data.get(column).ok_or_else(|| Error::Decode {
             column: Some(column.to_owned()),
@@ -652,7 +652,7 @@ impl Row {
     pub fn try_get<T: serde::de::DeserializeOwned>(
         &self,
         column: &str,
-    ) -> Option<Result<T, Error>> {
+    ) -> Option<crate::Result<T>> {
         use crate::error::DecodeError;
         let value = self.data.get(column)?;
         Some(T::deserialize(value).map_err(|e| Error::Decode {

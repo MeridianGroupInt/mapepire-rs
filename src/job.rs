@@ -69,7 +69,7 @@ impl Job {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn connect(server: &DaemonServer) -> Result<Self, Error> {
+    pub async fn connect(server: &DaemonServer) -> crate::Result<Self> {
         let ConnectedDispatcher {
             dispatcher,
             version,
@@ -89,7 +89,7 @@ impl Job {
     /// Send a request through the dispatcher and await the response.
     /// Internal helper — public methods build the appropriate `Request`
     /// variant and call this.
-    pub(crate) async fn send(&self, request: Request) -> Result<Response, Error> {
+    pub(crate) async fn send(&self, request: Request) -> crate::Result<Response> {
         self.handle.send(request).await
     }
 
@@ -141,7 +141,7 @@ impl Job {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn execute(&self, sql: &str) -> Result<crate::query::Rows, Error> {
+    pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
         self.execute_inner(sql, None).await
     }
 
@@ -178,7 +178,7 @@ impl Job {
         &self,
         sql: &str,
         params: &[serde_json::Value],
-    ) -> Result<crate::query::Rows, Error> {
+    ) -> crate::Result<crate::query::Rows> {
         self.execute_inner(sql, Some(params.to_vec())).await
     }
 
@@ -186,7 +186,7 @@ impl Job {
         &self,
         sql: &str,
         params: Option<Vec<serde_json::Value>>,
-    ) -> Result<crate::query::Rows, Error> {
+    ) -> crate::Result<crate::query::Rows> {
         let id = self.ids.next();
         let request = Request::Sql {
             id: id.clone(),
@@ -228,7 +228,7 @@ impl Job {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn prepare(&self, sql: &str) -> Result<crate::query::Query, Error> {
+    pub async fn prepare(&self, sql: &str) -> crate::Result<crate::query::Query> {
         let id = self.ids.next();
         let resp = self
             .send(Request::PrepareSql {
@@ -258,7 +258,7 @@ impl Job {
     ///
     /// [`Error::Transport`] if the socket is closed; [`Error::Protocol`]
     /// if the response shape is unexpected.
-    pub async fn ping(&self) -> Result<std::time::Duration, Error> {
+    pub async fn ping(&self) -> crate::Result<std::time::Duration> {
         let id = self.ids.next();
         let start = std::time::Instant::now();
         let resp = self.send(Request::Ping { id: id.clone() }).await?;
@@ -274,7 +274,7 @@ impl Job {
     ///
     /// As [`Job::ping`], plus [`Error::Server`] if the daemon's response
     /// carries `success: false`.
-    pub async fn server_version(&self) -> Result<String, Error> {
+    pub async fn server_version(&self) -> crate::Result<String> {
         let id = self.ids.next();
         let resp = self.send(Request::GetVersion { id: id.clone() }).await?;
         match resp {
@@ -300,7 +300,7 @@ impl Job {
     ///
     /// As [`Job::ping`], plus [`Error::Server`] if the daemon's response
     /// carries `success: false`.
-    pub async fn db_job_name(&self) -> Result<String, Error> {
+    pub async fn db_job_name(&self) -> crate::Result<String> {
         let id = self.ids.next();
         let resp = self.send(Request::GetDbJob { id: id.clone() }).await?;
         match resp {
@@ -353,7 +353,7 @@ impl Job {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn cl(&self, command: &str) -> Result<crate::protocol::ClMessage, Error> {
+    pub async fn cl(&self, command: &str) -> crate::Result<crate::protocol::ClMessage> {
         let id = self.ids.next();
         let resp = self
             .send(Request::Cl {

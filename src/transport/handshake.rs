@@ -53,7 +53,7 @@ pub(crate) struct ConnectedDispatcher {
 /// [`Error::Internal`] if the WebSocket upgrade fails,
 /// [`Error::Auth`] if the daemon rejects the credentials, or
 /// [`Error::Protocol`] if the response does not match the expected shape.
-pub(crate) async fn connect(server: &DaemonServer) -> Result<ConnectedDispatcher, Error> {
+pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<ConnectedDispatcher> {
     // 1. TCP + TLS.
     let tls_stream = tls::connect(server).await?;
 
