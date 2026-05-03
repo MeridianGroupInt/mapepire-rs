@@ -63,6 +63,8 @@ pub mod error;
 pub mod password;
 pub mod protocol;
 
+pub mod executor;
+pub mod from_row;
 pub mod job;
 pub(crate) mod job_helpers;
 pub mod query;
@@ -75,6 +77,8 @@ pub use crate::config::{DaemonServerSpec, SpecError, TlsConfigSpec};
 pub use crate::error::{
     DecodeError, DiagnosticItem, Error, ProtocolError, Result, ServerError, TransportError,
 };
+pub use crate::executor::Executor;
+pub use crate::from_row::FromRow;
 pub use crate::job::Job;
 pub use crate::password::Password;
 pub use crate::protocol::{
