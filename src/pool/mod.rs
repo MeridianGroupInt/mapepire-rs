@@ -4,14 +4,15 @@
 //! Construct via `Pool::builder`. Acquire a transactional connection via
 //! `Pool::acquire` (returns `Reserved`, added in Task 13).
 
+pub(crate) mod builder;
 pub(crate) mod manager;
 
 // Future siblings (added in subsequent tasks):
-// pub(crate) mod builder;
 // pub(crate) mod pool;
 // pub(crate) mod reserved;
 // pub(crate) mod routing;
 
+pub use builder::{ParameterLogging, PoolBuilder, RecyclingMethod};
 // `pub` (instead of `pub(crate)`) so integration tests in
 // `tests/manager_smoke.rs` can construct `JobManager` directly. The
 // `#[doc(hidden)]` attribute keeps the type out of the rendered rustdoc API
