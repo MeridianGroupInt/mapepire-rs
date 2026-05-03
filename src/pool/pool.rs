@@ -9,6 +9,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Snapshot of pool state — re-exported from `deadpool::Status`.
+///
+/// Exposes `size` (current pool size), `available` (idle connections), and
+/// `waiters` (futures blocked on `pool.get()`). Re-exported here so callers
+/// don't need to depend on `deadpool` directly.
+pub use deadpool::Status as PoolStatus;
 use deadpool::managed::Pool as DeadPool;
 
 use crate::config::DaemonServer;
@@ -131,6 +137,34 @@ impl Pool {
     ) -> crate::Result<crate::query::Rows> {
         let obj = self.get_or_timeout().await?;
         crate::Job::execute_with(&obj, sql, params).await
+    }
+
+    /// Snapshot of pool size, idle, and waiter counts (spec §7.5).
+    ///
+    /// `PoolStatus` is `Copy + Debug`; cheap to call repeatedly. The
+    /// invariant `status().size <= max_size` always holds.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Pool, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let pool = Pool::builder(server).max_size(8).build().await?;
+    /// let s = pool.status();
+    /// assert!(s.size <= 8);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn status(&self) -> PoolStatus {
+        self.inner.status()
     }
 
     /// Check out an `Object<JobManager>` from the underlying deadpool, mapping
