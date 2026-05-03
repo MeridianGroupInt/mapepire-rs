@@ -22,17 +22,15 @@ use crate::pool::routing::Registry;
 /// Construct via [`Pool::builder`]. `Pool` is `Clone` — clones share the
 /// same underlying deadpool runtime and registry.
 ///
-/// `Pool::execute` (Task 11) and `Pool::acquire` (Task 13) land in
-/// subsequent tasks of v0.3 Phase 4 / Phase 5.
-//
-// `dead_code` is allowed here because the consumers of these fields —
-// `Pool::execute` (Task 11 / PRO-441) and `Pool::acquire` (Task 13 /
-// PRO-443) — have not landed yet. The fields are populated by
-// `PoolBuilder::build` (this task) and read in subsequent Phase 4 / 5 tasks.
-#[allow(dead_code)]
+/// `Pool::acquire` (Task 13) lands in a subsequent task of v0.3 Phase 5.
 #[derive(Clone)]
 pub struct Pool {
     pub(crate) inner: DeadPool<JobManager>,
+    // The routing scan landing in Task 23 / PRO-453 will be the first
+    // consumer of `registry`. Until then it's populated by `PoolBuilder::build`
+    // but unread; the field-level `dead_code` allow narrows the suppression
+    // to the one truly-dead field rather than blanket-allowing the struct.
+    #[allow(dead_code)]
     pub(crate) registry: Arc<Registry>,
     pub(crate) acquire_timeout: Option<Duration>,
 }
@@ -59,5 +57,103 @@ impl Pool {
     /// ```
     pub fn builder(server: impl Into<Arc<DaemonServer>>) -> PoolBuilder {
         PoolBuilder::new(server.into())
+    }
+
+    /// Execute a SQL statement on the next-available pooled job.
+    ///
+    /// Naive checkout: `pool.get()` → run on `&Job` → return to pool on
+    /// drop. The least-busy-job routing scan lands in Task 24 / PRO-454.
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::Job::execute`], plus [`crate::Error::PoolExhausted`]
+    /// if the pool's `acquire_timeout` elapses before a connection is
+    /// free. Backend errors during checkout (e.g., a failed
+    /// `JobManager::create` handshake) propagate as the original
+    /// [`crate::Error`] variant.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Pool, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let pool = Pool::builder(server).max_size(2).build().await?;
+    /// let rows = pool.execute("SELECT 1 FROM SYSIBM.SYSDUMMY1").await?;
+    /// # let _ = rows;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
+        let obj = self.get_or_timeout().await?;
+        crate::Job::execute(&obj, sql).await
+    }
+
+    /// Execute a parameterized SQL statement on the next-available pooled job.
+    ///
+    /// # Errors
+    ///
+    /// As [`Pool::execute`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Pool, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let pool = Pool::builder(server).max_size(2).build().await?;
+    /// let rows = pool
+    ///     .execute_with(
+    ///         "SELECT * FROM ORDERS WHERE CUSTNO = ?",
+    ///         &[serde_json::json!(42)],
+    ///     )
+    ///     .await?;
+    /// # let _ = rows;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn execute_with(
+        &self,
+        sql: &str,
+        params: &[serde_json::Value],
+    ) -> crate::Result<crate::query::Rows> {
+        let obj = self.get_or_timeout().await?;
+        crate::Job::execute_with(&obj, sql, params).await
+    }
+
+    /// Check out an `Object<JobManager>` from the underlying deadpool, mapping
+    /// `PoolError` into the crate's [`crate::Error`] type.
+    ///
+    /// `Box::pin` matches the `clippy::large_futures` precedent from Task 8 —
+    /// `inner.get()`'s state machine contains the manager's `create()` future,
+    /// which contains a full TLS handshake + first request/response cycle.
+    ///
+    /// When `acquire_timeout` is `None`, deadpool blocks indefinitely so the
+    /// `PoolError::Timeout` arm is unreachable; the `unwrap_or_default()` →
+    /// `Duration::ZERO` only ever surfaces in the error message itself, never
+    /// as a real elapsed timeout.
+    async fn get_or_timeout(
+        &self,
+    ) -> crate::Result<deadpool::managed::Object<crate::pool::manager::JobManager>> {
+        use deadpool::managed::PoolError;
+        Box::pin(self.inner.get()).await.map_err(|e| match e {
+            PoolError::Timeout(_) => crate::Error::PoolExhausted {
+                timeout: self.acquire_timeout.unwrap_or_default(),
+            },
+            PoolError::Backend(b) => b,
+            other => crate::Error::Internal(format!("pool: {other}")),
+        })
     }
 }
