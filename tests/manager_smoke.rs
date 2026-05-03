@@ -58,3 +58,24 @@ async fn manager_create_and_recycle() {
         status.size
     );
 }
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pool_execute_one_shot() {
+    use common::{MockBehavior, spawn_mock_and_server};
+
+    let server_arc = spawn_mock_and_server(MockBehavior::AcceptAndConnect);
+    let pool = Box::pin(mapepire::Pool::builder(server_arc).max_size(2).build())
+        .await
+        .expect("pool builds");
+
+    // Smoke: just verify Pool::execute makes it through the checkout +
+    // dispatch path. The mock's `AcceptAndConnect` answers post-handshake
+    // requests with `Pong { id }`, but `Job::execute` expects a
+    // `QueryResult` — so the dispatcher will route the response by id and
+    // the caller will surface a protocol mismatch error. The point of this
+    // test is the pool plumbing (get → run → return on drop), not SQL
+    // semantics. Full SQL coverage with a Pages-mock harness lands in
+    // Task 27 / PRO-457; here we just verify the call doesn't panic.
+    let _ = Box::pin(pool.execute("SELECT 1 FROM SYSIBM.SYSDUMMY1")).await;
+}

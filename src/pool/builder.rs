@@ -145,6 +145,7 @@ impl PoolBuilder {
     /// # }
     /// ```
     pub async fn build(self) -> crate::Result<crate::Pool> {
+        use deadpool::Runtime;
         use deadpool::managed::{Pool as DeadPool, Timeouts};
 
         let acquire_timeout = self.acquire_timeout;
@@ -155,8 +156,15 @@ impl PoolBuilder {
 
         let mgr = crate::pool::manager::JobManager::new(self.server);
 
+        // `.runtime(Runtime::Tokio1)` is REQUIRED whenever any timeout is set —
+        // deadpool's builder errors with `NoRuntimeSpecified` otherwise (the
+        // wait timer is driven by the runtime's sleep impl). The crate enables
+        // deadpool's `rt_tokio_1` feature for exactly this reason. We always
+        // set it because the default `acquire_timeout` is `Some(5s)` and
+        // callers who pass `None` still pay nothing for the registration.
         let inner = DeadPool::builder(mgr)
             .max_size(self.max_size)
+            .runtime(Runtime::Tokio1)
             .timeouts(Timeouts {
                 wait: acquire_timeout,
                 create: None,
