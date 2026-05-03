@@ -23,4 +23,4 @@ pub use builder::{ParameterLogging, PoolBuilder, RecyclingMethod};
 // never need to touch `JobManager`. See plan §7.3.
 #[doc(hidden)]
 pub use manager::JobManager;
-pub use pool::Pool;
+pub use pool::{Pool, PoolStatus};
