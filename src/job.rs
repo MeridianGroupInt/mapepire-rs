@@ -39,14 +39,12 @@ pub(crate) struct JobInner {
 /// `Job`). Use a connection pool — added in v0.3 — to share work
 /// across multiple connections.
 pub struct Job {
+    // INVARIANT: `inner` MUST be declared before `_dispatcher`.
+    // Rust drops struct fields top-to-bottom in declaration order (RFC 1857).
+    // `inner` (handle + ids) must drop first so that the best-effort Exit
+    // fire in `Drop for Job` can use the handle before the dispatcher task
+    // is aborted. See PRO-409.
     pub(crate) inner: Arc<JobInner>,
-    // Hold the Dispatcher so dropping the Job aborts the spawned task.
-    // Field-declaration order matters: Rust drops fields top-to-bottom,
-    // so `inner` (and therefore `handle` / `ids`) drops BEFORE
-    // `_dispatcher`. This preserves v0.2's invariant (PRO-409) that
-    // the dispatcher task is aborted only after its handle/ids are
-    // released, so any final `Exit` send from `Drop for Job` can
-    // race ahead of the abort instead of being torn down mid-write.
     _dispatcher: Dispatcher,
 }
 

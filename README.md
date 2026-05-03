@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("missing required field");
 
     let job = Job::connect(&server).await?;
-    println!("connected to {} (job {})", job.version, job.initial_job);
+    println!("connected to {} (job {})", job.version(), job.initial_job());
 
     let rows = job.execute("SELECT NAME, COUNT FROM SCHEMA.STATS").await?;
     let dynamic = rows.into_dynamic().await?;
