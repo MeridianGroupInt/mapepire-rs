@@ -6,11 +6,32 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 use crate::config::DaemonServer;
 use crate::error::Error;
 use crate::protocol::{IdAllocator, Request, Response};
 use crate::transport::{self, ConnectedDispatcher, Dispatcher, DispatcherHandle};
+
+/// Shared inner state of a [`Job`].
+///
+/// Wrapped in [`Arc`] by [`Job`] so v0.3 pool routing (PRO-453) can
+/// hand out [`std::sync::Weak`] references to in-flight requests
+/// without owning the connection. Dispatcher remains a sibling field on
+/// [`Job`] so its abort-on-drop is tied to the `Job`'s lifetime, not
+/// the inner Arc's refcount.
+pub(crate) struct JobInner {
+    pub(crate) handle: DispatcherHandle,
+    pub(crate) ids: Arc<IdAllocator>,
+    pub(crate) version: String,
+    pub(crate) initial_job: String,
+    /// Outstanding-request counter, used by the v0.3 pool router for
+    /// least-loaded selection. Incremented before each `send` and
+    /// decremented after the response settles. Task 5 will widen this
+    /// to `Arc<AtomicU32>` so the dispatcher loop can decrement it
+    /// from its own task.
+    pub(crate) in_flight: AtomicU32,
+}
 
 /// A single open connection to a Mapepire daemon.
 ///
@@ -18,22 +39,22 @@ use crate::transport::{self, ConnectedDispatcher, Dispatcher, DispatcherHandle};
 /// `Job`). Use a connection pool — added in v0.3 — to share work
 /// across multiple connections.
 pub struct Job {
-    handle: DispatcherHandle,
-    ids: Arc<IdAllocator>,
-    /// Daemon-reported version string from the `Connected` response.
-    pub version: String,
-    /// Initial Db2 job name from the `Connected` response.
-    pub initial_job: String,
+    pub(crate) inner: Arc<JobInner>,
     // Hold the Dispatcher so dropping the Job aborts the spawned task.
-    // Must be declared last so it drops after `handle` and `ids`.
+    // Field-declaration order matters: Rust drops fields top-to-bottom,
+    // so `inner` (and therefore `handle` / `ids`) drops BEFORE
+    // `_dispatcher`. This preserves v0.2's invariant (PRO-409) that
+    // the dispatcher task is aborted only after its handle/ids are
+    // released, so any final `Exit` send from `Drop for Job` can
+    // race ahead of the abort instead of being torn down mid-write.
     _dispatcher: Dispatcher,
 }
 
 impl fmt::Debug for Job {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Job")
-            .field("version", &self.version)
-            .field("initial_job", &self.initial_job)
+            .field("version", &self.inner.version)
+            .field("initial_job", &self.inner.initial_job)
             .finish_non_exhaustive()
     }
 }
@@ -65,7 +86,7 @@ impl Job {
     ///     .expect("missing required field");
     ///
     /// let job = Job::connect(&server).await?;
-    /// println!("connected: {} ({})", job.version, job.initial_job);
+    /// println!("connected: {} ({})", job.version(), job.initial_job());
     /// # Ok(())
     /// # }
     /// ```
@@ -78,19 +99,34 @@ impl Job {
         } = transport::connect(server).await?;
         let handle = dispatcher.handle();
         Ok(Self {
-            handle,
-            ids: Arc::new(ids),
-            version,
-            initial_job,
+            inner: Arc::new(JobInner {
+                handle,
+                ids: Arc::new(ids),
+                version,
+                initial_job,
+                in_flight: AtomicU32::new(0),
+            }),
             _dispatcher: dispatcher,
         })
+    }
+
+    /// Daemon-reported version string from the `Connected` response.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.inner.version
+    }
+
+    /// Initial Db2 job name from the `Connected` response.
+    #[must_use]
+    pub fn initial_job(&self) -> &str {
+        &self.inner.initial_job
     }
 
     /// Send a request through the dispatcher and await the response.
     /// Internal helper — public methods build the appropriate `Request`
     /// variant and call this.
     pub(crate) async fn send(&self, request: Request) -> crate::Result<Response> {
-        self.handle.send(request).await
+        self.inner.handle.send(request).await
     }
 
     /// Return the [`IdAllocator`] shared by this connection.
@@ -100,7 +136,7 @@ impl Job {
     /// that correlation ids are unique across all requests on the same `Job`.
     #[must_use]
     pub fn ids(&self) -> &IdAllocator {
-        &self.ids
+        &self.inner.ids
     }
 
     /// Crate-private accessor for the dispatcher handle (used by
@@ -108,7 +144,15 @@ impl Job {
     // NOTE: unused until Task 16 adds `Rows::stream`.
     #[allow(dead_code)]
     pub(crate) fn handle(&self) -> DispatcherHandle {
-        self.handle.clone()
+        self.inner.handle.clone()
+    }
+
+    /// Crate-private accessor for the outstanding-request counter.
+    /// The v0.3 pool router (Task 23) reads this for least-loaded
+    /// connection selection. Not part of the public API.
+    #[allow(dead_code)]
+    pub(crate) fn in_flight(&self) -> &AtomicU32 {
+        &self.inner.in_flight
     }
 
     /// Execute a SQL statement and return the [`crate::query::Rows`] handle.
@@ -187,7 +231,7 @@ impl Job {
         sql: &str,
         params: Option<Vec<serde_json::Value>>,
     ) -> crate::Result<crate::query::Rows> {
-        let id = self.ids.next();
+        let id = self.inner.ids.next();
         let request = Request::Sql {
             id: id.clone(),
             sql: sql.to_owned(),
@@ -197,7 +241,7 @@ impl Job {
         let resp = self.send(request).await?;
         match resp {
             Response::QueryResult(q) if q.id == id => {
-                Ok(crate::query::Rows::new(q, self.handle.clone()))
+                Ok(crate::query::Rows::new(q, self.inner.handle.clone()))
             }
             Response::Error(e) => Err(crate::job_helpers::server_error(e)),
             ref other => Err(crate::job_helpers::unexpected(other)),
@@ -229,7 +273,7 @@ impl Job {
     /// # }
     /// ```
     pub async fn prepare(&self, sql: &str) -> crate::Result<crate::query::Query> {
-        let id = self.ids.next();
+        let id = self.inner.ids.next();
         let resp = self
             .send(Request::PrepareSql {
                 id: id.clone(),
@@ -239,7 +283,7 @@ impl Job {
         match resp {
             Response::PreparedStatement {
                 id: got, cont_id, ..
-            } if got == id => Ok(crate::query::Query::new(cont_id, self.handle.clone())),
+            } if got == id => Ok(crate::query::Query::new(cont_id, self.inner.handle.clone())),
             Response::Error(e) => Err(crate::job_helpers::server_error(e)),
             ref other => Err(crate::job_helpers::unexpected(other)),
         }
@@ -259,7 +303,7 @@ impl Job {
     /// [`Error::Transport`] if the socket is closed; [`Error::Protocol`]
     /// if the response shape is unexpected.
     pub async fn ping(&self) -> crate::Result<std::time::Duration> {
-        let id = self.ids.next();
+        let id = self.inner.ids.next();
         let start = std::time::Instant::now();
         let resp = self.send(Request::Ping { id: id.clone() }).await?;
         match resp {
@@ -275,7 +319,7 @@ impl Job {
     /// As [`Job::ping`], plus [`Error::Server`] if the daemon's response
     /// carries `success: false`.
     pub async fn server_version(&self) -> crate::Result<String> {
-        let id = self.ids.next();
+        let id = self.inner.ids.next();
         let resp = self.send(Request::GetVersion { id: id.clone() }).await?;
         match resp {
             Response::Version {
@@ -301,7 +345,7 @@ impl Job {
     /// As [`Job::ping`], plus [`Error::Server`] if the daemon's response
     /// carries `success: false`.
     pub async fn db_job_name(&self) -> crate::Result<String> {
-        let id = self.ids.next();
+        let id = self.inner.ids.next();
         let resp = self.send(Request::GetDbJob { id: id.clone() }).await?;
         match resp {
             Response::DbJob {
@@ -354,7 +398,7 @@ impl Job {
     /// # }
     /// ```
     pub async fn cl(&self, command: &str) -> crate::Result<crate::protocol::ClMessage> {
-        let id = self.ids.next();
+        let id = self.inner.ids.next();
         let resp = self
             .send(Request::Cl {
                 id: id.clone(),
@@ -392,8 +436,8 @@ impl Drop for Job {
         // schedule.
         //
         // See `spawn_best_effort` for runtime-guard rationale.
-        let handle = self.handle.clone();
-        let id = self.ids.next();
+        let handle = self.inner.handle.clone();
+        let id = self.inner.ids.next();
         crate::job_helpers::spawn_best_effort(async move {
             let _ = handle.send(Request::Exit { id }).await;
         });
