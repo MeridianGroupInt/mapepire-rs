@@ -67,6 +67,7 @@ pub mod executor;
 pub mod from_row;
 pub mod job;
 pub(crate) mod job_helpers;
+pub mod pool;
 pub mod query;
 pub(crate) mod transport;
 
