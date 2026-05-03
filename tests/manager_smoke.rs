@@ -33,6 +33,8 @@ async fn manager_create_and_recycle() {
     // (which contains a full TLS handshake + first request/response cycle),
     // so on the stack it's ~30 KB. Boxing matches `Dispatcher::spawn`'s
     // treatment of the transport future in `src/transport/handshake.rs`.
+    // Task 10 / PRO-440 will decide whether `Pool::execute` boxes internally
+    // or pushes this responsibility onto callers.
     let obj = Box::pin(pool.get()).await.expect("get");
     assert_eq!(obj.in_flight(), 0);
 
@@ -45,7 +47,14 @@ async fn manager_create_and_recycle() {
     let obj2 = Box::pin(pool.get()).await.expect("get-after-recycle");
     let _rtt = obj2.ping().await.expect("ping after recycle");
 
-    // Pool stats sanity.
+    // Pool stats: exactly one connection should exist (recycle reuses; it must
+    // not have dropped + re-created). max_size=2 is enforced by deadpool itself,
+    // so the strong shape (== 1) catches a regression where recycle accidentally
+    // closes the connection.
     let status = pool.status();
-    assert!(status.size <= 2, "size {} <= max 2", status.size);
+    assert_eq!(
+        status.size, 1,
+        "recycle should not have spawned a second connection (got size {})",
+        status.size
+    );
 }
