@@ -10,10 +10,8 @@ pub(crate) mod manager;
 // `pool`). External callers see `crate::Pool` via the re-export below.
 #[allow(clippy::module_inception)]
 pub(crate) mod pool;
+pub(crate) mod reserved;
 pub(crate) mod routing;
-
-// Future siblings (added in subsequent tasks):
-// pub(crate) mod reserved;
 
 pub use builder::{ParameterLogging, PoolBuilder, RecyclingMethod};
 // `pub` (instead of `pub(crate)`) so integration tests in
@@ -24,3 +22,4 @@ pub use builder::{ParameterLogging, PoolBuilder, RecyclingMethod};
 #[doc(hidden)]
 pub use manager::JobManager;
 pub use pool::{Pool, PoolStatus};
+pub use reserved::Reserved;

@@ -79,3 +79,22 @@ async fn pool_execute_one_shot() {
     // Task 27 / PRO-457; here we just verify the call doesn't panic.
     let _ = Box::pin(pool.execute("SELECT 1 FROM SYSIBM.SYSDUMMY1")).await;
 }
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reserved_derefs_to_job() {
+    use common::{MockBehavior, spawn_mock_and_server};
+
+    let server_arc = spawn_mock_and_server(MockBehavior::AcceptAndConnect);
+    let pool = Box::pin(mapepire::Pool::builder(server_arc).max_size(2).build())
+        .await
+        .expect("pool builds");
+
+    let conn = Box::pin(pool.acquire()).await.expect("acquire");
+    // Deref to &Job — exercises the Deref impl plus the v0.2 inherent methods.
+    let _v = conn.version();
+    let _ = conn.ping().await.expect("ping via Reserved");
+    drop(conn);
+    // After drop, the Job's in_flight reset to 0 (sentinel cleared).
+    // The pool can pick up the connection on the next acquire/execute.
+}

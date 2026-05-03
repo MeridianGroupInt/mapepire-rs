@@ -139,6 +139,41 @@ impl Pool {
         crate::Job::execute_with(&obj, sql, params).await
     }
 
+    /// Reserve a single connection. The returned [`crate::Reserved`] holds the
+    /// connection until drop — `BEGIN`/`COMMIT` are guaranteed to land on
+    /// the same Db2 job (spec §7.4).
+    ///
+    /// While reserved, the underlying `Job`'s `in_flight` counter is set
+    /// to `u32::MAX` (a routing-skip sentinel) so the pool's least-busy-job
+    /// scan never picks this connection for one-shot work.
+    ///
+    /// # Errors
+    ///
+    /// As [`Pool::execute`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Pool, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let pool = Pool::builder(server).max_size(2).build().await?;
+    /// let conn = pool.acquire().await?;
+    /// conn.execute("BEGIN").await?;
+    /// conn.execute("COMMIT").await?;
+    /// # Ok(()) }
+    /// ```
+    pub async fn acquire(&self) -> crate::Result<crate::pool::reserved::Reserved> {
+        let obj = self.get_or_timeout().await?;
+        Ok(crate::pool::reserved::Reserved::new(obj))
+    }
+
     /// Snapshot of pool size, idle, and waiter counts (spec §7.5).
     ///
     /// `PoolStatus` is `Copy + Debug`; cheap to call repeatedly. The
