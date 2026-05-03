@@ -60,6 +60,30 @@ pub async fn spawn_mock_and_connect() -> Job {
         .expect("Job::connect to mock server")
 }
 
+/// Spawn a mock and build the [`Arc<DaemonServer>`] pointing at it. Used by
+/// pool tests that construct [`mapepire::pool::JobManager`] directly (where
+/// the manager — not the test — owns the `Job::connect` call).
+///
+/// The mock handles exactly ONE TCP connection; tests that need multiple
+/// connections must spawn additional mocks. This is sufficient for the
+/// Task 8 smoke test because `pool.get() → drop → pool.get()` reuses the
+/// same connection (the second `get()` ping-recycles via the existing TCP
+/// session rather than opening a new one).
+#[allow(dead_code)]
+pub fn spawn_mock_and_server(behavior: MockBehavior) -> Arc<DaemonServer> {
+    let (addr, cert_der) = spawn_mock(behavior);
+    Arc::new(
+        DaemonServer::builder()
+            .host("127.0.0.1")
+            .port(addr.port())
+            .user("TESTUSER")
+            .password("testpass".to_string())
+            .tls(TlsConfig::Ca(cert_der))
+            .build()
+            .expect("build DaemonServer"),
+    )
+}
+
 /// Spawn a mock with [`MockBehavior::SwallowFirstPing`] holding the given
 /// `signal_tx`, build a [`DaemonServer`] with [`TlsConfig::Ca`] pinning, call
 /// [`Job::connect`], and return the connected [`Job`].

@@ -15,20 +15,25 @@ use crate::job::Job;
 /// `deadpool::managed::Manager` impl that produces [`crate::Job`]s for the
 /// pool runtime. `Type = Arc<Job>` so the routing registry (Task 23) can
 /// store `Weak<Job>` references — see plan §7.3.
-//
-// `dead_code` is silenced because `JobManager::new` has no caller until
-// Task 10 (`Pool::builder().build()`) wires the manager into a deadpool
-// `Pool`. The `#[cfg(test)]` trait-bound assertion in this file references
-// the type but doesn't construct it. Remove this attribute when Task 10
-// lands.
-#[allow(dead_code)]
-pub(crate) struct JobManager {
+///
+/// **Visibility note:** `pub` so the integration test in
+/// `tests/manager_smoke.rs` (Task 8) can construct it directly, but the
+/// re-export at `mapepire::pool::JobManager` carries `#[doc(hidden)]` so the
+/// type stays out of the rendered rustdoc API surface. External users
+/// construct `Pool` via `Pool::builder` (Task 10) — they never need to touch
+/// `JobManager`.
+pub struct JobManager {
     server: Arc<DaemonServer>,
 }
 
-#[allow(dead_code)]
 impl JobManager {
-    pub(crate) fn new(server: Arc<DaemonServer>) -> Self {
+    /// Build a [`JobManager`] bound to the given [`DaemonServer`]. The
+    /// manager clones the `Arc` on each [`Manager::create`] call.
+    ///
+    /// `pub` for the same reason as the struct itself — see the type-level
+    /// doc comment.
+    #[must_use]
+    pub fn new(server: Arc<DaemonServer>) -> Self {
         Self { server }
     }
 }
