@@ -721,4 +721,22 @@ impl Row {
             source: DecodeError::Serde(e.to_string()),
         }))
     }
+
+    /// Borrow the underlying column-name → JSON-value map.
+    ///
+    /// Used by the [`crate::FromRow`] blanket impl to build a
+    /// `serde_json::Value::Object` for `serde_json::from_value`. Kept
+    /// `pub(crate)` so the wire-shape (`serde_json::Map`) stays an
+    /// implementation detail that we can change without a `SemVer` bump.
+    pub(crate) fn map(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.data
+    }
+
+    /// Test-only constructor — used by `from_row.rs` unit tests to build
+    /// a `Row` without going through the wire pipeline. Not exposed
+    /// outside the crate; not exposed outside `cfg(test)`.
+    #[cfg(test)]
+    pub(crate) fn from_map_for_test(data: serde_json::Map<String, serde_json::Value>) -> Self {
+        Self { data }
+    }
 }
