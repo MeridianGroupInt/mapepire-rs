@@ -1,5 +1,12 @@
-//! Executor trait — common surface implemented by `&Job`, `&Pool`, and
-//! `&Reserved`. Lets callers write helpers once and pass any of them.
+//! `Executor` trait — common SQL dispatch surface.
+//!
+//! A single trait that `&Job`, `&Pool`, and `&Reserved` all implement lets
+//! callers write generic helpers (e.g. a retry wrapper, a tracing decorator)
+//! once instead of once per concrete type. Methods return
+//! `Pin<Box<dyn Future<...> + Send + 'a>>` rather than `async fn` so the
+//! trait remains object-safe and usable as `&dyn Executor`. For monomorphic
+//! call sites, prefer the concrete types' inherent methods — they incur no
+//! boxing overhead.
 
 use std::future::Future;
 use std::pin::Pin;

@@ -513,6 +513,9 @@ impl Rows {
     where
         T: serde::de::DeserializeOwned,
     {
+        // TODO(v0.3 Task 18 / PRO-448): migrate to T: FromRow and call T::from_row(&row).
+        // Currently uses serde_json::from_value directly — this avoids one clone per row
+        // vs. the FromRow blanket path, but means hand-rolled FromRow impls are bypassed.
         use futures::TryStreamExt;
         self.stream()
             .map_ok(|row| {

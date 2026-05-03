@@ -33,9 +33,21 @@ pub trait FromRow: Sized {
 // hand-rolled `impl FromRow for Row` would therefore not collide with
 // this blanket. Keep it that way — adding `Deserialize` to `Row` would
 // silently shadow any such hand impl.
+//
+// Note: Rows::into_typed currently dispatches via serde_json::from_value
+// directly (not T::from_row), so hand-rolled FromRow impls are bypassed
+// until Task 18 migrates the bound. The blanket impl exists so user-facing
+// code can call T::from_row(&row) generically today.
+//
+// Errors from the blanket impl always set `column: None` because serde_json
+// loses per-column context at the whole-object boundary. Hand-rolled FromRow
+// impls can populate `column` for finer-grained diagnostics.
 impl<T: DeserializeOwned> FromRow for T {
     fn from_row(row: &Row) -> crate::Result<Self> {
-        let value = serde_json::Value::Object(row.map().clone());
+        // serde_json::from_value consumes its input; there's no from_value_ref API,
+        // so the clone is unavoidable. Cost: O(columns) per row.
+        let map = row.map().clone();
+        let value = serde_json::Value::Object(map);
         serde_json::from_value(value).map_err(|e| Error::Decode {
             column: None,
             source: DecodeError::Serde(e.to_string()),
