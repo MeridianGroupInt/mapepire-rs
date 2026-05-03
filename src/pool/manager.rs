@@ -42,10 +42,12 @@ impl Manager for JobManager {
         Ok(Arc::new(job))
     }
 
-    async fn recycle(&self, _job: &mut Arc<Job>, _: &Metrics) -> RecycleResult<Error> {
-        // Real impl in Task 7 (PRO-437) — round-trip a ping per
-        // RecyclingMethod::Verified.
-        Ok(())
+    async fn recycle(&self, job: &mut Arc<Job>, _: &Metrics) -> RecycleResult<Error> {
+        use deadpool::managed::RecycleError;
+        // RecyclingMethod::Verified — round-trip a ping. IBM i firewalls
+        // silently kill idle TCP sessions; without this check, the next caller
+        // discovers the dead connection mid-execute. Spec §7.1.
+        job.ping().await.map(|_| ()).map_err(RecycleError::Backend)
     }
 }
 
