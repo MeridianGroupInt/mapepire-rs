@@ -12,6 +12,9 @@
 //! | Auth rejected by server  | `Error::Auth(...)`                       |
 //! | Unexpected response type | `Error::Protocol(CorrelationMismatch)`   |
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
+
 use tokio_tungstenite::client_async;
 use tokio_tungstenite::tungstenite::handshake::client::{Request as WsRequest, generate_key};
 
@@ -39,6 +42,12 @@ pub(crate) struct ConnectedDispatcher {
     /// `Job` reuses it for all subsequent requests so ids stay unique
     /// across the session.
     pub(crate) ids: IdAllocator,
+    /// Outstanding-request counter shared with the dispatcher task.
+    /// `Job` clones this into `JobInner` so the v0.3 pool router can
+    /// observe the count without owning the dispatcher. The dispatcher
+    /// task increments after each socket write and decrements on
+    /// response routing or socket-close drain.
+    pub(crate) in_flight: Arc<AtomicU32>,
 }
 
 /// Run the full client handshake.
@@ -73,9 +82,13 @@ pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<ConnectedDis
         .await
         .map_err(|e| Error::Internal(format!("websocket upgrade failed: {e}")))?;
 
-    // 3. Spawn dispatcher around the now-framed stream.
+    // 3. Spawn dispatcher around the now-framed stream. The shared `in_flight` counter starts at
+    //    zero; the dispatcher task and `JobInner` each hold an `Arc` clone. The handshake's
+    //    `Connect` request below increments to 1, then the matching `Connected` response decrements
+    //    back to 0 — so a freshly-returned `ConnectedDispatcher` always reports `in_flight == 0`.
     let transport = WsTransport::new(ws_stream);
-    let dispatcher = Dispatcher::spawn(Box::pin(transport));
+    let in_flight = Arc::new(AtomicU32::new(0));
+    let dispatcher = Dispatcher::spawn(Box::pin(transport), Arc::clone(&in_flight));
     let handle = dispatcher.handle();
 
     // 4. Send the Connect request and await the Connected response.
@@ -114,5 +127,6 @@ pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<ConnectedDis
         version,
         initial_job,
         ids,
+        in_flight,
     })
 }

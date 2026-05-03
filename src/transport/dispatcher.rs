@@ -15,6 +15,8 @@
 //!    so no caller hangs.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
@@ -90,11 +92,18 @@ impl Dispatcher {
     }
 
     /// Spawn the dispatcher task on the current Tokio runtime.
-    pub(crate) fn spawn(transport: BoxedTransport) -> Self {
+    ///
+    /// `in_flight` is shared with the owning [`crate::job::JobInner`] via
+    /// [`Arc`] so the v0.3 pool router can read the count for least-loaded
+    /// selection while the dispatcher task mutates it. The dispatcher
+    /// increments after a successful socket write, decrements when the
+    /// matching response is routed, and decrements once per drained
+    /// pending entry on socket-close paths.
+    pub(crate) fn spawn(transport: BoxedTransport, in_flight: Arc<AtomicU32>) -> Self {
         // Bounded queue; back-pressure protects against runaway senders.
         let (tx, rx) = mpsc::channel::<Outbound>(SEND_QUEUE_CAPACITY);
         let handle = DispatcherHandle { tx };
-        let join = tokio::spawn(run(transport, rx));
+        let join = tokio::spawn(run(transport, rx, in_flight));
         Self { handle, join }
     }
 }
@@ -168,7 +177,11 @@ fn response_id(response: &Response) -> &str {
     }
 }
 
-async fn run(mut transport: BoxedTransport, mut rx: mpsc::Receiver<Outbound>) {
+async fn run(
+    mut transport: BoxedTransport,
+    mut rx: mpsc::Receiver<Outbound>,
+    in_flight: Arc<AtomicU32>,
+) {
     let mut pending: HashMap<String, oneshot::Sender<Result<Response, Error>>> = HashMap::new();
 
     loop {
@@ -181,10 +194,18 @@ async fn run(mut transport: BoxedTransport, mut rx: mpsc::Receiver<Outbound>) {
                         // polling set; not subject to mid-flush cancellation.
                         if let Err(e) = transport.send(bytes).await {
                             let _ = reply.send(Err(Error::from(e)));
-                            // Socket dead — drain everything pending and exit.
-                            drain_pending(&mut pending, TransportError::Closed);
+                            // Socket dead — drain everything pending and exit. The failed
+                            // request was never inserted into `pending` and never bumped
+                            // `in_flight`, so no decrement is owed for it here; `drain_pending`
+                            // covers everything that *was* inserted.
+                            drain_pending(&mut pending, &in_flight, TransportError::Closed);
                             return;
                         }
+                        // Send succeeded — track the request as in-flight and stash
+                        // the reply slot for the matching response. Order matters:
+                        // increment first so the counter is observable to the pool
+                        // router before any other branch of `select!` can fire.
+                        in_flight.fetch_add(1, Ordering::Relaxed);
                         // Entries for cancelled futures (caller dropped reply_rx) remain
                         // here until the matching response arrives and is silently discarded
                         // or shutdown drains. Acceptable for v0.2; revisit if leak grows.
@@ -204,29 +225,37 @@ async fn run(mut transport: BoxedTransport, mut rx: mpsc::Receiver<Outbound>) {
                         Ok(response) => {
                             let id = response_id(&response).to_owned();
                             if let Some(reply) = pending.remove(&id) {
+                                // Matching pending entry → request settles; drop the
+                                // in-flight count. The reply receiver may already be
+                                // closed (caller dropped the future); `oneshot::send`
+                                // returns Err in that case and we discard via `let _`.
+                                in_flight.fetch_sub(1, Ordering::Relaxed);
                                 let _ = reply.send(Ok(response));
                             }
-                            // No pending match → caller dropped the
-                            // future before the response arrived; discard
-                            // the response silently.
+                            // No pending match → an unsolicited frame from the
+                            // server (no outbound was ever registered for this id).
+                            // We never incremented `in_flight` for it, so we must
+                            // not decrement either. The counter reflects only
+                            // requests we still expect a reply for.
                         }
                         Err(e) => {
                             // Malformed JSON from the server — fatal for
                             // this dispatcher; drain and exit.
                             drain_pending_with_error(
                                 &mut pending,
+                                &in_flight,
                                 Error::from(ProtocolError::Json(e)),
                             );
                             return;
                         }
                     },
                     Some(Err(e)) => {
-                        drain_pending_with_error(&mut pending, Error::from(e));
+                        drain_pending_with_error(&mut pending, &in_flight, Error::from(e));
                         return;
                     }
                     None => {
                         // Peer closed cleanly.
-                        drain_pending(&mut pending, TransportError::Closed);
+                        drain_pending(&mut pending, &in_flight, TransportError::Closed);
                         return;
                     }
                 }
@@ -237,26 +266,32 @@ async fn run(mut transport: BoxedTransport, mut rx: mpsc::Receiver<Outbound>) {
 
 fn drain_pending(
     pending: &mut HashMap<String, oneshot::Sender<Result<Response, Error>>>,
+    in_flight: &Arc<AtomicU32>,
     closed: TransportError,
 ) {
     let mut iter = pending.drain();
     if let Some((_id, reply)) = iter.next() {
+        in_flight.fetch_sub(1, Ordering::Relaxed);
         let _ = reply.send(Err(Error::from(closed)));
     }
     for (_id, reply) in iter {
+        in_flight.fetch_sub(1, Ordering::Relaxed);
         let _ = reply.send(Err(Error::from(TransportError::Closed)));
     }
 }
 
 fn drain_pending_with_error(
     pending: &mut HashMap<String, oneshot::Sender<Result<Response, Error>>>,
+    in_flight: &Arc<AtomicU32>,
     err: Error,
 ) {
     let mut iter = pending.drain();
     if let Some((_id, reply)) = iter.next() {
+        in_flight.fetch_sub(1, Ordering::Relaxed);
         let _ = reply.send(Err(err));
     }
     for (_id, reply) in iter {
+        in_flight.fetch_sub(1, Ordering::Relaxed);
         let _ = reply.send(Err(Error::from(TransportError::Closed)));
     }
 }
