@@ -34,4 +34,5 @@ async fn test_connect_returns_version_and_job() {
         "mock initial_job mismatch: {}",
         job.initial_job()
     );
+    assert_eq!(job.in_flight(), 0, "fresh Job has 0 in-flight requests");
 }

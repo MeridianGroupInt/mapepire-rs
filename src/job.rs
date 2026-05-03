@@ -147,12 +147,14 @@ impl Job {
         self.inner.handle.clone()
     }
 
-    /// Crate-private accessor for the outstanding-request counter.
-    /// The v0.3 pool router (Task 23) reads this for least-loaded
-    /// connection selection. Not part of the public API.
-    #[allow(dead_code)]
-    pub(crate) fn in_flight(&self) -> &AtomicU32 {
-        &self.inner.in_flight
+    /// In-flight request count. The pool's routing scan in v0.3 §7.3
+    /// reads this for least-loaded selection; tests use it to assert
+    /// that a fresh-connected `Job` starts at zero.
+    #[must_use]
+    pub fn in_flight(&self) -> u32 {
+        self.inner
+            .in_flight
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Execute a SQL statement and return the [`crate::query::Rows`] handle.
