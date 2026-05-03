@@ -12,5 +12,10 @@ pub(crate) mod manager;
 // pub(crate) mod reserved;
 // pub(crate) mod routing;
 
-#[allow(unused_imports)]
-pub(crate) use manager::JobManager;
+// `pub` (instead of `pub(crate)`) so integration tests in
+// `tests/manager_smoke.rs` can construct `JobManager` directly. The
+// `#[doc(hidden)]` attribute keeps the type out of the rendered rustdoc API
+// surface — external users construct `Pool` via `Pool::builder` (Task 10) and
+// never need to touch `JobManager`. See plan §7.3.
+#[doc(hidden)]
+pub use manager::JobManager;
