@@ -26,11 +26,12 @@ pub(crate) struct JobInner {
     pub(crate) version: String,
     pub(crate) initial_job: String,
     /// Outstanding-request counter, used by the v0.3 pool router for
-    /// least-loaded selection. Incremented before each `send` and
-    /// decremented after the response settles. Task 5 will widen this
-    /// to `Arc<AtomicU32>` so the dispatcher loop can decrement it
-    /// from its own task.
-    pub(crate) in_flight: AtomicU32,
+    /// least-loaded selection. Shared with the dispatcher task via
+    /// [`Arc`]: the dispatcher increments after each successful socket
+    /// write, decrements when the matching response is routed back to
+    /// the caller, and decrements once per drained pending entry on
+    /// socket-close paths.
+    pub(crate) in_flight: Arc<AtomicU32>,
 }
 
 /// A single open connection to a Mapepire daemon.
@@ -94,6 +95,7 @@ impl Job {
             version,
             initial_job,
             ids,
+            in_flight,
         } = transport::connect(server).await?;
         let handle = dispatcher.handle();
         Ok(Self {
@@ -102,7 +104,7 @@ impl Job {
                 ids: Arc::new(ids),
                 version,
                 initial_job,
-                in_flight: AtomicU32::new(0),
+                in_flight,
             }),
             _dispatcher: dispatcher,
         })
