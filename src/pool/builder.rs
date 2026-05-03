@@ -36,17 +36,9 @@ pub enum ParameterLogging {
     Full,
 }
 
-/// Fluent builder for `Pool` (added in Task 10 / PRO-440).
+/// Fluent builder for [`crate::Pool`].
 ///
-/// Construct via `Pool::builder` (Task 10).
-//
-// `dead_code` is allowed crate-wide on this struct's fields and constructor
-// because Task 10 (PRO-440) — which adds `Pool::builder` and the `build()`
-// method that consume them — has not landed yet. The `#[cfg(test)]` block
-// below exercises every field via `PoolBuilder::new`, so the test build is
-// fully covered; the allow only suppresses the non-test warning until Task 10
-// wires the consumer.
-#[allow(dead_code)]
+/// Construct via [`crate::Pool::builder`].
 #[must_use]
 pub struct PoolBuilder {
     pub(crate) server: Arc<DaemonServer>,
@@ -59,7 +51,6 @@ pub struct PoolBuilder {
     pub(crate) parameter_logging: ParameterLogging,
 }
 
-#[allow(dead_code)] // see struct-level note above; Task 10 wires the consumer.
 impl PoolBuilder {
     pub(crate) fn new(server: Arc<DaemonServer>) -> Self {
         Self {
@@ -118,6 +109,76 @@ impl PoolBuilder {
     pub fn parameter_logging(mut self, p: ParameterLogging) -> Self {
         self.parameter_logging = p;
         self
+    }
+}
+
+impl PoolBuilder {
+    /// Construct the [`crate::Pool`]. Eagerly opens [`PoolBuilder::starting_size`]
+    /// connections. Returns once all eager connections have completed
+    /// their handshake.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::Internal`] if the deadpool builder rejects the
+    /// configuration, or if any of the `starting_size` eager connections
+    /// fails to open.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Pool, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let pool = Pool::builder(server)
+    ///     .max_size(4)
+    ///     .starting_size(1)
+    ///     .build()
+    ///     .await?;
+    /// # let _ = pool;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn build(self) -> crate::Result<crate::Pool> {
+        use deadpool::managed::{Pool as DeadPool, Timeouts};
+
+        let acquire_timeout = self.acquire_timeout;
+        let starting_size = self.starting_size;
+        // idle_timeout stored only — enforcement deferred to v0.4 (deadpool's
+        // runtime-hooks integration). Suppress the unused-warning explicitly.
+        let _idle_timeout = self.idle_timeout;
+
+        let mgr = crate::pool::manager::JobManager::new(self.server);
+
+        let inner = DeadPool::builder(mgr)
+            .max_size(self.max_size)
+            .timeouts(Timeouts {
+                wait: acquire_timeout,
+                create: None,
+                recycle: None,
+            })
+            .build()
+            .map_err(|e| crate::Error::Internal(format!("pool builder: {e}")))?;
+
+        // Eagerly create starting_size connections. Each pool.get() returns an
+        // Object<JobManager>; dropping it returns the connection to the pool's
+        // idle list (deadpool handles the lifecycle).
+        for _ in 0..starting_size {
+            let _ = Box::pin(inner.get())
+                .await
+                .map_err(|e| crate::Error::Internal(format!("starting_size eager open: {e}")))?;
+        }
+
+        Ok(crate::Pool {
+            inner,
+            registry: std::sync::Arc::new(crate::pool::routing::Registry),
+            acquire_timeout,
+        })
     }
 }
 
