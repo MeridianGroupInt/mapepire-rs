@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0-alpha.1] — 2026-05-02 *(unreleased)*
+
+The pool + transactions milestone — in progress. See `docs/superpowers/plans/2026-05-02-mapepire-rust-v0.3-pool-and-transactions.md` for the task breakdown.
+
 ## [0.2.0] — 2026-04-30 *(unreleased)*
 
 The transport milestone. Adds the full async client stack — TLS, WebSocket
