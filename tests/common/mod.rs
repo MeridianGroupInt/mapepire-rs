@@ -164,3 +164,31 @@ pub async fn connect_to_mock_with_recorder(pages: Vec<QueryResult>) -> (Job, Req
     let job = connect_to_mock(behavior).await;
     (job, recorder)
 }
+
+/// Spawn a mock with [`MockBehavior::Pages`] wired to a fresh
+/// [`RequestRecorder`] and return the [`DaemonServer`] (so a [`mapepire::Pool`]
+/// can be built against it) plus the recorder.
+///
+/// Pool variant of [`connect_to_mock_with_recorder`]: the caller constructs
+/// the pool itself (via `Pool::builder`) and asserts on the requests that
+/// transit the *single* TCP connection the mock accepts. Used by Task 14's
+/// reserved-transaction integration test (`tests/pool_transactions.rs`).
+///
+/// The mock is single-connection per spawn — the architectural guarantee that
+/// every statement issued through a [`mapepire::Reserved`] lands on one
+/// socket is implicit in the mock shape (one [`mapepire::Pool::acquire`]
+/// triggers one [`crate::pool::JobManager::create`] which opens one TCP
+/// session). The recorder lets tests verify the dispatcher actually emitted
+/// the expected request sequence on that one socket.
+#[allow(dead_code)]
+pub fn spawn_mock_pool_with_recorder(
+    pages: Vec<QueryResult>,
+) -> (Arc<DaemonServer>, RequestRecorder) {
+    let recorder: RequestRecorder = Arc::new(Mutex::new(Vec::<Request>::new()));
+    let behavior = MockBehavior::Pages {
+        pages,
+        recorder: Some(Arc::clone(&recorder)),
+    };
+    let server = spawn_mock_and_server(behavior);
+    (server, recorder)
+}
