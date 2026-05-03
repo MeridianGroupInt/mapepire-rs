@@ -46,10 +46,8 @@ use crate::pool::manager::JobManager;
 /// `COMMIT`/`ROLLBACK`.
 pub struct Reserved {
     obj: Object<JobManager>,
-    /// Opt-in: fire ROLLBACK on drop. Set via `rollback_on_drop()`
-    /// (Task 15 / PRO-445); honoured by `Drop` (Task 16 / PRO-446).
-    /// Currently unused — Task 15 adds the consuming setter.
-    #[allow(dead_code)]
+    /// Opt-in: fire ROLLBACK on drop. Set via [`Reserved::rollback_on_drop`];
+    /// honoured by `Drop` (Task 16 / PRO-446).
     rollback_on_drop: bool,
 }
 
@@ -65,6 +63,51 @@ impl Reserved {
             obj,
             rollback_on_drop: false,
         }
+    }
+
+    /// Opt-in safety: if this `Reserved` drops without an explicit
+    /// `COMMIT`/`ROLLBACK`, fire a fire-and-forget `ROLLBACK` on drop.
+    ///
+    /// The rollback runs via a runtime-guarded fire-and-forget spawn (the
+    /// crate's internal `spawn_best_effort` helper) so `Drop` never blocks.
+    /// If the rollback fails (e.g., the connection is already dead), the
+    /// error is silently dropped — the pool's next `recycle()` will pick up
+    /// the failed connection.
+    ///
+    /// **v0.3 limitation:** the rollback fires unconditionally when this flag
+    /// is set, even if the caller already issued an explicit `COMMIT`.
+    /// Tighter "only-if-still-in-tx" semantics need `BEGIN`/`COMMIT` state
+    /// tracking on `Reserved` and are deferred to v0.4. For now, callers who
+    /// set `rollback_on_drop()` and then `COMMIT` explicitly will see a
+    /// best-effort `ROLLBACK` follow the `COMMIT` — Db2 returns a no-op
+    /// `SQLSTATE 25000` ("invalid transaction state") which the pool's
+    /// recycle path tolerates.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Pool, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// # let pool = Pool::builder(server).max_size(2).build().await?;
+    /// let conn = pool.acquire().await?.rollback_on_drop();
+    /// conn.execute("BEGIN").await?;
+    /// conn.execute("UPDATE ORDERS SET STATUS = 'paid' WHERE ID = 42")
+    ///     .await?;
+    /// // If we panic or early-return before COMMIT, drop fires ROLLBACK.
+    /// conn.execute("COMMIT").await?;
+    /// # Ok(()) }
+    /// ```
+    #[must_use]
+    pub fn rollback_on_drop(mut self) -> Self {
+        self.rollback_on_drop = true;
+        self
     }
 }
 
