@@ -7,9 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0-alpha.1] — 2026-05-04 *(unreleased)*
+## [0.4.0] — 2026-05-04 *(unreleased)*
 
-The observability + cleanup milestone — in progress. See `docs/superpowers/plans/2026-05-04-mapepire-rust-v0.4-observability-and-cleanup.md` for the task breakdown.
+The observability + cleanup milestone. v0.4 layers opt-in `tracing` and
+`metrics` over the v0.3 pool, tightens the `Reserved::rollback_on_drop`
+contract, replaces the v0.3 real-network recycle fragility with a
+registry-backed fast path, and finishes a long backlog of polish
+items (idle-timeout enforcement, README as crate doctest, coverage CI,
+typed transaction helpers).
+
+### Added
+
+#### Observability (opt-in, feature-gated)
+
+- `tracing` feature — adds [`tracing`](https://docs.rs/tracing) span
+  instrumentation on every public dispatch entry point: `Job::execute`,
+  `Job::execute_with`, `Pool::execute`, `Pool::execute_with`,
+  `Pool::acquire`, `Reserved::execute`, `Reserved::execute_with`. Spans
+  carry `sql`, `param_count`, `tier` (for `Pool::execute*` — one of
+  `try_idle`, `least_busy_scan`, `fair_queue`), and `Reserved` Drop
+  emits a `trace` event with `rolled_back` and `in_tx` fields. Zero
+  overhead when the feature is disabled.
+- `metrics` feature — emits counters / gauges / histograms via the
+  [`metrics`](https://docs.rs/metrics) facade. Metric-name constants live
+  in the new `mapepire::observability` module and are SemVer-stable.
+  Catalogue: `POOL_CREATE_TOTAL`, `POOL_RECYCLE_SUCCESS_TOTAL`,
+  `POOL_RECYCLE_FAIL_TOTAL`, `POOL_ACQUIRE_LATENCY_MICROS`,
+  `JOB_EXECUTE_LATENCY_MICROS`, `POOL_SIZE`, `POOL_AVAILABLE`,
+  `POOL_WAITING`, `POOL_ROUTING_TIER_WINS_TOTAL` (1 label `tier`),
+  `POOL_RESERVED_ACQUIRED_TOTAL`, `POOL_RESERVED_ROLLBACK_TOTAL`,
+  `POOL_IDLE_REAPED_TOTAL`. Both features are zero-cost when disabled.
+- Per-pool `ParameterLogging::{None, TypesAndCount, Full}` — stored on
+  `PoolBuilder` since v0.3 but only enforced in v0.4. `Pool::execute_with`
+  consults the policy and decorates its `tracing` span accordingly. The
+  `None` default is privacy-safe (only `param_count` appears on spans).
+
+#### Pool reliability
+
+- `idle_timeout` enforcement (PRO-593). v0.3 stored the value on
+  `PoolBuilder` but did not act on it. v0.4 spawns a background reaper
+  task on `PoolBuilder::build` that wakes every `idle_timeout / 4`
+  (clamped to `[1s, 60s]`) and calls `deadpool::Pool::retain` with the
+  predicate `metrics.last_used() < idle_timeout`. The reaper is
+  abort-on-last-`Pool`-clone-drop via an internal `ReaperGuard` so it
+  doesn't outlive the pool.
+- Registry-backed fast path in `Pool::execute` / `Pool::execute_with`
+  (PRO-600). v0.3's step 1 used
+  `deadpool::Pool::timeout_get(Timeouts { recycle: ZERO, .. })` which
+  is `tokio::time::timeout(ZERO, ping)` — only ~1 timer-tick of grace.
+  On real IBM i deployments where ping RTT exceeds that, the recycle
+  ping timed out, deadpool detached the connection, and step 3 opened
+  a fresh socket (connection thrash). v0.4 replaces the path with
+  `Registry::peek_idle()` which filters `Weak<Job>` for `in_flight == 0`
+  AND `Arc::strong_count == 2` (deadpool's slot + our upgrade — i.e.
+  nobody has it checked out). The fast path skips deadpool's checkout
+  entirely, so no recycle ping fires; liveness is verified at next
+  dispatch.
+
+#### Transactions
+
+- `Reserved::begin`, `Reserved::commit`, `Reserved::rollback` typed
+  helpers (PRO-599). Pure delegation to `Reserved::execute(...)` so the
+  v0.4 transaction-state machine still observes every transition. Closes
+  the stringly-typed `conn.execute("BEGIN")` ergonomics gap.
+- `Reserved::execute` and `Reserved::execute_with` now observe the SQL
+  prefix and update an internal `TxState` machine (`NotStarted` →
+  `Started` on `BEGIN`; `Closed` on `COMMIT`/`ROLLBACK`). Used by Drop
+  to gate the `rollback_on_drop` fire — see the **Changed** section.
+
+#### DX & infrastructure
+
+- README is now a crate-level doctest via
+  `#![doc = include_str!("../README.md")]` (PRO-603). CI's
+  `cargo doc` and `cargo test --doc` compile-check every Rust block
+  in the README on every PR — API drift surfaces at PR time, not at
+  user-bug time.
+- `.github/workflows/coverage.yml` (PRO-606) — `cargo-llvm-cov` job
+  uploading lcov to Codecov on push to `main` and on PRs. Closes the
+  v0.2-era backlog item PRO-393.
+- `make update-toolchain` (PRO-607) — reports MSRV / pinned channel /
+  latest stable side-by-side so the maintainer can decide whether a
+  bump is warranted. Closes the v0.2-era backlog item PRO-396.
+
+### Changed
+
+- **`Reserved::rollback_on_drop` (BEHAVIOR CHANGE).** v0.3's contract
+  was unconditional once opt-in: Drop fired `ROLLBACK` even after an
+  explicit `COMMIT`. Db2 returned `SQLSTATE 25000` and the pool tolerated
+  it, but the round-trip wasted a wire turn. v0.4 tightens the contract:
+  Drop fires `ROLLBACK` only when both (a) `rollback_on_drop` is set and
+  (b) a `BEGIN` has been observed without a matching `COMMIT`/`ROLLBACK`.
+  Suppresses redundant rollbacks after explicit `COMMIT` and on
+  connections that never began a transaction.
+- `Pool::execute` step 1 — see **Added → Pool reliability**. The
+  observability contract is unchanged (same `try_idle` tier label).
+- `pool::pool` module renamed to `pool::runtime` (PRO-605). Public API
+  identical (`crate::Pool`, `crate::PoolStatus` re-exports unchanged);
+  the inner module name was an implementation detail. Retires the v0.3
+  `#[allow(clippy::module_inception)]`.
+- Tightened terse `expect()` messages in `src/` (PRO-608). Sites in
+  `lib.rs`, `config.rs`, `from_row.rs`, and `pool/builder.rs` now name
+  what was expected to succeed instead of one-word shorthand.
+
+### Removed
+
+- `#[allow(clippy::module_inception)]` on `pool::pool` (subsumed by the
+  rename to `pool::runtime`).
+- `Pool::execute`'s v0.4-caveat comment block describing the
+  `recycle: ZERO` fragility — the fragility is gone.
+
+### Testing
+
+- `tests/pool_recycle_latency.rs::fast_path_does_not_thrash_under_slow_response`
+  (PRO-601). Pins the registry-backed fast path against the v0.3
+  fragility — single-slot pool, `mock.pause_responses(100ms)` across
+  two `pool.execute` calls, asserts `open_socket_count == 1` and zero
+  ping requests fire. Would have failed under the v0.3 contract.
+- `tests/pool_idle_timeout.rs` (PRO-594). Builds a pool with
+  `idle_timeout(Some(500ms))`, opens 1 connection, waits past the reap
+  window, asserts the connection was reaped and a subsequent execute
+  opens a fresh socket.
+- `MockHandle::wait_for_sql(needle, timeout)` test primitive (PRO-604)
+  — polls `last_socket_for_sql` every 10ms with a configurable budget.
+  Replaces a fragile `sleep(100ms)` in the positive ROLLBACK test.
+- Integration coverage for `tracing` and `metrics` features
+  (`tests/tracing_spans.rs`, `tests/metrics_smoke.rs`).
+
+### Internal
+
+- New `mapepire::observability` module exposing the metric-name constants.
+- `Registry::peek_idle()` — `Arc<Job>` lookup with the `strong_count == 2`
+  liveness predicate (PRO-600).
+- `Reserved` carries a `Mutex<TxState>` (chosen over `Cell` because
+  `Reserved: Sync`).
+- `PoolBuilder::build` spawns the idle reaper and returns a `ReaperGuard`
+  inside the `Pool` so the task aborts on the last `Pool` clone drop.
 
 ## [0.3.0] — 2026-05-04
 
@@ -105,14 +237,8 @@ the diagnostic methods deferred from v0.2.
 - `tests/dispatcher_in_flight.rs` — verifies dispatcher in-flight tracking.
 - `tests/manager_smoke.rs` — JobManager create+recycle round-trip.
 
-### Open items deferred to v0.4
+### Open items deferred to v0.4+
 
-- `tracing` spans + `ParameterLogging` enforcement (the value is stored
-  but not emitted).
-- `metrics` facade integration.
-- Tightening `Reserved::rollback_on_drop` to fire ROLLBACK only if a
-  `BEGIN` was observed without a matching `COMMIT` (current contract is
-  unconditional once opt-in is set).
 - Typed Visual Explain plans (currently `serde_json::Value`).
 
 ## [0.2.0] — 2026-04-30 *(unreleased)*
