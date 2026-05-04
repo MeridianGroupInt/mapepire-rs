@@ -130,6 +130,10 @@ impl Pool {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(sql = %sql, tier = tracing::field::Empty))
+    )]
     pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
         use crate::Job;
 
@@ -157,6 +161,8 @@ impl Pool {
             };
             if let Ok(obj) = Box::pin(self.inner.timeout_get(&nb)).await {
                 if obj.in_flight() == 0 {
+                    #[cfg(feature = "tracing")]
+                    tracing::Span::current().record("tier", "try_idle");
                     return Job::execute(&obj, sql).await;
                 }
                 // Idle slot returned but the underlying Job is mid-flight
@@ -174,6 +180,8 @@ impl Pool {
         // the Object<JobManager> checked out — the v0.2 dispatcher
         // multiplexes concurrent requests on a single connection.
         if let Some(arc) = self.pick_unsaturated() {
+            #[cfg(feature = "tracing")]
+            tracing::Span::current().record("tier", "least_busy_scan");
             return Job::execute(&arc, sql).await;
         }
 
@@ -181,6 +189,8 @@ impl Pool {
         // (or the registry is empty) — fall back to fair queueing (waits
         // up to `acquire_timeout`) so the caller blocks until something
         // frees up rather than piling onto an already-saturated dispatcher.
+        #[cfg(feature = "tracing")]
+        tracing::Span::current().record("tier", "fair_queue");
         let obj = self.get_or_timeout().await?;
         Job::execute(&obj, sql).await
     }
@@ -219,6 +229,17 @@ impl Pool {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip(self, params),
+            fields(
+                sql = %sql,
+                param_count = params.len(),
+                tier = tracing::field::Empty,
+            ),
+        )
+    )]
     pub async fn execute_with(
         &self,
         sql: &str,
@@ -237,6 +258,8 @@ impl Pool {
             };
             if let Ok(obj) = Box::pin(self.inner.timeout_get(&nb)).await {
                 if obj.in_flight() == 0 {
+                    #[cfg(feature = "tracing")]
+                    tracing::Span::current().record("tier", "try_idle");
                     return Job::execute_with(&obj, sql, params).await;
                 }
                 drop(obj);
@@ -246,10 +269,14 @@ impl Pool {
         // §7.3 step 2: least-busy scan filtered by SATURATION_THRESHOLD
         // (see `execute` for the full rationale).
         if let Some(arc) = self.pick_unsaturated() {
+            #[cfg(feature = "tracing")]
+            tracing::Span::current().record("tier", "least_busy_scan");
             return Job::execute_with(&arc, sql, params).await;
         }
 
         // §7.3 step 3: fall back to fair queueing.
+        #[cfg(feature = "tracing")]
+        tracing::Span::current().record("tier", "fair_queue");
         let obj = self.get_or_timeout().await?;
         Job::execute_with(&obj, sql, params).await
     }
@@ -284,8 +311,22 @@ impl Pool {
     /// conn.execute("COMMIT").await?;
     /// # Ok(()) }
     /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(acquired_in_micros = tracing::field::Empty))
+    )]
     pub async fn acquire(&self) -> crate::Result<crate::pool::reserved::Reserved> {
+        #[cfg(feature = "tracing")]
+        let start = std::time::Instant::now();
         let obj = self.get_or_timeout().await?;
+        #[cfg(feature = "tracing")]
+        {
+            // `Duration::as_micros()` returns u128 — saturate at u64::MAX
+            // (~584 942 years) to satisfy clippy::cast_possible_truncation
+            // without panicking on a hypothetically huge elapsed.
+            let elapsed = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+            tracing::Span::current().record("acquired_in_micros", elapsed);
+        }
         Ok(crate::pool::reserved::Reserved::new(obj))
     }
 

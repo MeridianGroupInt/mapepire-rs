@@ -144,11 +144,19 @@ impl Drop for Reserved {
             });
         }
 
-        // 2. Reset the routing-skip sentinel so the Job is reusable. The fetch_add(1)/fetch_sub(1)
+        // 2. Emit a single trace event capturing the state-at-drop. Fires after the best-effort
+        //    ROLLBACK enqueue (so the rolled_back flag reflects what we actually did) and before
+        //    the routing-skip sentinel reset (so observers see Reserved's last moment as a held
+        //    connection). The `in_tx` field will be added in Task 18 / PRO-596 once TxState
+        //    tracking lands.
+        #[cfg(feature = "tracing")]
+        tracing::trace!(rolled_back = self.rollback_on_drop, "Reserved dropped");
+
+        // 3. Reset the routing-skip sentinel so the Job is reusable. The fetch_add(1)/fetch_sub(1)
         //    ping-pong on u32::MAX is benign for routing (Task 24 special-cases u32::MAX) but we
         //    reset to 0 here so normal counting resumes after Drop. v0.4 may switch to a dedicated
         //    `reserved: AtomicBool` flag for cleaner separation.
         self.obj.inner.in_flight.store(0, Ordering::Relaxed);
-        // 3. Object<JobManager>'s own Drop returns the Job to the pool.
+        // 4. Object<JobManager>'s own Drop returns the Job to the pool.
     }
 }
