@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0-alpha.1] — 2026-05-04 *(unreleased)*
+
+The observability + cleanup milestone — in progress. See `docs/superpowers/plans/2026-05-04-mapepire-rust-v0.4-observability-and-cleanup.md` for the task breakdown.
+
 ## [0.3.0] — 2026-05-04
 
 The pool + transactions milestone. v0.3 adds a `Pool` over `deadpool`, a
