@@ -1,33 +1,7 @@
-//! # mapepire
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![doc = include_str!("../README.md")]
 //!
-//! Async Rust client for [Mapepire](https://mapepire-ibmi.github.io/) — a
-//! cloud-friendly access layer for **Db2 for IBM i** that exposes the database
-//! over TLS-secured `WebSockets`.
-//!
-//! `mapepire` is the Rust client SDK for the Mapepire IBM i Db2 access
-//! daemon. v0.2 ships:
-//!
-//! - The wire protocol types (`Request`, `Response`, `QueryResult`, …).
-//! - The crate-wide [`Error`] taxonomy with classification predicates.
-//! - [`DaemonServer`] / [`DaemonServerBuilder`] for connection configuration; [`TlsConfig`] for the
-//!   verification mode.
-//! - [`Password`] — zeroize-on-drop credential newtype.
-//! - [`Job`] — a single open connection to a Mapepire daemon, established via [`Job::connect`].
-//!
-//! Connection pooling shipped in v0.3 ([`Pool`], [`Reserved`], [`Executor`],
-//! [`FromRow`]). v0.4 adds opt-in observability features.
-//!
-//! See `AGENTS.md` at the repository root for contributor and AI-assistant
-//! conventions.
-//!
-//! ## Optional features
-//!
-//! - **`tracing`** *(v0.4+)* — opt-in [`tracing`](https://docs.rs/tracing) span instrumentation on
-//!   every public dispatch entry point (`Job::execute`, `Pool::execute`, `Reserved::*`). Enable
-//!   with `features = ["tracing"]`. Zero overhead when disabled. Per-pool [`ParameterLogging`]
-//!   policy controls whether parameter values appear on spans.
-//! - **`metrics`** *(v0.4+)* — opt-in [`metrics`](https://docs.rs/metrics) facade integration. See
-//!   `crate::observability` for the documented metric-name contract.
+//! ---
 //!
 //! ## Building a `DaemonServer`
 //!
@@ -59,8 +33,6 @@
 //! let json = serde_json::to_string(&r).expect("serialize");
 //! assert!(json.contains(r#""type":"sql""#));
 //! ```
-
-#![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[cfg(not(any(feature = "rustls-tls", feature = "native-tls")))]
 compile_error!(
