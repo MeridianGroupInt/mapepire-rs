@@ -15,9 +15,9 @@ Async Rust client SDK for [Mapepire](https://mapepire-ibmi.github.io/) —
 a cloud-friendly access layer for **Db2 for IBM i** that exposes the
 database over TLS-secured `WebSockets`.
 
-> **Status:** v0.3 in progress (pool + transactions). Not yet on
+> **Status:** v0.4 ready (observability + cleanup). Not yet on
 > [crates.io](https://crates.io). The full v1.0 surface (real-IBM-i CI,
-> examples, observability) lands across the v0.4 → v1.0 milestones.
+> examples) lands in v1.0.
 
 Sibling SDKs exist for [Node.js](https://github.com/Mapepire-IBMi/mapepire-js),
 [Python](https://github.com/Mapepire-IBMi/mapepire-python),
@@ -150,11 +150,12 @@ and is **SemVer-stable** — names won't be renamed without a major bump.
 
 - **v0.1** — protocol foundation (done).
 - **v0.2** — transport, `Job::connect`, integration tests (done).
-- **v0.3** *(in progress)* — `Pool` with `deadpool`, `Reserved` for
-  transactions, public `Executor` / `FromRow` traits, diagnostic methods
-  carried over from v0.2.
+- **v0.3** — `Pool` with `deadpool`, `Reserved` for transactions, public
+  `Executor` / `FromRow` traits, diagnostic methods carried over from
+  v0.2 (done).
 - **v0.4** — `tracing` and `metrics` feature flags; `idle_timeout`
-  enforcement; `rollback_on_drop` only-if-in-tx tightening.
+  enforcement; `rollback_on_drop` tightened to only-if-in-tx;
+  registry-backed routing fast path (done).
 - **v1.0** — examples, real-IBM-i CI, donation proposal to the
   [Mapepire-IBMi](https://github.com/Mapepire-IBMi) GitHub org.
 
