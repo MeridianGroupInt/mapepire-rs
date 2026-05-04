@@ -18,7 +18,7 @@ pub use deadpool::Status as PoolStatus;
 use deadpool::managed::Pool as DeadPool;
 
 use crate::config::DaemonServer;
-use crate::pool::builder::PoolBuilder;
+use crate::pool::builder::{ParameterLogging, PoolBuilder};
 use crate::pool::manager::JobManager;
 use crate::pool::routing::Registry;
 
@@ -37,6 +37,13 @@ pub struct Pool {
     // PRO-454 reads from it in `Pool::execute`'s §7.3 routing scan.
     pub(crate) registry: Arc<Registry>,
     pub(crate) acquire_timeout: Option<Duration>,
+    /// Per-pool parameter-logging policy for `tracing` span fields.
+    /// Read by `Pool::execute_with` to gate `param_types` / `params` emission
+    /// (Task 9 / PRO-587). Effective only when the `tracing` feature is
+    /// enabled — when it isn't, this field is dead-store but kept on the
+    /// struct so the public builder API stays stable across feature combos.
+    #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
+    pub(crate) parameter_logging: ParameterLogging,
 }
 
 /// Per-job saturation threshold beyond which the routing scan stops
@@ -237,6 +244,8 @@ impl Pool {
                 sql = %sql,
                 param_count = params.len(),
                 tier = tracing::field::Empty,
+                param_types = tracing::field::Empty,
+                params = tracing::field::Empty,
             ),
         )
     )]
@@ -246,6 +255,35 @@ impl Pool {
         params: &[serde_json::Value],
     ) -> crate::Result<crate::query::Rows> {
         use crate::Job;
+
+        // Task 9 / PRO-587: honor the per-pool `ParameterLogging` policy by
+        // populating the Empty-declared `param_types` / `params` span fields.
+        // The fields MUST be declared on `instrument(...)` above as
+        // `tracing::field::Empty`, otherwise `record(...)` silently no-ops.
+        // The default `ParameterLogging::None` arm intentionally records
+        // nothing — `param_count` (already in the span) is the only
+        // param-related disclosure.
+        #[cfg(feature = "tracing")]
+        match self.parameter_logging {
+            ParameterLogging::None => {}
+            ParameterLogging::TypesAndCount => {
+                let types: Vec<&'static str> = params
+                    .iter()
+                    .map(|v| match v {
+                        serde_json::Value::String(_) => "String",
+                        serde_json::Value::Number(_) => "Number",
+                        serde_json::Value::Bool(_) => "Bool",
+                        serde_json::Value::Null => "Null",
+                        serde_json::Value::Array(_) => "Array",
+                        serde_json::Value::Object(_) => "Object",
+                    })
+                    .collect();
+                tracing::Span::current().record("param_types", tracing::field::debug(&types));
+            }
+            ParameterLogging::Full => {
+                tracing::Span::current().record("params", tracing::field::debug(params));
+            }
+        }
 
         // §7.3 step 1: try an immediately-idle job (see `execute` for
         // the rationale on the all-zero-timeouts non-blocking checkout

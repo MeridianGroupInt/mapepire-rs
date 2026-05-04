@@ -23,16 +23,24 @@ pub enum RecyclingMethod {
 
 /// How much parameter context to surface in `tracing` spans.
 ///
-/// Stored by the builder in v0.3, but **not yet emitted** — full `tracing`
-/// instrumentation lands in v0.4. Pick the variant you'd want when v0.4 ships.
+/// **v0.4+:** enforced — the [`crate::Pool`] reads this value when emitting
+/// span fields on [`crate::Pool::execute_with`]. Direct
+/// [`crate::Job::execute_with`] users get [`ParameterLogging::None`]
+/// semantics (no parameter values on spans — `param_count` is the only
+/// param-related field).
+///
+/// Effective only when the `tracing` feature is enabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ParameterLogging {
-    /// Log nothing about parameters. Default — privacy-safe.
+    /// Default — privacy-safe. Spans carry only `param_count`, no
+    /// `param_types` or `params` field.
     #[default]
     None,
-    /// Log type names and count, but no values. Useful for shape debugging.
+    /// Spans carry `param_types` (an array of JSON value type names like
+    /// `"String"`, `"Number"`). No values. Useful for shape debugging.
     TypesAndCount,
-    /// Log full values (dev only — never use in production).
+    /// Spans carry `params` with full `Debug`-formatted values.
+    /// **Dev only — never use in production.**
     Full,
 }
 
@@ -104,8 +112,8 @@ impl PoolBuilder {
         self
     }
 
-    /// Parameter-logging policy for v0.4 `tracing` spans. Default
-    /// [`ParameterLogging::None`].
+    /// Parameter-logging policy for `tracing` spans on
+    /// [`crate::Pool::execute_with`]. Default [`ParameterLogging::None`].
     pub fn parameter_logging(mut self, p: ParameterLogging) -> Self {
         self.parameter_logging = p;
         self
@@ -190,6 +198,7 @@ impl PoolBuilder {
             inner,
             registry,
             acquire_timeout,
+            parameter_logging: self.parameter_logging,
         })
     }
 }
