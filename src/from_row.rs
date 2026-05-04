@@ -34,10 +34,10 @@ pub trait FromRow: Sized {
 // this blanket. Keep it that way — adding `Deserialize` to `Row` would
 // silently shadow any such hand impl.
 //
-// Note: Rows::into_typed currently dispatches via serde_json::from_value
-// directly (not T::from_row), so hand-rolled FromRow impls are bypassed
-// until Task 18 migrates the bound. The blanket impl exists so user-facing
-// code can call T::from_row(&row) generically today.
+// `Rows::into_typed` routes through `T::from_row(&row)`, so this blanket
+// covers the common `T: serde::Deserialize` path while hand-rolled
+// `impl FromRow for MyType` overrides take precedence (no blanket-impl
+// collision because user types pick exactly one impl).
 //
 // Errors from the blanket impl always set `column: None` because serde_json
 // loses per-column context at the whole-object boundary. Hand-rolled FromRow
@@ -75,7 +75,7 @@ mod tests {
         let serde_json::Value::Object(map) = json!({ "EMPNO": "000010", "SALARY": 52750.0 }) else {
             unreachable!()
         };
-        let row = Row::from_map_for_test(map);
+        let row = Row::from_map(map);
         let emp = Employee::from_row(&row).expect("decode");
         assert_eq!(
             emp,
@@ -91,11 +91,39 @@ mod tests {
         let serde_json::Value::Object(map) = json!({ "EMPNO": "000010" }) else {
             unreachable!()
         };
-        let row = Row::from_map_for_test(map);
+        let row = Row::from_map(map);
         let err = Employee::from_row(&row).expect_err("missing SALARY");
         match err {
             Error::Decode { column, .. } => assert_eq!(column, None),
             other => panic!("expected Error::Decode, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn hand_rolled_from_row_overrides_blanket() {
+        // A type that doesn't implement Deserialize directly — only
+        // FromRow. Verifies the trait works without the blanket.
+        struct Custom {
+            empno_int: i64,
+            full_label: String,
+        }
+        impl FromRow for Custom {
+            fn from_row(row: &Row) -> crate::Result<Self> {
+                let empno: String = row.get("EMPNO")?;
+                let salary: f64 = row.get("SALARY")?;
+                Ok(Custom {
+                    empno_int: empno.parse().unwrap_or_default(),
+                    full_label: format!("emp {empno} @ ${salary}"),
+                })
+            }
+        }
+
+        let mut m = serde_json::Map::new();
+        m.insert("EMPNO".into(), json!("12345"));
+        m.insert("SALARY".into(), json!(75000.0));
+        let row = Row::from_map(m);
+        let c: Custom = Custom::from_row(&row).expect("decode");
+        assert_eq!(c.empno_int, 12345);
+        assert_eq!(c.full_label, "emp 12345 @ $75000");
     }
 }
