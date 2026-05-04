@@ -40,6 +40,7 @@ native-tls = [
 ]
 insecure-tls = []
 serde-config = ["dep:base64"]
+tracing = ["dep:tracing"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -54,6 +55,7 @@ pin-project-lite = "0.2"
 async-trait = "0.1"
 deadpool = { version = "0.13", default-features = false, features = ["managed", "rt_tokio_1"] }
 bytes = "1"
+tracing = { version = "0.1", optional = true }
 # Optional TLS stacks — pulled by their respective feature flags above.
 rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "tls12"] }
 tokio-rustls = { version = "0.26", optional = true, default-features = false }
