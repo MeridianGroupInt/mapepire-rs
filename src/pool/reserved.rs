@@ -142,6 +142,8 @@ impl Drop for Reserved {
                 };
                 let _ = handle.send(req).await;
             });
+            #[cfg(feature = "metrics")]
+            metrics::counter!(crate::observability::POOL_RESERVED_ROLLBACK_TOTAL).increment(1);
         }
 
         // 2. Emit a single trace event capturing the state-at-drop. Fires after the best-effort
