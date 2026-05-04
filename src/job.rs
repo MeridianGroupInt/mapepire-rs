@@ -236,7 +236,12 @@ impl Job {
         tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, sql = %sql))
     )]
     pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
-        self.execute_inner(sql, None).await
+        #[cfg(feature = "metrics")]
+        let start = std::time::Instant::now();
+        let result = self.execute_inner(sql, None).await;
+        #[cfg(feature = "metrics")]
+        record_execute_latency(start);
+        result
     }
 
     /// Execute a parameterized SQL statement.
@@ -284,7 +289,12 @@ impl Job {
         sql: &str,
         params: &[serde_json::Value],
     ) -> crate::Result<crate::query::Rows> {
-        self.execute_inner(sql, Some(params.to_vec())).await
+        #[cfg(feature = "metrics")]
+        let start = std::time::Instant::now();
+        let result = self.execute_inner(sql, Some(params.to_vec())).await;
+        #[cfg(feature = "metrics")]
+        record_execute_latency(start);
+        result
     }
 
     async fn execute_inner(
@@ -675,6 +685,22 @@ impl Job {
             ref other => Err(crate::job_helpers::unexpected(other)),
         }
     }
+}
+
+/// Record the elapsed time since `start` to the
+/// [`JOB_EXECUTE_LATENCY_MICROS`] histogram in microseconds.
+///
+/// Saturates at `u64::MAX` µs (~584 942 years) before the f64 cast so we
+/// never panic on a pathologically huge elapsed; the cast itself is safe
+/// for any realistic value (< 2^53 µs ≈ 285 years).
+///
+/// [`JOB_EXECUTE_LATENCY_MICROS`]: crate::observability::JOB_EXECUTE_LATENCY_MICROS
+#[cfg(feature = "metrics")]
+fn record_execute_latency(start: std::time::Instant) {
+    let elapsed_micros = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    #[allow(clippy::cast_precision_loss)]
+    let micros_f64 = elapsed_micros as f64;
+    metrics::histogram!(crate::observability::JOB_EXECUTE_LATENCY_MICROS).record(micros_f64);
 }
 
 impl Drop for Job {

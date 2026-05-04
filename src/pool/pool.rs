@@ -144,6 +144,13 @@ impl Pool {
     pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
         use crate::Job;
 
+        // Pool status gauges — snapshot once per call. Pool size doesn't
+        // change frequently within a single execute, so we avoid emitting
+        // in the hot routing-scan loop. Downstream samplers (Prometheus
+        // scrape, etc.) get a per-call data point which is plenty.
+        #[cfg(feature = "metrics")]
+        emit_pool_status_gauges(&self.inner.status());
+
         // §7.3 step 1: try an immediately-idle job. We gate on
         // `status().available > 0` and then call `timeout_get` with all
         // timeouts at `Duration::ZERO` — `wait: ZERO` makes the semaphore
@@ -170,6 +177,12 @@ impl Pool {
                 if obj.in_flight() == 0 {
                     #[cfg(feature = "tracing")]
                     tracing::Span::current().record("tier", "try_idle");
+                    #[cfg(feature = "metrics")]
+                    metrics::counter!(
+                        crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+                        "tier" => "try_idle",
+                    )
+                    .increment(1);
                     return Job::execute(&obj, sql).await;
                 }
                 // Idle slot returned but the underlying Job is mid-flight
@@ -189,6 +202,12 @@ impl Pool {
         if let Some(arc) = self.pick_unsaturated() {
             #[cfg(feature = "tracing")]
             tracing::Span::current().record("tier", "least_busy_scan");
+            #[cfg(feature = "metrics")]
+            metrics::counter!(
+                crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+                "tier" => "least_busy_scan",
+            )
+            .increment(1);
             return Job::execute(&arc, sql).await;
         }
 
@@ -198,6 +217,12 @@ impl Pool {
         // frees up rather than piling onto an already-saturated dispatcher.
         #[cfg(feature = "tracing")]
         tracing::Span::current().record("tier", "fair_queue");
+        #[cfg(feature = "metrics")]
+        metrics::counter!(
+            crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+            "tier" => "fair_queue",
+        )
+        .increment(1);
         let obj = self.get_or_timeout().await?;
         Job::execute(&obj, sql).await
     }
@@ -285,6 +310,10 @@ impl Pool {
             }
         }
 
+        // Pool status gauges — same once-per-call pattern as `execute`.
+        #[cfg(feature = "metrics")]
+        emit_pool_status_gauges(&self.inner.status());
+
         // §7.3 step 1: try an immediately-idle job (see `execute` for
         // the rationale on the all-zero-timeouts non-blocking checkout
         // and dropping its errors silently).
@@ -298,6 +327,12 @@ impl Pool {
                 if obj.in_flight() == 0 {
                     #[cfg(feature = "tracing")]
                     tracing::Span::current().record("tier", "try_idle");
+                    #[cfg(feature = "metrics")]
+                    metrics::counter!(
+                        crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+                        "tier" => "try_idle",
+                    )
+                    .increment(1);
                     return Job::execute_with(&obj, sql, params).await;
                 }
                 drop(obj);
@@ -309,12 +344,24 @@ impl Pool {
         if let Some(arc) = self.pick_unsaturated() {
             #[cfg(feature = "tracing")]
             tracing::Span::current().record("tier", "least_busy_scan");
+            #[cfg(feature = "metrics")]
+            metrics::counter!(
+                crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+                "tier" => "least_busy_scan",
+            )
+            .increment(1);
             return Job::execute_with(&arc, sql, params).await;
         }
 
         // §7.3 step 3: fall back to fair queueing.
         #[cfg(feature = "tracing")]
         tracing::Span::current().record("tier", "fair_queue");
+        #[cfg(feature = "metrics")]
+        metrics::counter!(
+            crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+            "tier" => "fair_queue",
+        )
+        .increment(1);
         let obj = self.get_or_timeout().await?;
         Job::execute_with(&obj, sql, params).await
     }
@@ -354,16 +401,27 @@ impl Pool {
         tracing::instrument(skip(self), fields(acquired_in_micros = tracing::field::Empty))
     )]
     pub async fn acquire(&self) -> crate::Result<crate::pool::reserved::Reserved> {
-        #[cfg(feature = "tracing")]
+        #[cfg(any(feature = "tracing", feature = "metrics"))]
         let start = std::time::Instant::now();
         let obj = self.get_or_timeout().await?;
+        // `Duration::as_micros()` returns u128 — saturate at u64::MAX
+        // (~584 942 years) to satisfy clippy::cast_possible_truncation
+        // without panicking on a hypothetically huge elapsed.
+        #[cfg(any(feature = "tracing", feature = "metrics"))]
+        let elapsed_micros = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
         #[cfg(feature = "tracing")]
+        tracing::Span::current().record("acquired_in_micros", elapsed_micros);
+        #[cfg(feature = "metrics")]
         {
-            // `Duration::as_micros()` returns u128 — saturate at u64::MAX
-            // (~584 942 years) to satisfy clippy::cast_possible_truncation
-            // without panicking on a hypothetically huge elapsed.
-            let elapsed = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
-            tracing::Span::current().record("acquired_in_micros", elapsed);
+            // `u64 as f64` is the recommended pattern for histogram::record;
+            // metric resolution is microseconds and the saturated u64::MAX
+            // upper bound is not representable in f64 mantissa precision, but
+            // any realistic elapsed (< 2^53 µs ≈ 285 years) fits exactly.
+            #[allow(clippy::cast_precision_loss)]
+            let micros_f64 = elapsed_micros as f64;
+            metrics::histogram!(crate::observability::POOL_ACQUIRE_LATENCY_MICROS)
+                .record(micros_f64);
+            metrics::counter!(crate::observability::POOL_RESERVED_ACQUIRED_TOTAL).increment(1);
         }
         Ok(crate::pool::reserved::Reserved::new(obj))
     }
@@ -418,5 +476,25 @@ impl Pool {
             PoolError::Backend(b) => b,
             other => crate::Error::Internal(format!("pool: {other}")),
         })
+    }
+}
+
+/// Emit the three pool-status gauges (`size`, `available`, `waiting`) from a
+/// fresh deadpool [`PoolStatus`] snapshot. Called once per `Pool::execute*`
+/// invocation; downstream samplers see one data point per call (sufficient
+/// granularity for Prometheus-style scrape windows without overwhelming the
+/// recorder hot path).
+///
+/// `usize -> f64` casts are flagged by `clippy::cast_precision_loss` because
+/// values above 2^53 lose mantissa precision; for pool sizes that's
+/// essentially impossible (we'd run out of file descriptors first), so the
+/// allow is sound.
+#[cfg(feature = "metrics")]
+fn emit_pool_status_gauges(s: &PoolStatus) {
+    #[allow(clippy::cast_precision_loss)]
+    {
+        metrics::gauge!(crate::observability::POOL_SIZE).set(s.size as f64);
+        metrics::gauge!(crate::observability::POOL_AVAILABLE).set(s.available as f64);
+        metrics::gauge!(crate::observability::POOL_WAITING).set(s.waiting as f64);
     }
 }

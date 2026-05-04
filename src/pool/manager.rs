@@ -57,6 +57,8 @@ impl Manager for JobManager {
     async fn create(&self) -> Result<Arc<Job>, Error> {
         let job = Arc::new(Job::connect(&self.server).await?);
         self.registry.track(&job);
+        #[cfg(feature = "metrics")]
+        metrics::counter!(crate::observability::POOL_CREATE_TOTAL).increment(1);
         Ok(job)
     }
 
@@ -65,7 +67,18 @@ impl Manager for JobManager {
         // RecyclingMethod::Verified — round-trip a ping. IBM i firewalls
         // silently kill idle TCP sessions; without this check, the next caller
         // discovers the dead connection mid-execute. Spec §7.1.
-        job.ping().await.map(|_| ()).map_err(RecycleError::Backend)
+        match job.ping().await {
+            Ok(_) => {
+                #[cfg(feature = "metrics")]
+                metrics::counter!(crate::observability::POOL_RECYCLE_SUCCESS_TOTAL).increment(1);
+                Ok(())
+            }
+            Err(e) => {
+                #[cfg(feature = "metrics")]
+                metrics::counter!(crate::observability::POOL_RECYCLE_FAIL_TOTAL).increment(1);
+                Err(RecycleError::Backend(e))
+            }
+        }
     }
 }
 
