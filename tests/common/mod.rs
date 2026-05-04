@@ -20,10 +20,19 @@
 pub mod mock_server;
 
 use std::sync::{Arc, Mutex};
+#[allow(unused_imports)] // Used by spawn_mock_pool only — some test binaries skip it.
+use std::time::Duration;
 
 use mapepire::protocol::{QueryResult, Request};
-use mapepire::{DaemonServer, Job, TlsConfig};
+#[allow(unused_imports)] // `Pool` is used only by spawn_mock_pool — same per-binary story.
+use mapepire::{DaemonServer, Job, Pool, TlsConfig};
 pub use mock_server::{MockBehavior, RequestRecorder, spawn_mock};
+// Re-exports of multi-connection mock types. Each test binary compiles
+// `common` independently; binaries that don't reach into the new pool-mock
+// surface area would warn on these as unused. The allow keeps the
+// re-export shape intact for binaries that DO use them (Tasks 27–30).
+#[allow(unused_imports)]
+pub use mock_server::{MockHandle, ResponsePauseGuard, spawn_pool_mock};
 use tokio::sync::oneshot;
 
 /// Spawn a mock with [`MockBehavior::AcceptAndConnect`], build a
@@ -191,4 +200,60 @@ pub fn spawn_mock_pool_with_recorder(
     };
     let server = spawn_mock_and_server(behavior);
     (server, recorder)
+}
+
+/// Spawn a multi-connection [`spawn_pool_mock`] and build the
+/// [`Arc<DaemonServer>`] pointing at it, returning the server alongside
+/// the [`MockHandle`] for cross-connection observation.
+///
+/// Counterpart to [`spawn_mock_and_server`] (single-connection / behavior
+/// enum) but for Phase 9 pool integration tests, where the same mock must
+/// service multiple TCP connections opened by [`mapepire::Pool`].
+///
+/// The mock speaks a generic happy-path protocol — any `Sql`,
+/// `PrepareSqlExecute`, `Execute`, or `SqlMore` request gets an empty
+/// terminal `QueryResult`; `Ping` gets `Pong`; `Exit` closes cleanly.
+/// Tests that need specific row data should use the v0.2
+/// [`MockBehavior::Pages`] mock instead.
+#[allow(dead_code)]
+pub fn spawn_pool_mock_and_server() -> (Arc<DaemonServer>, MockHandle) {
+    let (addr, cert_der, handle) = spawn_pool_mock();
+    let server = Arc::new(
+        DaemonServer::builder()
+            .host("127.0.0.1")
+            .port(addr.port())
+            .user("TESTUSER")
+            .password("testpass".to_string())
+            .tls(TlsConfig::Ca(cert_der))
+            .build()
+            .expect("build DaemonServer"),
+    );
+    (server, handle)
+}
+
+/// Build a [`Pool`] of capacity `max_size` backed by a multi-connection
+/// [`spawn_pool_mock`]. Returns the pool and a [`MockHandle`] for
+/// cross-connection observation.
+///
+/// `acquire_timeout` is set to a short window (2s) so saturation tests
+/// (Task 30) can race the second `acquire()` against the timeout without
+/// relying on a slow real network. Tests that need a different timeout
+/// can call [`spawn_pool_mock_and_server`] and build the pool themselves.
+///
+/// `Box::pin` wraps the build future to satisfy `clippy::large_futures` —
+/// the [`mapepire::PoolBuilder::build`] future contains the deadpool
+/// constructor and (with a non-default `starting_size`) eager TLS
+/// handshakes; pinning keeps the auto-future state machine off the stack.
+#[allow(dead_code)]
+pub async fn spawn_mock_pool(max_size: usize) -> (Pool, MockHandle) {
+    let (server, handle) = spawn_pool_mock_and_server();
+    let pool = Box::pin(
+        Pool::builder(server)
+            .max_size(max_size)
+            .acquire_timeout(Some(Duration::from_secs(2)))
+            .build(),
+    )
+    .await
+    .expect("pool builds");
+    (pool, handle)
 }

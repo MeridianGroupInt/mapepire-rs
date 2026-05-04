@@ -3,16 +3,20 @@
 //! The mock binds to `127.0.0.1:0` (OS-assigned port), wraps each
 //! accepted TCP stream in TLS using a baked-at-test-time self-signed cert,
 //! and completes the WebSocket upgrade. It then reads inbound JSON frames
-//! as [`Request`] values and emits predetermined [`Response`] JSON frames
-//! based on the [`MockBehavior`] configured at spawn time.
+//! as [`Request`] values and emits predetermined [`Response`] JSON frames.
 //!
-//! **Single-connection per spawn.** Each call to [`spawn_mock`] handles
-//! exactly ONE accepted connection. Phase 6 integration tests must call
-//! [`spawn_mock`] (or [`super::spawn_mock_and_connect`]) once per test — the
-//! mock panics if a second connection arrives.
+//! Two flavors are exposed:
 //!
-//! **No SQL parsing.** The mock dispatches on the *type* of the inbound
-//! request, not the SQL text. It returns canned responses.
+//! - [`spawn_mock`] — **single-connection per spawn**, configured by [`MockBehavior`]. Each call
+//!   accepts exactly ONE connection and exits. Used by Phase 6 integration tests (Tasks 22–25,
+//!   Cleanups D & E) that exercise specific protocol shapes.
+//! - [`spawn_pool_mock`] — **multi-connection**, generic happy-path responses, with shared
+//!   observation state surfaced through [`MockHandle`]. Used by Phase 9 pool integration tests
+//!   (Tasks 26–30) where multiple `Job`s must coexist behind one mock and the test asserts on
+//!   cross-connection behavior (which socket saw what, in what order).
+//!
+//! **No SQL parsing.** Both mocks dispatch on the *type* of the inbound
+//! request, not the SQL text. They return canned responses.
 //!
 //! **No `unsafe`.** Test-style `.unwrap()` / `.expect()` are used freely
 //! throughout since panics become test failures.
@@ -505,5 +509,503 @@ fn request_id(req: &Request) -> String {
         | Request::Exit { id } => id.clone(),
         // The enum is #[non_exhaustive]; catch any future variants.
         _ => "unknown".into(),
+    }
+}
+
+/// Map a [`Request`] variant to its wire-tag discriminator string.
+///
+/// Mirrors the `#[serde(tag = "type", rename_all = "snake_case")]` plus the
+/// per-variant `#[serde(rename = "...")]` overrides on the inbound enum so
+/// [`MockHandle::observed_request_types`] reports the same string the daemon
+/// would see on the wire.
+//
+// `tests/common` is compiled as part of every integration-test binary;
+// binaries that don't use the multi-connection mock will see this helper
+// as unused, so suppress dead-code at the function level rather than the
+// crate level.
+#[allow(dead_code)]
+fn request_type(req: &Request) -> &'static str {
+    match req {
+        Request::Connect { .. } => "connect",
+        Request::Sql { .. } => "sql",
+        Request::PrepareSql { .. } => "prepare_sql",
+        Request::PrepareSqlExecute { .. } => "prepare_sql_execute",
+        Request::Execute { .. } => "execute",
+        Request::SqlMore { .. } => "sqlmore",
+        Request::SqlClose { .. } => "sqlclose",
+        Request::Cl { .. } => "cl",
+        Request::GetVersion { .. } => "getversion",
+        Request::GetDbJob { .. } => "getdbjob",
+        Request::SetConfig { .. } => "setconfig",
+        Request::GetTraceData { .. } => "gettracedata",
+        Request::Dove { .. } => "dove",
+        Request::Ping { .. } => "ping",
+        Request::Exit { .. } => "exit",
+        // The enum is `#[non_exhaustive]`; surface unknown variants as a
+        // dedicated tag so test failures point at *adding a variant* rather
+        // than crashing on a `_` panic. Tests that assert on specific tags
+        // won't see this in practice.
+        _ => "other",
+    }
+}
+
+// `tests/common` is compiled once per integration-test binary; the binaries
+// that don't use the multi-connection mock would see the new types and
+// methods as unused. The crate-level dead-code suppression on
+// [`MockBehavior`] is per-variant and doesn't extend here, so apply
+// per-item allows below.
+
+/// Shared per-mock state captured across every accepted connection.
+///
+/// Used by [`MockHandle`] to expose multi-connection observability: which
+/// socket saw which request, in what order, and (when [`MockState::pause`]
+/// is `Some`) how long every per-connection task should sleep before
+/// emitting its next response.
+///
+/// Locked under a `std::sync::Mutex` deliberately:
+/// - Critical sections are short (push one entry, read one `Option`, etc.).
+/// - The lock is **never held across `.await`** (per AGENTS.md / `clippy::await_holding_lock`), so
+///   an async-aware `tokio::sync::Mutex` would only buy contention overhead with no scheduling
+///   benefit.
+/// - `MockHandle` lock taps and per-connection lock taps both stay self-contained: lock, mutate /
+///   clone, drop, then await.
+#[allow(dead_code)]
+pub(crate) struct MockState {
+    /// Append-only history of `(socket_id, request)` pairs across every
+    /// accepted connection. New entries land via [`MockState::push_request`]
+    /// in the per-connection task immediately after a request is read off
+    /// the wire and before the canned response is built.
+    pub(crate) requests: Vec<(u64, Request)>,
+    /// Monotonically incremented for each accepted TCP connection. The
+    /// listener task takes a fresh id from this counter and hands it to
+    /// the per-connection task, so connection ids are stable for the
+    /// lifetime of the mock.
+    pub(crate) socket_count: u64,
+    /// When `Some(d)`, every per-connection task sleeps for `d` *before*
+    /// sending each response (after recording the inbound request, so the
+    /// observation hooks remain prompt). Used by [`MockHandle::pause_responses`]
+    /// to slow the mock without dropping connections — Task 30's pool
+    /// saturation test gates the second `acquire()` on a paused first
+    /// response.
+    pub(crate) pause: Option<std::time::Duration>,
+}
+
+#[allow(dead_code)]
+impl MockState {
+    /// Append `(socket_id, req)` to the request history. Cheap critical
+    /// section — clone happens before the lock is taken so the lock is
+    /// held only for the `Vec::push`.
+    pub(crate) fn push_request(state: &Arc<Mutex<Self>>, socket_id: u64, req: Request) {
+        let mut g = state.lock().expect("mock state mutex not poisoned");
+        g.requests.push((socket_id, req));
+    }
+
+    /// Read the current pause window, if any. Returns a clone of the
+    /// `Option<Duration>` so the caller can `tokio::time::sleep` without
+    /// holding the lock across the `.await`.
+    pub(crate) fn pause(state: &Arc<Mutex<Self>>) -> Option<std::time::Duration> {
+        state.lock().expect("mock state mutex not poisoned").pause
+    }
+}
+
+/// Multi-connection observation handle returned alongside [`spawn_pool_mock`].
+///
+/// The handle wraps the same `Arc<Mutex<MockState>>` that the mock's
+/// per-connection tasks write to, so `MockHandle::observed_*` methods see
+/// requests live as the dispatcher emits them. Pool tests typically:
+///
+/// 1. `spawn_pool_mock_and_server()` (or `spawn_mock_pool(N)`) → get the `MockHandle`.
+/// 2. Drive concurrent acquires on the pool.
+/// 3. Assert on `handle.observed_socket_ids()`, `handle.last_socket_for_sql("UPDATE")`, etc.
+///
+/// All accessors are sync — they take the std mutex, snapshot the data,
+/// and release before returning. No `.await` is held across the lock.
+/// Tests can call them from anywhere (including outside a tokio context)
+/// because the mutex is `std::sync::Mutex`.
+///
+/// Cheap to clone — it's a single `Arc`. Tests that fan out spawn a clone
+/// per task without touching the lock until they need to read.
+#[allow(dead_code)]
+#[derive(Clone)]
+pub struct MockHandle {
+    state: Arc<Mutex<MockState>>,
+}
+
+#[allow(dead_code)]
+impl MockHandle {
+    /// All socket ids that have appeared in the request history, sorted &
+    /// deduped. Empty vec means no requests landed yet (or no connection
+    /// was accepted).
+    ///
+    /// Note: a socket's id is only minted into the history once that
+    /// socket's per-connection task receives at least one request *after*
+    /// the initial `Connect`. A connection that opens and immediately
+    /// stalls without issuing a follow-up request will not appear here —
+    /// use [`MockHandle::open_socket_count`] for "how many TCP accepts".
+    pub fn observed_socket_ids(&self) -> Vec<u64> {
+        let g = self.state.lock().expect("mock state mutex not poisoned");
+        let mut ids: Vec<u64> = g.requests.iter().map(|(sid, _)| *sid).collect();
+        drop(g);
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
+    /// Every SQL text the mock has observed across every connection, in
+    /// the order it landed on the wire. Pulls from [`Request::Sql`] and
+    /// [`Request::PrepareSqlExecute`] only — `PrepareSql` (no execute) and
+    /// `Execute` (no SQL text, just `cont_id`) are excluded.
+    pub fn observed_sql(&self) -> Vec<String> {
+        let g = self.state.lock().expect("mock state mutex not poisoned");
+        g.requests
+            .iter()
+            .filter_map(|(_, r)| match r {
+                Request::Sql { sql, .. } | Request::PrepareSqlExecute { sql, .. } => {
+                    Some(sql.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every wire-tag string the mock has observed, in order. Mirrors the
+    /// `#[serde(tag = "type")]` discriminator that the daemon would see —
+    /// useful for asserting that (e.g.) a recycle ping landed before a SQL
+    /// statement on a particular socket.
+    pub fn observed_request_types(&self) -> Vec<String> {
+        let g = self.state.lock().expect("mock state mutex not poisoned");
+        g.requests
+            .iter()
+            .map(|(_, r)| request_type(r).to_owned())
+            .collect()
+    }
+
+    /// Number of TCP connections the mock has accepted, *whether or not*
+    /// any post-connect request landed on them. Reads the listener-task's
+    /// counter directly.
+    pub fn open_socket_count(&self) -> usize {
+        let g = self.state.lock().expect("mock state mutex not poisoned");
+        usize::try_from(g.socket_count).unwrap_or(usize::MAX)
+    }
+
+    /// Locate the most-recent socket id whose request history contains a
+    /// SQL statement matching `needle` (case-insensitive substring search).
+    /// Returns `None` if no `Sql` or `PrepareSqlExecute` request matched.
+    ///
+    /// Task 28's reserved-transaction test asserts that BEGIN, an UPDATE,
+    /// and COMMIT all share the same socket — this helper is the lookup
+    /// primitive for that assertion.
+    pub fn last_socket_for_sql(&self, needle: &str) -> Option<u64> {
+        let needle_upper = needle.to_ascii_uppercase();
+        let g = self.state.lock().expect("mock state mutex not poisoned");
+        g.requests.iter().rev().find_map(|(sid, r)| match r {
+            Request::Sql { sql, .. } | Request::PrepareSqlExecute { sql, .. } => {
+                if sql.to_ascii_uppercase().contains(&needle_upper) {
+                    Some(*sid)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+    }
+
+    /// Slow every subsequent mock response by `dur`. The pause persists
+    /// for the lifetime of the returned [`ResponsePauseGuard`]; dropping
+    /// the guard restores normal speed.
+    ///
+    /// Used by Task 30's saturation test: hold the pause across two
+    /// `pool.acquire()` calls so the second one races against
+    /// `acquire_timeout` while the first connection's recycle ping is
+    /// still in flight.
+    ///
+    /// **Note on semantics.** The pause is read inside each per-connection
+    /// task's run-loop *between* recording an inbound request and emitting
+    /// its response. Requests still reach the observation hooks promptly;
+    /// only the response is delayed. This keeps `observed_*` lookups
+    /// deterministic even while the dispatcher is blocked on a pending
+    /// reply.
+    pub fn pause_responses(&self, dur: std::time::Duration) -> ResponsePauseGuard {
+        let state = Arc::clone(&self.state);
+        {
+            let mut g = state.lock().expect("mock state mutex not poisoned");
+            g.pause = Some(dur);
+        }
+        ResponsePauseGuard { state }
+    }
+}
+
+/// RAII guard returned by [`MockHandle::pause_responses`]. Dropping it
+/// clears the per-mock pause window, restoring normal-speed responses on
+/// every per-connection task.
+///
+/// `#[must_use]` because forgetting to bind the guard means the pause
+/// applies for a single statement (drop happens at end of expression),
+/// which is almost never the test's intent.
+#[allow(dead_code)]
+#[must_use = "ResponsePauseGuard restores normal mock speed only when dropped"]
+pub struct ResponsePauseGuard {
+    state: Arc<Mutex<MockState>>,
+}
+
+impl Drop for ResponsePauseGuard {
+    fn drop(&mut self) {
+        let mut g = self
+            .state
+            .lock()
+            .expect("mock state mutex not poisoned (Drop)");
+        g.pause = None;
+    }
+}
+
+/// Spawn a multi-connection mock TLS+WebSocket server bound to `127.0.0.1:0`.
+///
+/// Unlike [`spawn_mock`] (single-connection per spawn), the listener task
+/// here runs `accept().await` in a loop and dispatches each accepted TCP
+/// stream to a fresh per-connection task. All tasks share an
+/// `Arc<Mutex<MockState>>` so [`MockHandle`] can observe the request
+/// history across every connection.
+///
+/// Each per-connection task speaks a generic happy-path protocol — accept
+/// `Connect`, ack with `Connected`; for every subsequent request, record
+/// it in `MockState::requests`, optionally sleep for `MockState::pause`,
+/// then emit a canned response (empty `QueryResult` for SQL-shaped
+/// requests, `Pong` for `Ping`, `SqlClosed` for `SqlClose`, `Exited` for
+/// `Exit`). This is enough for pool integration tests, which care about
+/// *which socket* saw a request, not the row data the daemon would have
+/// returned.
+///
+/// Returns the bound [`SocketAddr`], the self-signed cert as DER bytes
+/// (for `TlsConfig::Ca` pinning), and the [`MockHandle`] for observation.
+///
+/// # Panics
+///
+/// Must be called from within a tokio async context. Panics if called
+/// outside a runtime.
+#[allow(dead_code)]
+pub fn spawn_pool_mock() -> (SocketAddr, Vec<u8>, MockHandle) {
+    // Mint a self-signed cert for 127.0.0.1 — same shape as `spawn_mock`.
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
+            .expect("rcgen self-signed cert");
+    let cert_der: Vec<u8> = cert.der().as_ref().to_vec();
+    let key_der = signing_key.serialize_der();
+
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from(cert_der.clone())],
+            PrivatePkcs8KeyDer::from(key_der).into(),
+        )
+        .expect("rustls ServerConfig");
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
+    std_listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = std_listener.local_addr().expect("mock local_addr");
+    let listener = TcpListener::from_std(std_listener).expect("convert to tokio listener");
+
+    let state = Arc::new(Mutex::new(MockState {
+        requests: Vec::new(),
+        socket_count: 0,
+        pause: None,
+    }));
+    let handle = MockHandle {
+        state: Arc::clone(&state),
+    };
+
+    // Top-level accept loop. Runs as long as the listener is live; the
+    // listener drops when the test runtime shuts down. Each accepted
+    // socket is handed to a fresh `tokio::spawn` so the accept loop is
+    // never blocked by a stuck per-connection task.
+    let acceptor_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        loop {
+            // listener closed → runtime shutting down → exit accept loop.
+            let Ok((tcp_stream, _peer)) = listener.accept().await else {
+                break;
+            };
+            // Mint a socket id under the lock, then drop the lock before
+            // any await. Ids start at 1 so a `0` from a default
+            // initialization never collides with a real connection.
+            let socket_id = {
+                let mut g = acceptor_state
+                    .lock()
+                    .expect("mock state mutex not poisoned (accept loop)");
+                g.socket_count += 1;
+                g.socket_count
+            };
+            let acceptor = acceptor.clone();
+            let conn_state = Arc::clone(&acceptor_state);
+            tokio::spawn(async move {
+                // TLS handshake failure → drop connection silently. The
+                // test runtime's listener may shut down mid-handshake on
+                // teardown; that's a benign drop, not a test failure.
+                let Ok(tls_stream) = acceptor.accept(tcp_stream).await else {
+                    return;
+                };
+                // WS upgrade failure → drop. Same rationale as above.
+                let Ok(ws_stream) = accept_async(tls_stream).await else {
+                    return;
+                };
+                run_pool_connection(ws_stream, socket_id, conn_state).await;
+            });
+        }
+    });
+
+    (addr, cert_der, handle)
+}
+
+/// Drive one connection's request/response loop for the multi-connection
+/// mock. Counterpart to [`run_mock`] but with shared-state observation
+/// instead of a behavior enum.
+///
+/// Behavior:
+/// - Wait for `Connect`, respond with `Connected` (so the dispatcher's handshake completes).
+/// - For every subsequent request: record it in `state.requests`, read the current pause window,
+///   sleep that long if any, then emit a canned response keyed off the variant.
+/// - `Exit` triggers a clean close.
+async fn run_pool_connection<S>(
+    ws_stream: tokio_tungstenite::WebSocketStream<S>,
+    socket_id: u64,
+    state: Arc<Mutex<MockState>>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (mut sink, mut stream) = ws_stream.split();
+
+    macro_rules! send_response {
+        ($resp:expr) => {{
+            let json = serde_json::to_string(&$resp).expect("serialize response");
+            // If a response can't be sent (peer dropped, etc.), the test
+            // harness has already lost interest — exit cleanly rather than
+            // panicking, which would surface as a noisy task-panic in
+            // unrelated tests.
+            if sink.send(Message::Text(json.into())).await.is_err() {
+                return;
+            }
+        }};
+    }
+
+    macro_rules! recv_request {
+        () => {{
+            loop {
+                match stream.next().await {
+                    Some(Ok(Message::Text(t))) => {
+                        break Some(
+                            serde_json::from_str::<Request>(&t).expect("deserialize request"),
+                        );
+                    }
+                    Some(Ok(Message::Ping(data))) => {
+                        if sink.send(Message::Pong(data)).await.is_err() {
+                            break None;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break None,
+                    Some(Ok(_)) => continue,    // binary, pong, frame
+                    Some(Err(_)) => break None, // peer reset / decode error
+                }
+            }
+        }};
+    }
+
+    // Step 1: handshake — `Connect` → `Connected`.
+    let connect_id = match recv_request!() {
+        Some(Request::Connect { id, .. }) => id,
+        // Surface non-`Connect` first frames as a hard test failure: pool
+        // integration tests assume the dispatcher always opens with
+        // `Connect`. A misordered open frame would silently mask a real
+        // bug otherwise.
+        other => panic!("pool mock expected Connect, got {other:?}"),
+    };
+    send_response!(Response::Connected {
+        id: connect_id,
+        version: MOCK_VERSION.into(),
+        job: MOCK_JOB.into(),
+    });
+
+    // Step 2: request loop.
+    loop {
+        match recv_request!() {
+            None => break,
+            Some(req) => {
+                // Record before responding so the test can observe the
+                // request even if the response is paused or the connection
+                // is about to drop.
+                MockState::push_request(&state, socket_id, req.clone());
+
+                // Honor the current pause window. Read & release the lock
+                // before sleeping — never hold a std::sync::Mutex across
+                // an await.
+                if let Some(dur) = MockState::pause(&state) {
+                    tokio::time::sleep(dur).await;
+                }
+
+                match req {
+                    Request::Exit { id } => {
+                        send_response!(Response::Exited { id });
+                        let _ = sink.send(Message::Close(None)).await;
+                        break;
+                    }
+                    Request::Ping { id } => {
+                        send_response!(Response::Pong { id });
+                    }
+                    Request::Sql { id, .. }
+                    | Request::PrepareSqlExecute { id, .. }
+                    | Request::Execute { id, .. }
+                    | Request::SqlMore { id, .. } => {
+                        // Generic empty success — no rows, terminal page.
+                        // Pool tests don't depend on row content; tests
+                        // that need specific rows use the v0.2 `Pages`
+                        // mock instead.
+                        send_response!(Response::QueryResult(canned_empty_query_result(id)));
+                    }
+                    Request::PrepareSql { id, .. } => {
+                        // Synthetic prepared-statement handle — distinct
+                        // per socket so test assertions on `cont_id`
+                        // don't collide across connections.
+                        send_response!(Response::PreparedStatement {
+                            id,
+                            success: true,
+                            cont_id: format!("pool-mock-stmt-{socket_id}"),
+                            execution_time: 0.0,
+                        });
+                    }
+                    Request::SqlClose { id, .. } => {
+                        send_response!(Response::SqlClosed { id, success: true });
+                    }
+                    other => {
+                        // Catch-all for non-SQL request shapes (Cl,
+                        // GetVersion, GetDbJob, SetConfig, GetTraceData,
+                        // Dove, etc.). Pong is a safe echo — the
+                        // dispatcher routes by `id`, not by response
+                        // variant, so this completes the round-trip.
+                        let id = request_id(&other);
+                        send_response!(Response::Pong { id });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Build an empty terminal `QueryResult` stamped with the given request
+/// id. Helper for the multi-connection mock — keeps the per-variant
+/// match arms readable.
+fn canned_empty_query_result(id: String) -> QueryResult {
+    use mapepire::protocol::{Column, QueryMetaData};
+    QueryResult {
+        id,
+        success: true,
+        has_results: false,
+        update_count: 0,
+        cont_id: None,
+        is_done: true,
+        metadata: QueryMetaData {
+            column_count: 0,
+            columns: Vec::<Column>::new(),
+        },
+        data: Vec::new(),
+        execution_time: 0.0,
     }
 }
