@@ -96,6 +96,13 @@ tokio-rustls = { version = "0.26", default-features = false }
 # `ring`/`aws_lc_rs` features is active. This dev-dep activates `ring`
 # on the same rustls version, resolving the ambiguity at test time only.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# `metrics-util`'s `debugging` feature exposes `DebuggingRecorder` +
+# `Snapshotter` for the Task 13 metrics integration test
+# (`tests/metrics_smoke.rs`). `default-features = false` keeps the
+# dev-dep tree minimal — we only need the `debugging` shim. Version
+# 0.20 is API-aligned with the `metrics 0.24` dep so cargo-deny's
+# multiple-versions = "deny" stays clean.
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
 
 [package.metadata.docs.rs]
 all-features = true
