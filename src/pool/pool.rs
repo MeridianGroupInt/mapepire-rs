@@ -39,7 +39,34 @@ pub struct Pool {
     pub(crate) acquire_timeout: Option<Duration>,
 }
 
+/// Per-job saturation threshold beyond which the routing scan stops
+/// preferring the pinned Job and waits for an idle one instead (spec §7.3
+/// step 3).
+///
+/// Picked at 32 outstanding requests per dispatcher: below that, the v0.2
+/// dispatcher's mpsc(64) outbound queue + per-Job `pending` `HashMap` absorb
+/// concurrent multiplexing without back-pressure stalls; above it, queue
+/// depth and per-response demux overhead start to dominate. The threshold
+/// is intentionally a hard-coded constant for v0.3 — making it
+/// configurable adds API surface without strong evidence the right value
+/// is workload-dependent. v0.4 may revisit if real traffic shows a need.
+const SATURATION_THRESHOLD: u32 = 32;
+
 impl Pool {
+    /// Pick the least-busy upgradeable Job from the registry that is
+    /// **below** [`SATURATION_THRESHOLD`]. Returns `None` if every
+    /// candidate is at or above saturation (callers fall through to
+    /// fair queueing — spec §7.3 step 3).
+    ///
+    /// Scans up to `min(status().size, 8)` candidates per the spec's
+    /// "wide enough to find a winner, narrow enough to stay cheap" heuristic.
+    fn pick_unsaturated(&self) -> Option<std::sync::Arc<crate::Job>> {
+        let limit = std::cmp::min(self.inner.status().size, 8);
+        let mut candidates = self.registry.least_busy(limit);
+        candidates.retain(|j| j.in_flight() < SATURATION_THRESHOLD);
+        candidates.into_iter().next()
+    }
+
     /// Begin building a `Pool` from a [`DaemonServer`] (or `Arc<DaemonServer>`).
     ///
     /// # Example
@@ -141,19 +168,19 @@ impl Pool {
         }
 
         // §7.3 step 2: scan up to min(status().size, 8) checked-out jobs
-        // and route through the least-busy upgradeable one. The Arc keeps
-        // the Job alive for the duration of this request even though
-        // the deadpool slot belongs to whoever currently has the
-        // Object<JobManager> checked out — the v0.2 dispatcher
+        // and route through the least-busy unsaturated upgradeable one.
+        // The Arc keeps the Job alive for the duration of this request
+        // even though the deadpool slot belongs to whoever currently has
+        // the Object<JobManager> checked out — the v0.2 dispatcher
         // multiplexes concurrent requests on a single connection.
-        let limit = std::cmp::min(self.inner.status().size, 8);
-        let candidates = self.registry.least_busy(limit);
-        if let Some(arc) = candidates.into_iter().next() {
+        if let Some(arc) = self.pick_unsaturated() {
             return Job::execute(&arc, sql).await;
         }
 
-        // §7.3 step 3: fall back to fair queueing (waits up to
-        // `acquire_timeout`).
+        // §7.3 step 3: every candidate is at or above SATURATION_THRESHOLD
+        // (or the registry is empty) — fall back to fair queueing (waits
+        // up to `acquire_timeout`) so the caller blocks until something
+        // frees up rather than piling onto an already-saturated dispatcher.
         let obj = self.get_or_timeout().await?;
         Job::execute(&obj, sql).await
     }
@@ -216,11 +243,9 @@ impl Pool {
             }
         }
 
-        // §7.3 step 2: least-busy scan over min(status().size, 8)
-        // checked-out jobs (see `execute` for the full rationale).
-        let limit = std::cmp::min(self.inner.status().size, 8);
-        let candidates = self.registry.least_busy(limit);
-        if let Some(arc) = candidates.into_iter().next() {
+        // §7.3 step 2: least-busy scan filtered by SATURATION_THRESHOLD
+        // (see `execute` for the full rationale).
+        if let Some(arc) = self.pick_unsaturated() {
             return Job::execute_with(&arc, sql, params).await;
         }
 
