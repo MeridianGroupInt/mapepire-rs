@@ -2,9 +2,9 @@
 //!
 //! Wraps `deadpool::managed::Pool<JobManager>`. The pool surface itself is
 //! intentionally minimal — most users construct via [`Pool::builder`], call
-//! `Pool::execute` (Task 11) for one-shot work, or `Pool::acquire`
-//! (Task 13) for transactional connections. Routing scan landing in Task 24
-//! / PRO-454 will replace the naive checkout.
+//! `Pool::execute` for one-shot work, or `Pool::acquire` (Task 13) for
+//! transactional connections. `Pool::execute` performs the §7.3 three-tier
+//! routing scan (try-idle → least-busy multiplex → fair-queue fallback).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,13 +32,9 @@ use crate::pool::routing::Registry;
 #[derive(Clone)]
 pub struct Pool {
     pub(crate) inner: DeadPool<JobManager>,
-    // Task 23 / PRO-453 wired up the registry: `JobManager::create` now
-    // tracks each new `Arc<Job>` here via a shared `Arc<Registry>`. The
-    // `Pool` itself doesn't yet read from the field — the §7.3 routing
-    // scan in `Pool::execute` lands in Task 24 / PRO-454. Until then this
-    // field-level `dead_code` allow narrows the suppression to the one
-    // truly-dead read site rather than blanket-allowing the struct.
-    #[allow(dead_code)]
+    // Task 23 / PRO-453 wired up the registry: `JobManager::create` tracks
+    // each new `Arc<Job>` via this shared `Arc<Registry>`. Task 24 /
+    // PRO-454 reads from it in `Pool::execute`'s §7.3 routing scan.
     pub(crate) registry: Arc<Registry>,
     pub(crate) acquire_timeout: Option<Duration>,
 }
@@ -67,10 +63,19 @@ impl Pool {
         PoolBuilder::new(server.into())
     }
 
-    /// Execute a SQL statement on the next-available pooled job.
+    /// Execute a SQL statement using the §7.3 three-tier routing scan.
     ///
-    /// Naive checkout: `pool.get()` → run on `&Job` → return to pool on
-    /// drop. The least-busy-job routing scan lands in Task 24 / PRO-454.
+    /// Routing order (spec §7.3):
+    /// 1. **Try idle**: a non-blocking `try_get` returns immediately if a pooled `Job` is idle
+    ///    (`in_flight == 0`). Run on it directly.
+    /// 2. **Least-busy scan**: otherwise, peek at up to `min(status().size, 8)`
+    ///    currently-checked-out jobs via the routing registry and ride the lowest-`in_flight` one —
+    ///    the v0.2 dispatcher already multiplexes concurrent requests on a single connection, so
+    ///    this routes additional work onto a Job another caller has out without blocking on the
+    ///    fair queue.
+    /// 3. **Fair-queue fallback**: if no upgradeable Jobs are eligible (e.g., pool not yet warmed,
+    ///    or every Job is `Reserved`'s `u32::MAX` sentinel), wait via `pool.get()` honoring
+    ///    `acquire_timeout`.
     ///
     /// # Errors
     ///
@@ -99,11 +104,66 @@ impl Pool {
     /// # }
     /// ```
     pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
+        use crate::Job;
+
+        // §7.3 step 1: try an immediately-idle job. We gate on
+        // `status().available > 0` and then call `timeout_get` with all
+        // timeouts at `Duration::ZERO` — `wait: ZERO` makes the semaphore
+        // acquire non-blocking and `create: ZERO` ensures we don't block
+        // on a TLS handshake if the pool happens not to be at full size
+        // yet (we want a *currently idle* connection only). Any `Err`
+        // (Timeout, Backend, …) is treated as "no idle slot available
+        // right now" and we fall through to the scan / fair-queue
+        // fallback — real backend errors resurface on `get_or_timeout`.
+        //
+        // **v0.4 caveat:** `recycle: Some(ZERO)` is `tokio::time::timeout(ZERO, ping)`
+        // which allows ~1 timer-tick of grace. On real IBM i deployments where ping
+        // RTT may exceed that, the recycle ping times out → deadpool detaches the
+        // connection → step 3 fallback opens a fresh one (connection thrash, not a
+        // correctness bug). The clean fix needs a deadpool API change (or a
+        // registry-backed step 1 — see PR #83 routing infra) and is deferred to v0.4.
+        if self.inner.status().available > 0 {
+            let nb = deadpool::managed::Timeouts {
+                wait: Some(Duration::ZERO),
+                create: Some(Duration::ZERO),
+                recycle: Some(Duration::ZERO),
+            };
+            if let Ok(obj) = Box::pin(self.inner.timeout_get(&nb)).await {
+                if obj.in_flight() == 0 {
+                    return Job::execute(&obj, sql).await;
+                }
+                // Idle slot returned but the underlying Job is mid-flight
+                // (a caller dropped a future without awaiting; the
+                // Object is still unowned). Drop the checkout — the scan
+                // / fair-queue fallback picks a better target.
+                drop(obj);
+            }
+        }
+
+        // §7.3 step 2: scan up to min(status().size, 8) checked-out jobs
+        // and route through the least-busy upgradeable one. The Arc keeps
+        // the Job alive for the duration of this request even though
+        // the deadpool slot belongs to whoever currently has the
+        // Object<JobManager> checked out — the v0.2 dispatcher
+        // multiplexes concurrent requests on a single connection.
+        let limit = std::cmp::min(self.inner.status().size, 8);
+        let candidates = self.registry.least_busy(limit);
+        if let Some(arc) = candidates.into_iter().next() {
+            return Job::execute(&arc, sql).await;
+        }
+
+        // §7.3 step 3: fall back to fair queueing (waits up to
+        // `acquire_timeout`).
         let obj = self.get_or_timeout().await?;
-        crate::Job::execute(&obj, sql).await
+        Job::execute(&obj, sql).await
     }
 
-    /// Execute a parameterized SQL statement on the next-available pooled job.
+    /// Execute a parameterized SQL statement using the §7.3 three-tier
+    /// routing scan.
+    ///
+    /// Routes identically to [`Pool::execute`] (try-idle → least-busy
+    /// scan → fair-queue fallback) and forwards `params` through to
+    /// [`crate::Job::execute_with`].
     ///
     /// # Errors
     ///
@@ -137,8 +197,36 @@ impl Pool {
         sql: &str,
         params: &[serde_json::Value],
     ) -> crate::Result<crate::query::Rows> {
+        use crate::Job;
+
+        // §7.3 step 1: try an immediately-idle job (see `execute` for
+        // the rationale on the all-zero-timeouts non-blocking checkout
+        // and dropping its errors silently).
+        if self.inner.status().available > 0 {
+            let nb = deadpool::managed::Timeouts {
+                wait: Some(Duration::ZERO),
+                create: Some(Duration::ZERO),
+                recycle: Some(Duration::ZERO),
+            };
+            if let Ok(obj) = Box::pin(self.inner.timeout_get(&nb)).await {
+                if obj.in_flight() == 0 {
+                    return Job::execute_with(&obj, sql, params).await;
+                }
+                drop(obj);
+            }
+        }
+
+        // §7.3 step 2: least-busy scan over min(status().size, 8)
+        // checked-out jobs (see `execute` for the full rationale).
+        let limit = std::cmp::min(self.inner.status().size, 8);
+        let candidates = self.registry.least_busy(limit);
+        if let Some(arc) = candidates.into_iter().next() {
+            return Job::execute_with(&arc, sql, params).await;
+        }
+
+        // §7.3 step 3: fall back to fair queueing.
         let obj = self.get_or_timeout().await?;
-        crate::Job::execute_with(&obj, sql, params).await
+        Job::execute_with(&obj, sql, params).await
     }
 
     /// Reserve a single connection. The returned [`crate::Reserved`] holds the
