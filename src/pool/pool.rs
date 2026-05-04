@@ -32,10 +32,12 @@ use crate::pool::routing::Registry;
 #[derive(Clone)]
 pub struct Pool {
     pub(crate) inner: DeadPool<JobManager>,
-    // The routing scan landing in Task 23 / PRO-453 will be the first
-    // consumer of `registry`. Until then it's populated by `PoolBuilder::build`
-    // but unread; the field-level `dead_code` allow narrows the suppression
-    // to the one truly-dead field rather than blanket-allowing the struct.
+    // Task 23 / PRO-453 wired up the registry: `JobManager::create` now
+    // tracks each new `Arc<Job>` here via a shared `Arc<Registry>`. The
+    // `Pool` itself doesn't yet read from the field — the §7.3 routing
+    // scan in `Pool::execute` lands in Task 24 / PRO-454. Until then this
+    // field-level `dead_code` allow narrows the suppression to the one
+    // truly-dead read site rather than blanket-allowing the struct.
     #[allow(dead_code)]
     pub(crate) registry: Arc<Registry>,
     pub(crate) acquire_timeout: Option<Duration>,

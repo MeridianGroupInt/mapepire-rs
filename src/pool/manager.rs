@@ -24,17 +24,29 @@ use crate::job::Job;
 /// `JobManager`.
 pub struct JobManager {
     server: Arc<DaemonServer>,
+    registry: Arc<crate::pool::routing::Registry>,
 }
 
 impl JobManager {
-    /// Build a [`JobManager`] bound to the given [`DaemonServer`]. The
-    /// manager clones the `Arc` on each [`Manager::create`] call.
+    /// Build a [`JobManager`] bound to the given [`DaemonServer`] and routing
+    /// registry. The manager clones the [`DaemonServer`] `Arc` on each
+    /// [`Manager::create`] call, and registers the freshly-spawned `Arc<Job>`
+    /// with the shared registry so the §7.3 routing scan can later peek
+    /// `in_flight` without taking ownership.
     ///
     /// `pub` for the same reason as the struct itself — see the type-level
     /// doc comment.
+    ///
+    /// `Registry` is `pub(crate)` (it's a routing-internal type — external
+    /// callers have no use for it), but `JobManager::new` is `pub` so that
+    /// the `#[doc(hidden)]` re-export stays useful for the `manager_smoke`
+    /// integration test. The `private_interfaces` allow narrows the
+    /// suppression to this one signature; the `Registry` type stays out of
+    /// the rendered API surface.
+    #[allow(private_interfaces)]
     #[must_use]
-    pub fn new(server: Arc<DaemonServer>) -> Self {
-        Self { server }
+    pub fn new(server: Arc<DaemonServer>, registry: Arc<crate::pool::routing::Registry>) -> Self {
+        Self { server, registry }
     }
 }
 
@@ -43,8 +55,9 @@ impl Manager for JobManager {
     type Error = Error;
 
     async fn create(&self) -> Result<Arc<Job>, Error> {
-        let job = Job::connect(&self.server).await?;
-        Ok(Arc::new(job))
+        let job = Arc::new(Job::connect(&self.server).await?);
+        self.registry.track(&job);
+        Ok(job)
     }
 
     async fn recycle(&self, job: &mut Arc<Job>, _: &Metrics) -> RecycleResult<Error> {
