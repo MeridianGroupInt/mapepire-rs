@@ -7,10 +7,38 @@
 //! trait remains object-safe and usable as `&dyn Executor`. For monomorphic
 //! call sites, prefer the concrete types' inherent methods — they incur no
 //! boxing overhead.
+//!
+//! ## Example — write a helper once, pass any executor
+//!
+//! ```no_run
+//! use mapepire::Executor;
+//! # use mapepire::{DaemonServer, Pool, TlsConfig};
+//!
+//! async fn count_all<E: Executor>(exe: &E) -> mapepire::Result<()> {
+//!     let _rows = exe.execute("SELECT COUNT(*) FROM SYSIBM.SYSDUMMY1").await?;
+//!     Ok(())
+//! }
+//!
+//! # async fn example() -> mapepire::Result<()> {
+//! # let server = DaemonServer::builder()
+//! #     .host("ibmi.example.com")
+//! #     .user("MYUSER")
+//! #     .password("s3cret".to_string())
+//! #     .tls(TlsConfig::Verified)
+//! #     .build()
+//! #     .expect("missing required field");
+//! let pool = Pool::builder(server).max_size(2).build().await?;
+//! count_all(&pool).await?;
+//! let conn = pool.acquire().await?;
+//! count_all(&conn).await?;
+//! # Ok(()) }
+//! ```
 
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::job::Job;
+use crate::pool::{Pool, Reserved};
 use crate::query::Rows;
 
 /// Anything that can run a SQL statement against a Db2 daemon.
@@ -46,4 +74,60 @@ pub trait Executor {
         sql: &'a str,
         params: &'a [serde_json::Value],
     ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>>;
+}
+
+impl Executor for Job {
+    fn execute<'a>(
+        &'a self,
+        sql: &'a str,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        Box::pin(async move { Job::execute(self, sql).await })
+    }
+
+    fn execute_with<'a>(
+        &'a self,
+        sql: &'a str,
+        params: &'a [serde_json::Value],
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        Box::pin(async move { Job::execute_with(self, sql, params).await })
+    }
+}
+
+impl Executor for Pool {
+    fn execute<'a>(
+        &'a self,
+        sql: &'a str,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        Box::pin(async move { Pool::execute(self, sql).await })
+    }
+
+    fn execute_with<'a>(
+        &'a self,
+        sql: &'a str,
+        params: &'a [serde_json::Value],
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        Box::pin(async move { Pool::execute_with(self, sql, params).await })
+    }
+}
+
+impl Executor for Reserved {
+    fn execute<'a>(
+        &'a self,
+        sql: &'a str,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        // Reserved derefs to &Job; we route through the Job impl so the
+        // in_flight bookkeeping (set to u32::MAX while reserved) remains
+        // consistent.
+        let job: &Job = self;
+        Box::pin(async move { Job::execute(job, sql).await })
+    }
+
+    fn execute_with<'a>(
+        &'a self,
+        sql: &'a str,
+        params: &'a [serde_json::Value],
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        let job: &Job = self;
+        Box::pin(async move { Job::execute_with(job, sql, params).await })
+    }
 }
