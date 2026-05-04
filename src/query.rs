@@ -323,6 +323,44 @@ impl Rows {
         self.inner.has_results
     }
 
+    /// Column metadata from the daemon's response, in declared order.
+    ///
+    /// Returns `None` for DML / DDL / commands (where `has_results` is false —
+    /// the `update_count` path). Returns `Some(&[..])` for SELECT statements.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job
+    ///     .execute("SELECT EMPNO, SALARY FROM CORPDATA.EMPLOYEE")
+    ///     .await?;
+    /// if let Some(cols) = rows.columns() {
+    ///     for col in cols {
+    ///         println!("col: {} ({:?})", col.name, col.type_name);
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn columns(&self) -> Option<&[crate::protocol::Column]> {
+        if self.inner.has_results {
+            Some(&self.inner.metadata.columns)
+        } else {
+            None
+        }
+    }
+
     /// Wall-clock execution time on the server.
     ///
     /// The server reports duration in milliseconds; this method converts

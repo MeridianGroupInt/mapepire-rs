@@ -495,6 +495,61 @@ impl Job {
         }
     }
 
+    /// Run a daemon-side `visual_explain` (the `dove` op) on a SQL statement.
+    /// Returns the raw plan tree as a [`serde_json::Value`] — typed parsing
+    /// of the explain plan is out of scope for v0.3.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::execute`], plus [`crate::Error::Server`] if the daemon's
+    /// response carries `success: false`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let plan = job
+    ///     .visual_explain("SELECT * FROM CORPDATA.EMPLOYEE WHERE SALARY > 50000")
+    ///     .await?;
+    /// // `plan` is opaque JSON — daemon-defined shape.
+    /// println!("plan: {plan:#}");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn visual_explain(&self, sql: &str) -> crate::Result<serde_json::Value> {
+        let id = self.inner.ids.next();
+        let resp = self
+            .send(Request::Dove {
+                id: id.clone(),
+                sql: sql.to_owned(),
+            })
+            .await?;
+        match resp {
+            Response::DoveResult {
+                id: got,
+                success,
+                result,
+            } if got == id => {
+                if success {
+                    Ok(result)
+                } else {
+                    Err(crate::job_helpers::server_failed("visual_explain"))
+                }
+            }
+            Response::Error(e) => Err(crate::job_helpers::server_error(e)),
+            ref other => Err(crate::job_helpers::unexpected(other)),
+        }
+    }
+
     /// Run an IBM i CL command.
     ///
     /// Returns the first [`crate::protocol::ClMessage`] from the daemon's
