@@ -221,10 +221,10 @@ impl PoolBuilder {
         // returned `JoinHandle` is owned by an `Arc<ReaperGuard>` on `Pool`
         // so it gets aborted when the last clone drops — see `ReaperGuard`.
         let reaper = idle_timeout
-            .and_then(|d| crate::pool::pool::reaper_period(d).map(|p| (d, p)))
+            .and_then(|d| crate::pool::runtime::reaper_period(d).map(|p| (d, p)))
             .map(|(timeout, period)| {
-                let handle = crate::pool::pool::spawn_idle_reaper(&inner, timeout, period);
-                Arc::new(crate::pool::pool::ReaperGuard { handle })
+                let handle = crate::pool::runtime::spawn_idle_reaper(&inner, timeout, period);
+                Arc::new(crate::pool::runtime::ReaperGuard { handle })
             });
 
         Ok(crate::Pool {
