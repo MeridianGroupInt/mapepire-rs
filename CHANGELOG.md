@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] — 2026-05-04 *(unreleased)*
+## [0.4.0] — 2026-05-04
 
 The observability + cleanup milestone. v0.4 layers opt-in `tracing` and
 `metrics` over the v0.3 pool, tightens the `Reserved::rollback_on_drop`
