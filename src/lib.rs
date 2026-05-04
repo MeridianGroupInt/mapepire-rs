@@ -77,6 +77,9 @@ pub mod executor;
 pub mod from_row;
 pub mod job;
 pub(crate) mod job_helpers;
+#[cfg(feature = "metrics")]
+#[cfg_attr(docsrs, doc(cfg(feature = "metrics")))]
+pub mod observability;
 pub mod pool;
 pub mod query;
 pub(crate) mod transport;
