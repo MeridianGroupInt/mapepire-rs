@@ -55,17 +55,22 @@ async fn pool_recycle_pings_on_checkout() {
 
     let (pool, mock) = spawn_mock_pool(1).await;
 
-    // First execute: opens a Job (Connect handshake) and runs the SQL.
-    let _r1 = Box::pin(pool.execute("SELECT 1 FROM SYSIBM.SYSDUMMY1"))
-        .await
-        .expect("first execute");
+    // First acquire: opens a Job (Connect handshake). Dropping the Reserved
+    // returns the connection to the pool, making it eligible for recycle.
+    let r1 = Box::pin(pool.acquire()).await.expect("first acquire");
+    drop(r1);
 
-    // Second execute: deadpool's recycle path runs Job::ping() before
-    // handing the connection back. We verify the mock observed at least
-    // one ping in the request stream.
-    let _r2 = Box::pin(pool.execute("SELECT 1 FROM SYSIBM.SYSDUMMY1"))
-        .await
-        .expect("second execute");
+    // Second acquire: goes through deadpool's full checkout path including
+    // `JobManager::recycle()` which runs `Job::ping()` before handing the
+    // connection back. We verify the mock observed at least one ping.
+    //
+    // Note (Task 22 / PRO-600): `pool.execute()` now uses the
+    // registry-backed step 1 fast path which bypasses deadpool's checkout
+    // and recycle entirely. Using `pool.acquire()` here ensures the recycle
+    // path is exercised — `acquire()` always routes through `get_or_timeout`
+    // (step 3 / deadpool's full checkout) so recycle fires normally.
+    let r2 = Box::pin(pool.acquire()).await.expect("second acquire");
+    drop(r2);
 
     // Allow any final dispatch to land. The mock records inbound at arrival
     // time, so this sleep is conservative — usually the requests are visible
