@@ -19,6 +19,52 @@
 //! Most metrics are 0-label or 1-label (`tier` on the routing counter). Per-pool
 //! cardinality is the responsibility of the recorder (e.g., add a label at
 //! recorder-registration time).
+//!
+//! ## Metric catalogue
+//!
+//! | Constant | Kind | Cardinality | Emission site |
+//! |---|---|---|---|
+//! | [`POOL_CREATE_TOTAL`] | counter | 0 | `JobManager::create` |
+//! | [`POOL_RECYCLE_SUCCESS_TOTAL`] | counter | 0 | `JobManager::recycle` ok |
+//! | [`POOL_RECYCLE_FAIL_TOTAL`] | counter | 0 | `JobManager::recycle` err |
+//! | [`POOL_ACQUIRE_LATENCY_MICROS`] | histogram | 0 | `Pool::acquire` |
+//! | [`JOB_EXECUTE_LATENCY_MICROS`] | histogram | 0 | `Job::execute` / `execute_with` |
+//! | [`POOL_SIZE`] | gauge | 0 | `Pool::execute*` (per-call snapshot) |
+//! | [`POOL_AVAILABLE`] | gauge | 0 | `Pool::execute*` (per-call snapshot) |
+//! | [`POOL_WAITING`] | gauge | 0 | `Pool::execute*` (per-call snapshot) |
+//! | [`POOL_ROUTING_TIER_WINS_TOTAL`] | counter | 1 (`tier`) | `Pool::execute*` per tier |
+//! | [`POOL_RESERVED_ACQUIRED_TOTAL`] | counter | 0 | `Pool::acquire` |
+//! | [`POOL_RESERVED_ROLLBACK_TOTAL`] | counter | 0 | `Reserved` Drop (in-tx, opt-in) |
+//!
+//! ## Registering a recorder
+//!
+//! Pick any [`metrics`](https://docs.rs/metrics) facade-compatible recorder.
+//! Common choices:
+//!
+//! - **Production:** `metrics-exporter-prometheus` exposes a `/metrics` HTTP endpoint that
+//!   Prometheus scrapes.
+//! - **Tests:** `metrics-util::DebuggingRecorder` captures emissions in-process for assertion (see
+//!   `tests/metrics_smoke.rs`).
+//! - **Development:** `metrics-util::layers::FanoutBuilder` to combine recorders, or a simple
+//!   `tracing-subscriber` formatter sink via `metrics-tracing-context`.
+//!
+//! ```no_run
+//! # #[cfg(feature = "metrics")]
+//! # fn install() -> Result<(), Box<dyn std::error::Error>> {
+//! // Production example with Prometheus:
+//! // [dependencies]
+//! // metrics-exporter-prometheus = "0.15"
+//! //
+//! // let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
+//! // builder.install()?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Once a recorder is installed, every `Pool::execute` / `Pool::acquire` /
+//! `JobManager::create` call flows the relevant metrics through. No
+//! configuration on the `mapepire` side beyond enabling the `metrics`
+//! feature.
 
 /// Counter — number of [`crate::Job::connect`]-equivalent calls completed
 /// inside `JobManager::create` (per-pool incrementing).

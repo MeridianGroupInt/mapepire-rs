@@ -110,10 +110,41 @@ for row in dynamic {
 | `native-tls` | off | OS-platform TLS via `native-tls` (alternate v0.2 backend) |
 | `insecure-tls` | off | Compile-time gate for `TlsConfig::Insecure` (skip server-cert validation; **never use in production**) |
 | `serde-config` | off | `DaemonServerSpec` DTO for loading from config files (TOML/YAML/JSON via consumer's choice of parser) |
+| `tracing` | off | [`tracing`](https://docs.rs/tracing) span instrumentation on every public dispatch entry point (`Job::execute`, `Pool::execute`, `Reserved::*`). Per-pool [`ParameterLogging`](https://docs.rs/mapepire/latest/mapepire/enum.ParameterLogging.html) governs whether parameter values appear on spans. |
+| `metrics` | off | [`metrics`](https://docs.rs/metrics) facade integration. Counters / gauges / histograms documented at [`mapepire::observability`](https://docs.rs/mapepire/latest/mapepire/observability/index.html). |
 
 A `compile_error!` guard fires when neither `rustls-tls` nor `native-tls`
 is enabled — disabling default features requires an explicit alternate
 TLS backend selection.
+
+## Observability (optional)
+
+Enable `tracing` and/or `metrics` features for production observability:
+
+```toml
+[dependencies]
+mapepire = { version = "0.4", features = ["rustls-tls", "tracing", "metrics"] }
+tracing-subscriber = "0.3"
+metrics-exporter-prometheus = "0.15"
+```
+
+```rust,no_run
+# fn install() -> Result<(), Box<dyn std::error::Error>> {
+// Tracing — fmt subscriber to stderr.
+tracing_subscriber::fmt::init();
+
+// Metrics — Prometheus exporter on :9000/metrics.
+metrics_exporter_prometheus::PrometheusBuilder::new().install()?;
+# Ok(()) }
+```
+
+Once installed, every `Job::execute` / `Pool::execute` / `Pool::acquire` /
+`Reserved::*` call emits the relevant spans and metrics. Both features are
+zero-cost when disabled.
+
+The metric-name contract is documented at
+[`mapepire::observability`](https://docs.rs/mapepire/latest/mapepire/observability/index.html)
+and is **SemVer-stable** — names won't be renamed without a major bump.
 
 ## Roadmap
 
