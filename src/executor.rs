@@ -106,7 +106,7 @@ impl Executor for Pool {
         sql: &'a str,
         params: &'a [serde_json::Value],
     ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
-        Box::pin(async move { Pool::execute_with(self, sql, params).await })
+        Box::pin(Pool::execute_with(self, sql, params))
     }
 }
 

@@ -31,9 +31,7 @@ impl Registry {
     /// Garbage-collects dead `Weak` entries as a side effect (whenever this
     /// method runs — opportunistic GC is sufficient for v0.3).
     ///
-    /// `dead_code` allow until Task 24 / PRO-454 wires `Pool::execute` to
-    /// call this method (the routing scan).
-    #[allow(dead_code)]
+    /// Consumed by `Pool::execute`'s §7.3 routing scan (Task 24 / PRO-454).
     pub(crate) fn least_busy(&self, limit: usize) -> Vec<Arc<Job>> {
         let mut live: Vec<(u32, Arc<Job>)> = {
             let mut w = self.weaks.lock().expect("registry mutex poisoned");
