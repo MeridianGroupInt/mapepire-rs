@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0] — 2026-05-04 *(unreleased)*
+## [0.3.0] — 2026-05-04
 
 The pool + transactions milestone. v0.3 adds a `Pool` over `deadpool`, a
 `Reserved` transaction handle, public `Executor` and `FromRow` traits, and
