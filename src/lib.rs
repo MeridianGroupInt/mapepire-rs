@@ -14,10 +14,20 @@
 //! - [`Password`] — zeroize-on-drop credential newtype.
 //! - [`Job`] — a single open connection to a Mapepire daemon, established via [`Job::connect`].
 //!
-//! Connection pooling lands in v0.3; observability features in v0.4.
+//! Connection pooling shipped in v0.3 ([`Pool`], [`Reserved`], [`Executor`],
+//! [`FromRow`]). v0.4 adds opt-in observability features.
 //!
 //! See `AGENTS.md` at the repository root for contributor and AI-assistant
 //! conventions.
+//!
+//! ## Optional features
+//!
+//! - **`tracing`** *(v0.4+)* — opt-in [`tracing`](https://docs.rs/tracing) span instrumentation on
+//!   every public dispatch entry point (`Job::execute`, `Pool::execute`, `Reserved::*`). Enable
+//!   with `features = ["tracing"]`. Zero overhead when disabled. Per-pool [`ParameterLogging`]
+//!   policy controls whether parameter values appear on spans.
+//! - **`metrics`** *(v0.4+)* — opt-in [`metrics`](https://docs.rs/metrics) facade integration. See
+//!   `crate::observability` for the documented metric-name contract.
 //!
 //! ## Building a `DaemonServer`
 //!
