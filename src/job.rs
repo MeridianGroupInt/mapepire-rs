@@ -3,6 +3,23 @@
 //! [`Job`] wraps a per-connection dispatcher task. Construct via
 //! [`Job::connect`]. Drop runs a best-effort `exit` to let the daemon
 //! shut down cleanly.
+//!
+//! ## Tracing (optional, `tracing` feature)
+//!
+//! With the `tracing` feature enabled, every public dispatch method emits a
+//! `tracing::Span` named after the method. Common fields:
+//!
+//! - `job_id` — daemon-reported initial job name (groups spans by Db2 job).
+//! - `sql` — SQL text for SQL-bearing methods.
+//! - `param_count` — number of parameters for parameterized variants.
+//! - `command` — CL command text for [`Job::cl`].
+//! - `level` — trace level for [`Job::set_trace`].
+//!
+//! Per-parameter values are governed by per-Pool [`crate::ParameterLogging`]
+//! policy (added in Task 9 / PRO-587). Direct-Job users get the equivalent
+//! of `ParameterLogging::None` (no parameter values on spans).
+//!
+//! Zero overhead when the `tracing` feature is disabled.
 
 use std::fmt;
 use std::sync::Arc;
@@ -214,6 +231,10 @@ impl Job {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, sql = %sql))
+    )]
     pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
         self.execute_inner(sql, None).await
     }
@@ -247,6 +268,17 @@ impl Job {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip(self, params),
+            fields(
+                job_id = %self.inner.initial_job,
+                sql = %sql,
+                param_count = params.len(),
+            )
+        )
+    )]
     pub async fn execute_with(
         &self,
         sql: &str,
@@ -301,6 +333,10 @@ impl Job {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, sql = %sql))
+    )]
     pub async fn prepare(&self, sql: &str) -> crate::Result<crate::query::Query> {
         let id = self.inner.ids.next();
         let resp = self
@@ -331,6 +367,10 @@ impl Job {
     ///
     /// [`Error::Transport`] if the socket is closed; [`Error::Protocol`]
     /// if the response shape is unexpected.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job))
+    )]
     pub async fn ping(&self) -> crate::Result<std::time::Duration> {
         let id = self.inner.ids.next();
         let start = std::time::Instant::now();
@@ -347,6 +387,10 @@ impl Job {
     ///
     /// As [`Job::ping`], plus [`Error::Server`] if the daemon's response
     /// carries `success: false`.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job))
+    )]
     pub async fn server_version(&self) -> crate::Result<String> {
         let id = self.inner.ids.next();
         let resp = self.send(Request::GetVersion { id: id.clone() }).await?;
@@ -373,6 +417,10 @@ impl Job {
     ///
     /// As [`Job::ping`], plus [`Error::Server`] if the daemon's response
     /// carries `success: false`.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job))
+    )]
     pub async fn db_job_name(&self) -> crate::Result<String> {
         let id = self.inner.ids.next();
         let resp = self.send(Request::GetDbJob { id: id.clone() }).await?;
@@ -420,6 +468,10 @@ impl Job {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, level = ?level))
+    )]
     pub async fn set_trace(&self, level: TraceLevel) -> crate::Result<()> {
         let id = self.inner.ids.next();
         // `tracedest: String::new()` — empty string asks the daemon to use
@@ -476,6 +528,10 @@ impl Job {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job))
+    )]
     pub async fn fetch_trace(&self) -> crate::Result<String> {
         let id = self.inner.ids.next();
         let resp = self.send(Request::GetTraceData { id: id.clone() }).await?;
@@ -525,6 +581,10 @@ impl Job {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, sql = %sql))
+    )]
     pub async fn visual_explain(&self, sql: &str) -> crate::Result<serde_json::Value> {
         let id = self.inner.ids.next();
         let resp = self
@@ -583,6 +643,10 @@ impl Job {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, command = %command))
+    )]
     pub async fn cl(&self, command: &str) -> crate::Result<crate::protocol::ClMessage> {
         let id = self.inner.ids.next();
         let resp = self
