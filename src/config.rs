@@ -225,7 +225,7 @@ mod tests {
             .user("DCURTIS")
             .password("hunter2".to_string())
             .build()
-            .expect("build");
+            .expect("DaemonServer builds with all required fields set");
 
         assert_eq!(s.host, "ibmi.example.com");
         assert_eq!(s.port, DaemonServer::DEFAULT_PORT);
@@ -284,7 +284,7 @@ mod tests {
             .port(9999)
             .tls(TlsConfig::Insecure)
             .build()
-            .expect("build");
+            .expect("DaemonServer builds with all required fields set");
         assert_eq!(s.port, 9999);
         assert!(matches!(s.tls, TlsConfig::Insecure));
     }
@@ -385,8 +385,8 @@ mod spec_tests {
             "user": "DCURTIS",
             "password": "hunter2"
         }"#;
-        let spec: DaemonServerSpec = serde_json::from_str(json).expect("parse");
-        let server = spec.try_into_server().expect("convert");
+        let spec: DaemonServerSpec = serde_json::from_str(json).expect("DaemonServerSpec parses from JSON");
+        let server = spec.try_into_server().expect("DaemonServerSpec converts to DaemonServer");
         assert_eq!(server.host, "ibmi.example.com");
         assert_eq!(server.port, DaemonServer::DEFAULT_PORT);
     }
@@ -400,8 +400,8 @@ mod spec_tests {
             "password": "p",
             "tls": "insecure"
         }"#;
-        let spec: DaemonServerSpec = serde_json::from_str(json).expect("parse");
-        let server = spec.try_into_server().expect("convert");
+        let spec: DaemonServerSpec = serde_json::from_str(json).expect("DaemonServerSpec parses from JSON");
+        let server = spec.try_into_server().expect("DaemonServerSpec converts to DaemonServer");
         assert_eq!(server.port, 9000);
         assert!(matches!(server.tls, TlsConfig::Insecure));
     }
