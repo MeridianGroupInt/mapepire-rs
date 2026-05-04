@@ -98,7 +98,10 @@ impl Executor for Pool {
         &'a self,
         sql: &'a str,
     ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
-        Box::pin(async move { Pool::execute(self, sql).await })
+        // Pool::execute / Pool::execute_with futures contain the routing
+        // scan + checkout state machine; box at the trait boundary to
+        // satisfy clippy::large_futures.
+        Box::pin(Pool::execute(self, sql))
     }
 
     fn execute_with<'a>(
@@ -106,6 +109,9 @@ impl Executor for Pool {
         sql: &'a str,
         params: &'a [serde_json::Value],
     ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        // Pool::execute / Pool::execute_with futures contain the routing
+        // scan + checkout state machine; box at the trait boundary to
+        // satisfy clippy::large_futures.
         Box::pin(Pool::execute_with(self, sql, params))
     }
 }

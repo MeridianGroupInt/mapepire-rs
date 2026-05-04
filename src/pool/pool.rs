@@ -115,6 +115,13 @@ impl Pool {
         // (Timeout, Backend, …) is treated as "no idle slot available
         // right now" and we fall through to the scan / fair-queue
         // fallback — real backend errors resurface on `get_or_timeout`.
+        //
+        // **v0.4 caveat:** `recycle: Some(ZERO)` is `tokio::time::timeout(ZERO, ping)`
+        // which allows ~1 timer-tick of grace. On real IBM i deployments where ping
+        // RTT may exceed that, the recycle ping times out → deadpool detaches the
+        // connection → step 3 fallback opens a fresh one (connection thrash, not a
+        // correctness bug). The clean fix needs a deadpool API change (or a
+        // registry-backed step 1 — see PR #83 routing infra) and is deferred to v0.4.
         if self.inner.status().available > 0 {
             let nb = deadpool::managed::Timeouts {
                 wait: Some(Duration::ZERO),
@@ -133,8 +140,8 @@ impl Pool {
             }
         }
 
-        // §7.3 step 2: scan up to min(max_size, 8) checked-out jobs and
-        // route through the least-busy upgradeable one. The Arc keeps
+        // §7.3 step 2: scan up to min(status().size, 8) checked-out jobs
+        // and route through the least-busy upgradeable one. The Arc keeps
         // the Job alive for the duration of this request even though
         // the deadpool slot belongs to whoever currently has the
         // Object<JobManager> checked out — the v0.2 dispatcher
@@ -209,7 +216,8 @@ impl Pool {
             }
         }
 
-        // §7.3 step 2: least-busy scan over checked-out jobs.
+        // §7.3 step 2: least-busy scan over min(status().size, 8)
+        // checked-out jobs (see `execute` for the full rationale).
         let limit = std::cmp::min(self.inner.status().size, 8);
         let candidates = self.registry.least_busy(limit);
         if let Some(arc) = candidates.into_iter().next() {
