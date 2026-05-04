@@ -113,8 +113,6 @@ the diagnostic methods deferred from v0.2.
 - Tightening `Reserved::rollback_on_drop` to fire ROLLBACK only if a
   `BEGIN` was observed without a matching `COMMIT` (current contract is
   unconditional once opt-in is set).
-- `idle_timeout` enforcement via deadpool's runtime hooks (the value is
-  stored on `PoolBuilder` but not driven by deadpool yet).
 - Real-network recycle robustness — `Pool::execute`'s step-1 try-idle
   uses `timeout_get(recycle: ZERO)` which allows ~1 timer-tick of grace.
   On real IBM i deployments where ping RTT exceeds that, the recycle ping
