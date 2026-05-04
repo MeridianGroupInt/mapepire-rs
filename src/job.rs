@@ -445,6 +445,56 @@ impl Job {
         }
     }
 
+    /// Fetch the daemon's accumulated trace data as raw text.
+    ///
+    /// Returns whatever the daemon has buffered since the last
+    /// [`Job::set_trace`] call — typically driver-side trace records, format
+    /// is daemon-defined.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::ping`], plus [`crate::Error::Server`] if the daemon's
+    /// response carries `success: false`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig, TraceLevel};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// job.set_trace(TraceLevel::Errors).await?;
+    /// // ... run some failing SQL ...
+    /// let trace = job.fetch_trace().await?;
+    /// println!("trace ({} bytes)", trace.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn fetch_trace(&self) -> crate::Result<String> {
+        let id = self.inner.ids.next();
+        let resp = self.send(Request::GetTraceData { id: id.clone() }).await?;
+        match resp {
+            Response::TraceData {
+                id: got,
+                success,
+                tracedata,
+            } if got == id => {
+                if success {
+                    Ok(tracedata)
+                } else {
+                    Err(crate::job_helpers::server_failed("fetch_trace"))
+                }
+            }
+            ref other => Err(crate::job_helpers::unexpected(other)),
+        }
+    }
+
     /// Run an IBM i CL command.
     ///
     /// Returns the first [`crate::protocol::ClMessage`] from the daemon's
