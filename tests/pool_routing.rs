@@ -17,13 +17,10 @@ async fn idle_job_preferred_over_busy() {
     // skip that Job. The follow-up `pool.execute()` is forced to land on
     // Job B's socket (a different connection).
     //
-    // Why not use `pause_responses` to keep Job A busy? Because the §7.3
-    // step 1 try-idle path calls `timeout_get` with `recycle: ZERO`,
-    // which causes a paused recycle ping to time out → deadpool
-    // detaches. Under pause, the warmed Jobs get destroyed and the
-    // routing scan sees an empty registry — defeating the test's intent.
-    // Using `Reserved` exercises the routing logic without fighting the
-    // recycle-ping path.
+    // (Task 22 / PRO-600): the v0.3 step 1 try-idle path called
+    // `timeout_get(recycle: ZERO)`, which would time out paused recycle pings
+    // and detach connections. The v0.4 registry-backed fast path (`peek_idle`)
+    // avoids deadpool's checkout entirely, so that fragility no longer exists.
     let (pool, mock) = spawn_mock_pool(2).await;
 
     // Pre-warm 2 sockets via concurrent acquires. After the inner block,

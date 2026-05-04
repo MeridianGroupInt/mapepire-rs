@@ -178,46 +178,22 @@ impl Pool {
         #[cfg(feature = "metrics")]
         emit_pool_status_gauges(&self.inner.status());
 
-        // §7.3 step 1: try an immediately-idle job. We gate on
-        // `status().available > 0` and then call `timeout_get` with all
-        // timeouts at `Duration::ZERO` — `wait: ZERO` makes the semaphore
-        // acquire non-blocking and `create: ZERO` ensures we don't block
-        // on a TLS handshake if the pool happens not to be at full size
-        // yet (we want a *currently idle* connection only). Any `Err`
-        // (Timeout, Backend, …) is treated as "no idle slot available
-        // right now" and we fall through to the scan / fair-queue
-        // fallback — real backend errors resurface on `get_or_timeout`.
-        //
-        // **v0.4 caveat:** `recycle: Some(ZERO)` is `tokio::time::timeout(ZERO, ping)`
-        // which allows ~1 timer-tick of grace. On real IBM i deployments where ping
-        // RTT may exceed that, the recycle ping times out → deadpool detaches the
-        // connection → step 3 fallback opens a fresh one (connection thrash, not a
-        // correctness bug). The clean fix needs a deadpool API change (or a
-        // registry-backed step 1 — see PR #83 routing infra) and is deferred to v0.4.
-        if self.inner.status().available > 0 {
-            let nb = deadpool::managed::Timeouts {
-                wait: Some(Duration::ZERO),
-                create: Some(Duration::ZERO),
-                recycle: Some(Duration::ZERO),
-            };
-            if let Ok(obj) = Box::pin(self.inner.timeout_get(&nb)).await {
-                if obj.in_flight() == 0 {
-                    #[cfg(feature = "tracing")]
-                    tracing::Span::current().record("tier", "try_idle");
-                    #[cfg(feature = "metrics")]
-                    metrics::counter!(
-                        crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
-                        "tier" => "try_idle",
-                    )
-                    .increment(1);
-                    return Job::execute(&obj, sql).await;
-                }
-                // Idle slot returned but the underlying Job is mid-flight
-                // (a caller dropped a future without awaiting; the
-                // Object is still unowned). Drop the checkout — the scan
-                // / fair-queue fallback picks a better target.
-                drop(obj);
-            }
+        // §7.3 step 1 (v0.4 / Task 22 / PRO-600): registry-backed fast path.
+        // Replaces v0.3's `timeout_get(recycle: ZERO)` which thrashed connections
+        // on real IBM i ping RTT. We don't go through deadpool's checkout here,
+        // so no recycle ping fires — liveness is verified at next dispatch
+        // (Job::execute will surface a transport error if the socket is dead, and
+        // the caller's retry / fair-queue fallback handles it).
+        if let Some(arc) = self.registry.peek_idle() {
+            #[cfg(feature = "tracing")]
+            tracing::Span::current().record("tier", "try_idle");
+            #[cfg(feature = "metrics")]
+            metrics::counter!(
+                crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+                "tier" => "try_idle",
+            )
+            .increment(1);
+            return Job::execute(&arc, sql).await;
         }
 
         // §7.3 step 2: scan up to min(status().size, 8) checked-out jobs
@@ -341,29 +317,18 @@ impl Pool {
         #[cfg(feature = "metrics")]
         emit_pool_status_gauges(&self.inner.status());
 
-        // §7.3 step 1: try an immediately-idle job (see `execute` for
-        // the rationale on the all-zero-timeouts non-blocking checkout
-        // and dropping its errors silently).
-        if self.inner.status().available > 0 {
-            let nb = deadpool::managed::Timeouts {
-                wait: Some(Duration::ZERO),
-                create: Some(Duration::ZERO),
-                recycle: Some(Duration::ZERO),
-            };
-            if let Ok(obj) = Box::pin(self.inner.timeout_get(&nb)).await {
-                if obj.in_flight() == 0 {
-                    #[cfg(feature = "tracing")]
-                    tracing::Span::current().record("tier", "try_idle");
-                    #[cfg(feature = "metrics")]
-                    metrics::counter!(
-                        crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
-                        "tier" => "try_idle",
-                    )
-                    .increment(1);
-                    return Job::execute_with(&obj, sql, params).await;
-                }
-                drop(obj);
-            }
+        // §7.3 step 1 (v0.4 / Task 22 / PRO-600): registry-backed fast path.
+        // See `execute` for the full rationale.
+        if let Some(arc) = self.registry.peek_idle() {
+            #[cfg(feature = "tracing")]
+            tracing::Span::current().record("tier", "try_idle");
+            #[cfg(feature = "metrics")]
+            metrics::counter!(
+                crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+                "tier" => "try_idle",
+            )
+            .increment(1);
+            return Job::execute_with(&arc, sql, params).await;
         }
 
         // §7.3 step 2: least-busy scan filtered by SATURATION_THRESHOLD
