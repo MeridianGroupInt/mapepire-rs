@@ -406,7 +406,7 @@ impl Rows {
             },
             |mut state| async move {
                 if let Some(row_data) = state.rows.next() {
-                    return Some((Ok(Row { data: row_data }), state));
+                    return Some((Ok(Row::from_map(row_data)), state));
                 }
                 if state.done {
                     return None;
@@ -430,7 +430,7 @@ impl Rows {
                         state.done = q.is_done;
                         state.cont_id = q.cont_id;
                         if let Some(row_data) = state.rows.next() {
-                            Some((Ok(Row { data: row_data }), state))
+                            Some((Ok(Row::from_map(row_data)), state))
                         } else if state.done {
                             None
                         } else {
@@ -465,14 +465,18 @@ impl Rows {
         )
     }
 
-    /// Eagerly materialize all rows into `Vec<T>` via `serde::Deserialize`.
+    /// Eagerly materialize all rows into `Vec<T>` via [`crate::FromRow`].
     ///
-    /// Consumes `self`, drives [`Rows::stream`] to exhaustion, and
-    /// deserializes each row's JSON object into `T`.
+    /// Consumes `self`, drives [`Rows::stream`] to exhaustion, and routes
+    /// each row through `T::from_row(&row)`. The blanket impl
+    /// `impl<T: DeserializeOwned> FromRow for T` preserves the v0.2
+    /// ergonomics — any `serde::Deserialize` type "just works". For
+    /// column-rename or custom-mapping cases, hand-implement
+    /// [`crate::FromRow`] for your type to override the default.
     ///
-    /// Stream-level errors (transport, protocol, server-side) propagate
-    /// before per-row decode errors: the stream is fully collected first,
-    /// then each [`Result<T, Error>`] is folded via [`Iterator::collect`].
+    /// Stream-level errors (transport, protocol, server-side) and per-row
+    /// decode errors short-circuit the collection via
+    /// [`futures::TryStreamExt::try_collect`].
     ///
     /// # Note
     ///
@@ -483,8 +487,8 @@ impl Rows {
     /// # Errors
     ///
     /// [`Error::Transport`] / [`Error::Protocol`] / [`Error::Server`] for
-    /// paging failures; [`Error::Decode`] for per-row deserialization
-    /// failures.
+    /// paging failures; [`Error::Decode`] for per-row decode failures
+    /// (or whatever a hand-rolled [`crate::FromRow`] impl returns).
     ///
     /// # Example
     ///
@@ -511,25 +515,13 @@ impl Rows {
     /// ```
     pub async fn into_typed<T>(self) -> crate::Result<Vec<T>>
     where
-        T: serde::de::DeserializeOwned,
+        T: crate::FromRow,
     {
-        // TODO(v0.3 Task 18 / PRO-448): migrate to T: FromRow and call T::from_row(&row).
-        // Currently uses serde_json::from_value directly — this avoids one clone per row
-        // vs. the FromRow blanket path, but means hand-rolled FromRow impls are bypassed.
-        use futures::TryStreamExt;
+        use futures::{StreamExt, TryStreamExt};
         self.stream()
-            .map_ok(|row| {
-                serde_json::from_value::<T>(serde_json::Value::Object(row.data)).map_err(|e| {
-                    Error::Decode {
-                        column: None,
-                        source: crate::error::DecodeError::Serde(e.to_string()),
-                    }
-                })
-            })
-            .try_collect::<Vec<Result<T, Error>>>()
-            .await?
-            .into_iter()
-            .collect()
+            .map(|res| res.and_then(|row| T::from_row(&row)))
+            .try_collect()
+            .await
     }
 
     /// Eagerly materialize all rows into `Vec<Row>`.
@@ -735,11 +727,12 @@ impl Row {
         &self.data
     }
 
-    /// Test-only constructor — used by `from_row.rs` unit tests to build
-    /// a `Row` without going through the wire pipeline. Not exposed
-    /// outside the crate; not exposed outside `cfg(test)`.
-    #[cfg(test)]
-    pub(crate) fn from_map_for_test(data: serde_json::Map<String, serde_json::Value>) -> Self {
+    /// Construct a `Row` from a column map.
+    ///
+    /// Crate-private — [`Rows::stream`] is the only producer of `Row`
+    /// values from the wire, and `from_row.rs` unit tests use this to
+    /// build rows without going through the wire pipeline.
+    pub(crate) fn from_map(data: serde_json::Map<String, serde_json::Value>) -> Self {
         Self { data }
     }
 }
