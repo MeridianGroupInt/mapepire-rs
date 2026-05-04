@@ -93,8 +93,28 @@ impl PoolBuilder {
 
     /// Maximum idle time before a connection is closed. `None` = never. Default 5min.
     ///
-    /// **v0.3:** stored only — not yet enforced. deadpool 0.12's idle-timeout
-    /// hook integration lands in v0.4. Setting this value today is forward-compatible.
+    /// **Enforcement (v0.4 / Task 15 / PRO-593).** When `Some(d)`, [`Self::build`]
+    /// spawns a background reaper task that wakes every `d / 4` (clamped to
+    /// `[1s, 60s]`) and calls `deadpool::managed::Pool::retain` with the
+    /// predicate `metrics.last_used() < d`. An idle connection is therefore
+    /// reaped within `d..=d * 1.25` of its last use. The reaper is aborted on
+    /// the last [`crate::Pool`] clone's drop so it does not leak across the
+    /// lifetime of the pool itself.
+    ///
+    /// **Interaction with [`Self::acquire_timeout`].** The reaper only removes
+    /// **idle** (returned-to-pool) connections; in-flight checkouts are
+    /// untouched. A subsequent acquire that finds the pool drained will pay a
+    /// fresh-connect cost (bounded by `acquire_timeout`), exactly as if the
+    /// pool had not yet warmed up.
+    ///
+    /// **Note on `last_used()` semantics.** deadpool's `Metrics::last_used()`
+    /// returns "time since last successful recycle on acquire" (or creation
+    /// if never recycled). Each checkout updates it via `try_recycle`, so for
+    /// the [`crate::pool::RecyclingMethod::Verified`] default this matches
+    /// "time since last use" closely. With
+    /// [`crate::pool::RecyclingMethod::Fast`] (recycle skipped) the timestamp
+    /// only refreshes on creation; idle reaping still works but reflects
+    /// connection age more than activity.
     pub fn idle_timeout(mut self, d: Option<Duration>) -> Self {
         self.idle_timeout = d;
         self
@@ -158,9 +178,7 @@ impl PoolBuilder {
 
         let acquire_timeout = self.acquire_timeout;
         let starting_size = self.starting_size;
-        // idle_timeout stored only — enforcement deferred to v0.4 (deadpool's
-        // runtime-hooks integration). Suppress the unused-warning explicitly.
-        let _idle_timeout = self.idle_timeout;
+        let idle_timeout = self.idle_timeout;
 
         // ONE registry Arc shared between Pool and JobManager — the manager
         // clones it on `create()` to register new Jobs, and the Pool reads
@@ -174,6 +192,11 @@ impl PoolBuilder {
         // deadpool's `rt_tokio_1` feature for exactly this reason. We always
         // set it because the default `acquire_timeout` is `Some(5s)` and
         // callers who pass `None` still pay nothing for the registration.
+        //
+        // `Timeouts.recycle` is NOT the idle-timeout — it's the deadline
+        // applied to `Manager::recycle()` itself. deadpool 0.13 has no native
+        // idle-timeout knob; we enforce it via a periodic reaper task spawned
+        // below (Task 15 / PRO-593).
         let inner = DeadPool::builder(mgr)
             .max_size(self.max_size)
             .runtime(Runtime::Tokio1)
@@ -194,11 +217,22 @@ impl PoolBuilder {
                 .map_err(|e| crate::Error::Internal(format!("starting_size eager open: {e}")))?;
         }
 
+        // Spawn the idle-connection reaper if `idle_timeout` is set. The
+        // returned `JoinHandle` is owned by an `Arc<ReaperGuard>` on `Pool`
+        // so it gets aborted when the last clone drops — see `ReaperGuard`.
+        let reaper = idle_timeout
+            .and_then(|d| crate::pool::pool::reaper_period(d).map(|p| (d, p)))
+            .map(|(timeout, period)| {
+                let handle = crate::pool::pool::spawn_idle_reaper(&inner, timeout, period);
+                Arc::new(crate::pool::pool::ReaperGuard { handle })
+            });
+
         Ok(crate::Pool {
             inner,
             registry,
             acquire_timeout,
             parameter_logging: self.parameter_logging,
+            _reaper: reaper,
         })
     }
 }
