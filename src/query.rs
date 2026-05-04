@@ -524,6 +524,56 @@ impl Rows {
             .await
     }
 
+    /// Stream typed rows. Each item is `T` materialized via [`crate::FromRow`].
+    ///
+    /// Convenience over `rows.stream().map(|res| res.and_then(|row| T::from_row(&row)))`.
+    /// Errors from the underlying [`Rows::stream`] propagate; per-row decode
+    /// failures surface as [`crate::Error::Decode`].
+    ///
+    /// # Note
+    ///
+    /// The blanket `impl<T: DeserializeOwned> FromRow for T` means
+    /// `stream_typed::<MyDeserializeType>()` "just works" for any
+    /// `serde::Deserialize` type. Hand-implement [`crate::FromRow`] for
+    /// column-rename or custom-mapping cases.
+    ///
+    /// # Errors
+    ///
+    /// As [`Rows::stream`] for transport/protocol/paging errors, plus
+    /// [`crate::Error::Decode`] from `T::from_row`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use futures::TryStreamExt;
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// # let job = Job::connect(&server).await?;
+    /// #[derive(serde::Deserialize)]
+    /// struct Order {
+    ///     id: i64,
+    /// }
+    /// let rows = job.execute("SELECT id FROM ORDERS").await?;
+    /// let orders: Vec<Order> = rows.stream_typed::<Order>().try_collect().await?;
+    /// # let _ = orders;
+    /// # Ok(()) }
+    /// ```
+    pub fn stream_typed<T>(self) -> impl futures::Stream<Item = crate::Result<T>> + Send
+    where
+        T: crate::FromRow + Send + 'static,
+    {
+        use futures::StreamExt;
+        self.stream()
+            .map(|res| res.and_then(|row| T::from_row(&row)))
+    }
+
     /// Eagerly materialize all rows into `Vec<Row>`.
     ///
     /// Consumes `self` and drives [`Rows::stream`] to exhaustion via
