@@ -35,6 +35,7 @@
 //! | [`POOL_ROUTING_TIER_WINS_TOTAL`] | counter | 1 (`tier`) | `Pool::execute*` per tier |
 //! | [`POOL_RESERVED_ACQUIRED_TOTAL`] | counter | 0 | `Pool::acquire` |
 //! | [`POOL_RESERVED_ROLLBACK_TOTAL`] | counter | 0 | `Reserved` Drop (in-tx, opt-in) |
+//! | [`POOL_IDLE_REAPED_TOTAL`] | counter | 0 | idle-reaper task per sweep |
 //!
 //! ## Registering a recorder
 //!
@@ -137,3 +138,13 @@ pub const POOL_RESERVED_ACQUIRED_TOTAL: &str = "mapepire_pool_reserved_acquired_
 ///
 /// **Cardinality:** 0 labels.
 pub const POOL_RESERVED_ROLLBACK_TOTAL: &str = "mapepire_pool_reserved_rollback_total";
+
+/// Counter — connections reaped by the idle-timeout sweeper (Task 15 / PRO-593).
+/// Incremented by the count of objects removed each time the periodic reaper
+/// task runs `Pool::retain`. A non-zero rate indicates the configured
+/// `idle_timeout` is actually trimming connections; zero on a quiet pool with
+/// `idle_timeout=Some(..)` typically means the daemon's own idle kill landed
+/// first.
+///
+/// **Cardinality:** 0 labels.
+pub const POOL_IDLE_REAPED_TOTAL: &str = "mapepire_pool_idle_reaped_total";

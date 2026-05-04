@@ -22,6 +22,27 @@ use crate::pool::builder::{ParameterLogging, PoolBuilder};
 use crate::pool::manager::JobManager;
 use crate::pool::routing::Registry;
 
+/// Owns a [`tokio::task::JoinHandle`] and aborts it on drop.
+///
+/// `Pool` is `Clone` and the idle reaper task must outlive *every* clone — but
+/// no longer. Wrapping the join handle in an `Arc<ReaperGuard>` (added Task 15
+/// / PRO-593) gives reference-count semantics: the inner `Drop` runs exactly
+/// once, when the last `Pool` clone is dropped, and aborts the spawned task.
+/// Without this, either the reaper would leak (no abort) or it would die after
+/// the first clone disappeared (abort-on-clone-drop) — both are wrong.
+pub(crate) struct ReaperGuard {
+    pub(crate) handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ReaperGuard {
+    fn drop(&mut self) {
+        // Abort is fire-and-forget; we deliberately don't await the handle to
+        // avoid blocking `Drop`. The reaper task itself owns only a `WeakPool`
+        // so its body cannot extend `PoolInner`'s lifetime past this point.
+        self.handle.abort();
+    }
+}
+
 /// Connection pool for one or more [`crate::Job`] connections to a single
 /// Mapepire daemon.
 ///
@@ -44,6 +65,12 @@ pub struct Pool {
     /// struct so the public builder API stays stable across feature combos.
     #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
     pub(crate) parameter_logging: ParameterLogging,
+    /// Idle-connection reaper task, alive iff `idle_timeout` was `Some(..)`.
+    /// Wrapped in an `Arc` so cloning `Pool` is cheap and the abort fires only
+    /// when the **last** clone drops (Task 15 / PRO-593). The field exists in
+    /// every build but holds `None` when no reaper was spawned (`idle_timeout`
+    /// disabled).
+    pub(crate) _reaper: Option<Arc<ReaperGuard>>,
 }
 
 /// Per-job saturation threshold beyond which the routing scan stops
@@ -496,5 +523,108 @@ fn emit_pool_status_gauges(s: &PoolStatus) {
         metrics::gauge!(crate::observability::POOL_SIZE).set(s.size as f64);
         metrics::gauge!(crate::observability::POOL_AVAILABLE).set(s.available as f64);
         metrics::gauge!(crate::observability::POOL_WAITING).set(s.waiting as f64);
+    }
+}
+
+/// Compute the reaper's wake-up cadence from a configured `idle_timeout`.
+///
+/// We sweep at `idle_timeout / 4` so an idle connection is reaped within
+/// `idle_timeout..=idle_timeout * 1.25` of its last use — fast enough to
+/// honor the contract without burning CPU on tight loops. Clamped to
+/// `[1s, 60s]`: a sub-second sweep wastes wakeups and a sweep that runs
+/// less than once a minute leaves stale connections holding sockets too
+/// long even for very long timeouts.
+///
+/// Returns `None` for zero/negligible timeouts (caller should not spawn).
+pub(crate) fn reaper_period(idle_timeout: Duration) -> Option<Duration> {
+    if idle_timeout.is_zero() {
+        return None;
+    }
+    let quarter = idle_timeout / 4;
+    let clamped = quarter.clamp(Duration::from_secs(1), Duration::from_secs(60));
+    Some(clamped)
+}
+
+/// Spawn the periodic idle-connection reaper.
+///
+/// The task holds a [`deadpool::managed::WeakPool`] so it never extends
+/// `PoolInner`'s lifetime. On each tick it upgrades the weak ref, calls
+/// `Pool::retain` with a `last_used() < idle_timeout` predicate, and lets
+/// removed objects drop (which calls `JobManager::detach` → tears the dispatcher
+/// down). If upgrade fails, the task exits (defensive: in steady state
+/// [`ReaperGuard::Drop`] aborts it before the strong refs hit zero, but during
+/// runtime shutdown the abort may race the upgrade and we want a clean exit).
+pub(crate) fn spawn_idle_reaper(
+    inner: &DeadPool<JobManager>,
+    idle_timeout: Duration,
+    period: Duration,
+) -> tokio::task::JoinHandle<()> {
+    let weak = inner.weak();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(period);
+        // Skip the immediate-tick fired by `interval()`'s first poll — there
+        // are no connections to reap right after `Pool::build` returns, and
+        // it would race with `starting_size` eager opens.
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let Some(pool) = weak.upgrade() else {
+                // Last `Pool` clone dropped between ticks. Done.
+                return;
+            };
+            // `retain` blocks the slots mutex briefly; the predicate is
+            // pure-arithmetic so this stays well under any contention
+            // threshold. Removed `ObjectInner`s drop here, which calls
+            // `JobManager::detach` → `Job::Drop` → dispatcher shutdown.
+            let result = pool.retain(|_, metrics| metrics.last_used() < idle_timeout);
+            #[cfg(feature = "metrics")]
+            if !result.removed.is_empty() {
+                metrics::counter!(crate::observability::POOL_IDLE_REAPED_TOTAL)
+                    .increment(result.removed.len() as u64);
+            }
+            #[cfg(not(feature = "metrics"))]
+            let _ = result;
+            // Drop the strong `Pool` clone immediately so we don't hold the
+            // pool alive across `interval.tick().await`.
+            drop(pool);
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reaper_period_quarters_short_timeouts_clamped_to_one_second() {
+        // 2s / 4 = 500ms, clamped up to the 1s floor.
+        assert_eq!(
+            reaper_period(Duration::from_secs(2)),
+            Some(Duration::from_secs(1))
+        );
+    }
+
+    #[test]
+    fn reaper_period_quarters_medium_timeouts_unclamped() {
+        // 60s / 4 = 15s — sits inside [1s, 60s].
+        assert_eq!(
+            reaper_period(Duration::from_secs(60)),
+            Some(Duration::from_secs(15))
+        );
+    }
+
+    #[test]
+    fn reaper_period_clamps_long_timeouts_to_one_minute() {
+        // 1h / 4 = 15min — clamped down to the 60s ceiling.
+        assert_eq!(
+            reaper_period(Duration::from_secs(3600)),
+            Some(Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn reaper_period_returns_none_for_zero() {
+        // Zero idle_timeout would tight-loop; refuse to spawn.
+        assert_eq!(reaper_period(Duration::ZERO), None);
     }
 }
