@@ -121,29 +121,34 @@ impl Deref for Reserved {
 
 impl Drop for Reserved {
     fn drop(&mut self) {
-        // Reset the in_flight sentinel so the Job is routable when reused.
-        // The actual in-flight tracking from the dispatcher (Task 5 / PRO-435)
-        // resumes from 0 — any requests issued through this Reserved drained
-        // back to 0 before the Drop ran (because Reserved derefs to &Job,
-        // which means the dispatcher's increment/decrement saw the user's
-        // requests as normal in-flight ops, but they were silenced by the
-        // u32::MAX sentinel for routing purposes).
+        // 1. If opt-in, fire a best-effort ROLLBACK. The dispatcher is still alive (Reserved holds
+        //    Object<JobManager> which holds Arc<Job>), so the request can be enqueued; the future
+        //    is spawned so Drop never blocks. spawn_best_effort guards on Handle::try_current() —
+        //    no destructor panic if there's no runtime.
         //
-        // Wait — that's wrong. `fetch_add(1)` on `u32::MAX` would wrap to 0,
-        // and the next decrement would underflow. We need to be careful here.
-        //
-        // Correction: the dispatcher uses `fetch_add(1, Relaxed)` and
-        // `fetch_sub(1, Relaxed)`. Starting from `u32::MAX`, the first
-        // `fetch_add(1)` returns u32::MAX and stores 0 (wrap). The matching
-        // `fetch_sub(1)` returns 0 and stores u32::MAX (wrap back). So the
-        // counter ping-pongs between u32::MAX and small values, which is
-        // benign for the routing scan (which already special-cases u32::MAX
-        // as "skip this Job"). After Drop resets to 0, normal counting
-        // resumes.
-        //
-        // For v0.3 this is acceptable. v0.4 may switch to a separate
-        // boolean "reserved" flag rather than overloading the counter.
+        //    v0.3 limitation: this fires unconditionally when the flag is
+        //    set, even if the user already issued an explicit COMMIT. Tighter
+        //    "only-if-still-in-tx" semantics need BEGIN/COMMIT state tracking
+        //    on Reserved and are deferred to v0.4.
+        if self.rollback_on_drop {
+            let handle = self.obj.inner.handle.clone();
+            let id = self.obj.inner.ids.next();
+            crate::job_helpers::spawn_best_effort(async move {
+                let req = crate::protocol::Request::Sql {
+                    id: id.clone(),
+                    sql: "ROLLBACK".into(),
+                    rows: None,
+                    parameters: None,
+                };
+                let _ = handle.send(req).await;
+            });
+        }
+
+        // 2. Reset the routing-skip sentinel so the Job is reusable. The fetch_add(1)/fetch_sub(1)
+        //    ping-pong on u32::MAX is benign for routing (Task 24 special-cases u32::MAX) but we
+        //    reset to 0 here so normal counting resumes after Drop. v0.4 may switch to a dedicated
+        //    `reserved: AtomicBool` flag for cleaner separation.
         self.obj.inner.in_flight.store(0, Ordering::Relaxed);
-        // rollback_on_drop logic in Task 16 / PRO-446.
+        // 3. Object<JobManager>'s own Drop returns the Job to the pool.
     }
 }

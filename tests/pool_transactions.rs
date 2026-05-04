@@ -149,3 +149,123 @@ async fn reserved_runs_begin_dml_commit_on_one_socket() {
     drop(conn);
     tokio::time::sleep(Duration::from_millis(20)).await;
 }
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_with_rollback_on_drop_sends_rollback() {
+    use std::time::Duration;
+
+    use common::spawn_mock_pool_with_recorder;
+    use mapepire::protocol::{QueryResult, Request};
+    use mapepire::{Column, QueryMetaData};
+
+    // Two canned pages: one for the UPDATE inside the transaction, one
+    // for the ROLLBACK that fires from Drop. The mock stamps per-request
+    // ids onto each page before sending, so the placeholder is fine.
+    let canned = || QueryResult {
+        id: "placeholder".into(),
+        success: true,
+        execution_time: 0.0,
+        has_results: false,
+        update_count: 0,
+        metadata: QueryMetaData {
+            column_count: 0,
+            columns: Vec::<Column>::new(),
+        },
+        data: Vec::new(),
+        cont_id: None,
+        is_done: true,
+    };
+    let pages = vec![canned(), canned()];
+
+    let (server_arc, recorder) = spawn_mock_pool_with_recorder(pages);
+    let pool = Box::pin(mapepire::Pool::builder(server_arc).max_size(1).build())
+        .await
+        .expect("pool builds");
+
+    {
+        let conn = Box::pin(pool.acquire())
+            .await
+            .expect("acquire")
+            .rollback_on_drop();
+        drop(
+            Box::pin(conn.execute("UPDATE T SET C = 1"))
+                .await
+                .expect("dml"),
+        );
+        // No COMMIT — drop fires ROLLBACK best-effort.
+    }
+
+    // Drop is fire-and-forget; allow time for the spawned task to land
+    // the Sql("ROLLBACK") on the wire and the mock to record it.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    let saw_rollback = observed.iter().any(|r| {
+        matches!(
+            r,
+            Request::Sql { sql, .. } if sql.eq_ignore_ascii_case("ROLLBACK")
+        )
+    });
+    assert!(
+        saw_rollback,
+        "expected ROLLBACK in observed requests, got {observed:?}"
+    );
+}
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_without_rollback_on_drop_does_not_send_rollback() {
+    use std::time::Duration;
+
+    use common::spawn_mock_pool_with_recorder;
+    use mapepire::protocol::{QueryResult, Request};
+    use mapepire::{Column, QueryMetaData};
+
+    let canned = || QueryResult {
+        id: "placeholder".into(),
+        success: true,
+        execution_time: 0.0,
+        has_results: false,
+        update_count: 0,
+        metadata: QueryMetaData {
+            column_count: 0,
+            columns: Vec::<Column>::new(),
+        },
+        data: Vec::new(),
+        cont_id: None,
+        is_done: true,
+    };
+    let pages = vec![canned()]; // just the UPDATE; no ROLLBACK expected
+
+    let (server_arc, recorder) = spawn_mock_pool_with_recorder(pages);
+    let pool = Box::pin(mapepire::Pool::builder(server_arc).max_size(1).build())
+        .await
+        .expect("pool builds");
+
+    {
+        let conn = Box::pin(pool.acquire()).await.expect("acquire");
+        // NO .rollback_on_drop() — drop must NOT fire ROLLBACK.
+        drop(
+            Box::pin(conn.execute("UPDATE T SET C = 1"))
+                .await
+                .expect("dml"),
+        );
+    }
+
+    // Same wait as the positive test — confirms absence rather than
+    // racing the spawned task.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    let saw_rollback = observed.iter().any(|r| {
+        matches!(
+            r,
+            Request::Sql { sql, .. } if sql.eq_ignore_ascii_case("ROLLBACK")
+        )
+    });
+    assert!(
+        !saw_rollback,
+        "did NOT expect ROLLBACK in observed requests, got {observed:?}"
+    );
+}
