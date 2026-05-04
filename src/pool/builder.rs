@@ -250,7 +250,7 @@ mod tests {
                 .password("p".into())
                 .tls(TlsConfig::Verified)
                 .build()
-                .expect("ok"),
+                .expect("DaemonServer builds with all required fields set"),
         )
     }
 

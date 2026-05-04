@@ -76,7 +76,7 @@ mod tests {
             unreachable!()
         };
         let row = Row::from_map(map);
-        let emp = Employee::from_row(&row).expect("decode");
+        let emp = Employee::from_row(&row).expect("FromRow decodes the test row");
         assert_eq!(
             emp,
             Employee {
@@ -122,7 +122,7 @@ mod tests {
         m.insert("EMPNO".into(), json!("12345"));
         m.insert("SALARY".into(), json!(75000.0));
         let row = Row::from_map(m);
-        let c: Custom = Custom::from_row(&row).expect("decode");
+        let c: Custom = Custom::from_row(&row).expect("FromRow decodes the test row");
         assert_eq!(c.empno_int, 12345);
         assert_eq!(c.full_label, "emp 12345 @ $75000");
     }

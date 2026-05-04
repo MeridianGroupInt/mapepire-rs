@@ -30,7 +30,7 @@
 //!     rows: None,
 //!     parameters: None,
 //! };
-//! let json = serde_json::to_string(&r).expect("serialize");
+//! let json = serde_json::to_string(&r).expect("Request serializes to JSON");
 //! assert!(json.contains(r#""type":"sql""#));
 //! ```
 
