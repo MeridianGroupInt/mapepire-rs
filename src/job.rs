@@ -13,6 +13,33 @@ use crate::error::Error;
 use crate::protocol::{IdAllocator, Request, Response};
 use crate::transport::{self, ConnectedDispatcher, Dispatcher, DispatcherHandle};
 
+/// Trace level for the daemon. Maps to the `setconfig.tracelevel` key.
+///
+/// The daemon accepts opaque strings; this enum pins the documented set
+/// from the v0.2 wire-protocol notes. Use [`Job::set_trace`] to apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceLevel {
+    /// No tracing.
+    Off,
+    /// Errors only.
+    Errors,
+    /// Errors + statement boundaries.
+    Datastream,
+    /// Full diagnostic (high overhead — use sparingly).
+    All,
+}
+
+impl TraceLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            TraceLevel::Off => "OFF",
+            TraceLevel::Errors => "ERRORS",
+            TraceLevel::Datastream => "DATASTREAM",
+            TraceLevel::All => "ALL",
+        }
+    }
+}
+
 /// Shared inner state of a [`Job`].
 ///
 /// Wrapped in [`Arc`] by [`Job`] so v0.3 pool routing (PRO-453) can
@@ -360,6 +387,58 @@ impl Job {
                     Ok(job)
                 } else {
                     Err(crate::job_helpers::server_failed("db_job_name"))
+                }
+            }
+            ref other => Err(crate::job_helpers::unexpected(other)),
+        }
+    }
+
+    /// Configure the daemon's trace level via `setconfig`.
+    ///
+    /// Sets `tracelevel` to the enum's string representation; `tracedest`
+    /// is left empty (server uses its default destination).
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::ping`], plus [`Error::Server`] if the daemon's
+    /// response carries `success: false`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig, TraceLevel};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// job.set_trace(TraceLevel::Errors).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn set_trace(&self, level: TraceLevel) -> crate::Result<()> {
+        let id = self.inner.ids.next();
+        // `tracedest: String::new()` — empty string asks the daemon to use
+        // its default trace destination (no override).
+        let resp = self
+            .send(Request::SetConfig {
+                id: id.clone(),
+                tracelevel: level.as_str().to_owned(),
+                tracedest: String::new(),
+            })
+            .await?;
+        match resp {
+            Response::ConfigSet {
+                id: got, success, ..
+            } if got == id => {
+                if success {
+                    Ok(())
+                } else {
+                    Err(crate::job_helpers::server_failed("set_trace"))
                 }
             }
             ref other => Err(crate::job_helpers::unexpected(other)),

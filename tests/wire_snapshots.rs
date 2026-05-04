@@ -125,6 +125,18 @@ fn snapshot_request_metadata_and_diagnostics() {
 }
 
 #[test]
+fn set_config_trace_off() {
+    // Pins the typical shape produced by `Job::set_trace(TraceLevel::Off)`:
+    // `tracelevel: "OFF"` + empty-`tracedest` (default destination).
+    let r = Request::SetConfig {
+        id: "1".into(),
+        tracelevel: "OFF".into(),
+        tracedest: String::new(),
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
 fn snapshot_response_query_result_select() {
     let q = QueryResult {
         id: "test".into(),
