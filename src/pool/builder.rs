@@ -154,7 +154,11 @@ impl PoolBuilder {
         // runtime-hooks integration). Suppress the unused-warning explicitly.
         let _idle_timeout = self.idle_timeout;
 
-        let mgr = crate::pool::manager::JobManager::new(self.server);
+        // ONE registry Arc shared between Pool and JobManager — the manager
+        // clones it on `create()` to register new Jobs, and the Pool reads
+        // from it during the §7.3 routing scan (Task 24 / PRO-454).
+        let registry = Arc::new(crate::pool::routing::Registry::default());
+        let mgr = crate::pool::manager::JobManager::new(self.server, Arc::clone(&registry));
 
         // `.runtime(Runtime::Tokio1)` is REQUIRED whenever any timeout is set —
         // deadpool's builder errors with `NoRuntimeSpecified` otherwise (the
@@ -184,7 +188,7 @@ impl PoolBuilder {
 
         Ok(crate::Pool {
             inner,
-            registry: std::sync::Arc::new(crate::pool::routing::Registry),
+            registry,
             acquire_timeout,
         })
     }

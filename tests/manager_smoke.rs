@@ -21,31 +21,41 @@ mod common;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manager_create_and_recycle() {
     use common::{MockBehavior, spawn_mock_and_server};
-    use deadpool::managed::Pool;
-    use mapepire::pool::JobManager;
 
+    // Task 23 / PRO-453 added a routing-registry parameter to
+    // `JobManager::new`, and the registry type itself is `pub(crate)` —
+    // not reachable from integration tests. Rather than broaden visibility,
+    // exercise the same create+recycle round-trip through the public
+    // `Pool::builder` API. `Pool::acquire` (Task 13) drives the underlying
+    // `deadpool::managed::Pool::get`, which is exactly what the previous
+    // form did with a hand-constructed `JobManager`.
     let server_arc = spawn_mock_and_server(MockBehavior::AcceptAndConnect);
-    let mgr = JobManager::new(server_arc);
-    let pool: Pool<JobManager> = Pool::builder(mgr).max_size(2).build().expect("pool builds");
+    let pool = Box::pin(mapepire::Pool::builder(server_arc).max_size(2).build())
+        .await
+        .expect("pool builds");
 
-    // `Box::pin` on `pool.get()` to satisfy `clippy::large_futures` — the
-    // pool's `get` future contains the manager's `create()` state machine
-    // (which contains a full TLS handshake + first request/response cycle),
-    // so on the stack it's ~30 KB. Boxing matches `Dispatcher::spawn`'s
-    // treatment of the transport future in `src/transport/handshake.rs`.
-    // Task 10 / PRO-440 will decide whether `Pool::execute` boxes internally
-    // or pushes this responsibility onto callers.
-    let obj = Box::pin(pool.get()).await.expect("get");
-    assert_eq!(obj.in_flight(), 0);
+    // First acquire exercises `JobManager::create()` (which calls
+    // `Job::connect` and registers the new `Arc<Job>` with the routing
+    // registry — Task 23). `Box::pin` matches the `clippy::large_futures`
+    // precedent: the acquire future contains the manager's `create()` state
+    // machine (TLS handshake + first request/response cycle).
+    let conn = Box::pin(pool.acquire()).await.expect("acquire");
+    // `Reserved::new` (Task 13) marks the Job with the `u32::MAX` routing-skip
+    // sentinel so the §7.3 scan never picks an exclusively-held connection.
+    // Confirming the sentinel is set verifies `pool.acquire()` returned a
+    // properly-initialized Reserved on top of a freshly-created Job.
+    assert_eq!(conn.in_flight(), u32::MAX);
+    // Drop returns the connection to the pool (and clears the Reserved
+    // sentinel so `recycle()` can ping on the next acquire).
+    drop(conn);
 
-    // Drop returns the connection to the pool.
-    drop(obj);
-
-    // Second get() exercises the recycle() path (which pings via the existing
-    // connection — same TCP session as the first get(), which is why a
-    // single-connection mock is sufficient here).
-    let obj2 = Box::pin(pool.get()).await.expect("get-after-recycle");
-    let _rtt = obj2.ping().await.expect("ping after recycle");
+    // Second acquire exercises `JobManager::recycle()` (which pings via the
+    // existing TCP session — same connection as the first acquire, which is
+    // why a single-connection mock is sufficient here).
+    let conn2 = Box::pin(pool.acquire())
+        .await
+        .expect("acquire-after-recycle");
+    let _rtt = conn2.ping().await.expect("ping after recycle");
 
     // Pool stats: exactly one connection should exist (recycle reuses; it must
     // not have dropped + re-created). max_size=2 is enforced by deadpool itself,
