@@ -113,10 +113,6 @@ the diagnostic methods deferred from v0.2.
 - Tightening `Reserved::rollback_on_drop` to fire ROLLBACK only if a
   `BEGIN` was observed without a matching `COMMIT` (current contract is
   unconditional once opt-in is set).
-- Real-network recycle robustness — `Pool::execute`'s step-1 try-idle
-  uses `timeout_get(recycle: ZERO)` which allows ~1 timer-tick of grace.
-  On real IBM i deployments where ping RTT exceeds that, the recycle ping
-  may time out → connection thrash. Documented inline at the call site.
 - Typed Visual Explain plans (currently `serde_json::Value`).
 
 ## [0.2.0] — 2026-04-30 *(unreleased)*
