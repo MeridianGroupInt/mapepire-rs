@@ -227,9 +227,12 @@ async fn drop_with_rollback_on_drop_sends_rollback() {
     use mapepire::protocol::{QueryResult, Request};
     use mapepire::{Column, QueryMetaData};
 
-    // Two canned pages: one for the UPDATE inside the transaction, one
-    // for the ROLLBACK that fires from Drop. The mock stamps per-request
-    // ids onto each page before sending, so the placeholder is fine.
+    // Three canned pages: one for the BEGIN, one for the UPDATE inside the
+    // transaction, and one for the ROLLBACK that fires from Drop. The mock
+    // stamps per-request ids onto each page before sending, so the
+    // placeholder is fine. A BEGIN is required so tx_state transitions to
+    // Started — under the v0.4 contract Drop only fires ROLLBACK when the
+    // connection is in-tx.
     let canned = || QueryResult {
         id: "placeholder".into(),
         success: true,
@@ -244,7 +247,7 @@ async fn drop_with_rollback_on_drop_sends_rollback() {
         cont_id: None,
         is_done: true,
     };
-    let pages = vec![canned(), canned()];
+    let pages = vec![canned(), canned(), canned()];
 
     let (server_arc, recorder) = spawn_mock_pool_with_recorder(pages);
     let pool = Box::pin(mapepire::Pool::builder(server_arc).max_size(1).build())
@@ -256,12 +259,13 @@ async fn drop_with_rollback_on_drop_sends_rollback() {
             .await
             .expect("acquire")
             .rollback_on_drop();
+        drop(Box::pin(conn.execute("BEGIN")).await.expect("begin"));
         drop(
             Box::pin(conn.execute("UPDATE T SET C = 1"))
                 .await
                 .expect("dml"),
         );
-        // No COMMIT — drop fires ROLLBACK best-effort.
+        // No COMMIT — drop fires ROLLBACK best-effort because tx_state == Started.
     }
 
     // Drop is fire-and-forget; allow time for the spawned task to land
