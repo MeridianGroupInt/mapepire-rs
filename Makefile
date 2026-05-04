@@ -1,4 +1,4 @@
-.PHONY: help setup build build-release test test-min test-doc lint format format-check fix audit deny coverage fuzz outdated msrv-check doc doc-open doc-private ci pre-commit pre-pr release-check
+.PHONY: help setup build build-release test test-min test-doc lint format format-check fix audit deny coverage fuzz outdated msrv-check update-toolchain doc doc-open doc-private ci pre-commit pre-pr release-check
 
 # Default goal — keep it informative.
 .DEFAULT_GOAL := help
@@ -36,7 +36,8 @@ help:
 	@echo "    doc-private   ... including private items"
 	@echo ""
 	@echo "  MSRV:"
-	@echo "    msrv-check    cargo check pinned to rust-version from Cargo.toml"
+	@echo "    msrv-check       cargo check pinned to rust-version from Cargo.toml"
+	@echo "    update-toolchain report MSRV / pinned toolchain / latest stable (decide if a bump is warranted)"
 	@echo ""
 	@echo "  Workflows:"
 	@echo "    pre-commit    format + fix (run before each commit)"
@@ -128,6 +129,20 @@ msrv-check:
 	echo "Checking against MSRV $$MSRV…"; \
 	rustup toolchain install $$MSRV >/dev/null 2>&1 || true; \
 	cargo +$$MSRV check --all-features
+
+update-toolchain:
+	@MSRV=$$(grep '^rust-version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/'); \
+	PINNED=$$(grep '^channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/'); \
+	rustup update stable >/dev/null 2>&1 || true; \
+	LATEST=$$(rustup run stable rustc --version | awk '{print $$2}'); \
+	echo "Toolchain status:"; \
+	echo "  MSRV (Cargo.toml rust-version):       $$MSRV"; \
+	echo "  Pinned (rust-toolchain.toml channel): $$PINNED"; \
+	echo "  Latest stable:                        $$LATEST"; \
+	echo ""; \
+	echo "If 'Latest stable' is meaningfully ahead of MSRV, consider bumping"; \
+	echo "rust-version in Cargo.toml (and re-running 'make msrv-check' against"; \
+	echo "the new floor) before relying on newly-stable language or std features."
 
 # --- Workflows -----------------------------------------------------------
 
