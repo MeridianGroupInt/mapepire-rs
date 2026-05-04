@@ -337,3 +337,80 @@ async fn drop_without_rollback_on_drop_does_not_send_rollback() {
         "did NOT expect ROLLBACK in observed requests, got {observed:?}"
     );
 }
+
+/// Third coverage scenario: with `rollback_on_drop()` set AND an explicit
+/// `COMMIT` already issued, dropping `Reserved` still fires the
+/// fire-and-forget ROLLBACK (v0.3 unconditional contract — see
+/// `Reserved::rollback_on_drop` doc and Task 16's design notes).
+///
+/// **The current contract permits ≤ 1 ROLLBACK in this scenario.** The
+/// "tighter" semantics — fire ROLLBACK only if a `BEGIN` was observed
+/// without a matching `COMMIT` — would require BEGIN/COMMIT state tracking
+/// on `Reserved` and is deferred to v0.4. If v0.4 lands the tighter
+/// contract, this assertion changes to `rollback_count == 0`.
+#[cfg(feature = "rustls-tls")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_commit_with_rollback_on_drop_permits_unconditional_rollback() {
+    use std::time::Duration;
+
+    use common::spawn_mock_pool_with_recorder;
+    use mapepire::protocol::{QueryResult, Request};
+    use mapepire::{Column, QueryMetaData};
+
+    let canned = || QueryResult {
+        id: "placeholder".into(),
+        success: true,
+        execution_time: 0.0,
+        has_results: false,
+        update_count: 0,
+        metadata: QueryMetaData {
+            column_count: 0,
+            columns: Vec::<Column>::new(),
+        },
+        data: Vec::new(),
+        cont_id: None,
+        is_done: true,
+    };
+    // Three canned responses: BEGIN, COMMIT, and the post-drop ROLLBACK
+    // (unconditional under the v0.3 contract). Plus one for the
+    // recycle ping that fires when the connection returns to the pool —
+    // we provide a fourth canned to make the mock happy.
+    let pages = vec![canned(), canned(), canned(), canned()];
+
+    let (server_arc, recorder) = spawn_mock_pool_with_recorder(pages);
+    let pool = Box::pin(mapepire::Pool::builder(server_arc).max_size(1).build())
+        .await
+        .expect("pool builds");
+
+    {
+        let conn = Box::pin(pool.acquire())
+            .await
+            .expect("acquire")
+            .rollback_on_drop();
+        drop(Box::pin(conn.execute("BEGIN")).await.expect("begin"));
+        drop(Box::pin(conn.execute("COMMIT")).await.expect("commit"));
+        // Drop with rollback_on_drop set fires ROLLBACK regardless of the
+        // explicit COMMIT — v0.3 unconditional contract.
+    }
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    let rollback_count = observed
+        .iter()
+        .filter(|r| {
+            matches!(
+                r,
+                Request::Sql { sql, .. } if sql.eq_ignore_ascii_case("ROLLBACK")
+            )
+        })
+        .count();
+
+    // v0.3 contract: unconditional ROLLBACK on drop with opt-in. Permits
+    // exactly 1. v0.4 may tighten to 0; this assertion intentionally
+    // brackets either outcome.
+    assert!(
+        rollback_count <= 1,
+        "expected at most 1 ROLLBACK under unconditional contract, got {rollback_count} (full trace: {observed:?})"
+    );
+}
