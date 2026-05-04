@@ -16,13 +16,13 @@
 //! #     .expect("missing required field");
 //! # let pool = Pool::builder(server).max_size(2).build().await?;
 //! let conn = pool.acquire().await?;
-//! conn.execute("BEGIN").await?;
+//! conn.begin().await?;
 //! conn.execute_with(
 //!     "UPDATE ORDERS SET STATUS = ? WHERE ID = ?",
 //!     &[serde_json::json!("paid"), serde_json::json!(42)],
 //! )
 //! .await?;
-//! conn.execute("COMMIT").await?;
+//! conn.commit().await?;
 //! # Ok(()) }
 //! ```
 
@@ -134,11 +134,11 @@ impl Reserved {
     /// #     .expect("missing required field");
     /// # let pool = Pool::builder(server).max_size(2).build().await?;
     /// let conn = pool.acquire().await?.rollback_on_drop();
-    /// conn.execute("BEGIN").await?;
+    /// conn.begin().await?;
     /// conn.execute("UPDATE ORDERS SET STATUS = 'paid' WHERE ID = 42")
     ///     .await?;
     /// // If we panic or early-return before COMMIT, drop fires ROLLBACK.
-    /// conn.execute("COMMIT").await?;
+    /// conn.commit().await?;
     /// # Ok(()) }
     /// ```
     #[must_use]
@@ -215,6 +215,45 @@ impl Reserved {
             Self::observe_sql(&self.tx_state, sql);
         }
         result
+    }
+
+    /// Begin a transaction on the held connection.
+    ///
+    /// Equivalent to [`Reserved::execute`]`("BEGIN")`. Updates the internal
+    /// transaction-state machine to `Started` on success — see the
+    /// `Transaction state tracking (v0.4+)` section on [`Reserved`].
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::Job::execute`].
+    pub async fn begin(&self) -> crate::Result<crate::query::Rows> {
+        self.execute("BEGIN").await
+    }
+
+    /// Commit the current transaction on the held connection.
+    ///
+    /// Equivalent to [`Reserved::execute`]`("COMMIT")`. Updates the internal
+    /// transaction-state machine to `Closed` on success — see the
+    /// `Transaction state tracking (v0.4+)` section on [`Reserved`].
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::Job::execute`].
+    pub async fn commit(&self) -> crate::Result<crate::query::Rows> {
+        self.execute("COMMIT").await
+    }
+
+    /// Roll back the current transaction on the held connection.
+    ///
+    /// Equivalent to [`Reserved::execute`]`("ROLLBACK")`. Updates the internal
+    /// transaction-state machine to `Closed` on success — see the
+    /// `Transaction state tracking (v0.4+)` section on [`Reserved`].
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::Job::execute`].
+    pub async fn rollback(&self) -> crate::Result<crate::query::Rows> {
+        self.execute("ROLLBACK").await
     }
 
     /// Apply the BEGIN/COMMIT/ROLLBACK state-machine transition for `sql`.
@@ -346,6 +385,41 @@ mod tests {
 
         Reserved::observe_sql(&s, "ROLLBACK");
         assert_eq!(state(&s), TxState::Closed);
+    }
+
+    /// Verify that the SQL keyword strings the typed helpers dispatch through
+    /// `Reserved::execute` produce the expected state transitions.  This is the
+    /// closest thing to testing the helpers themselves without spinning up a
+    /// network-bound `Job`: if the keywords ever change (e.g. "BEGIN
+    /// TRANSACTION") the transitions below immediately surface the discrepancy.
+    #[test]
+    fn typed_helpers_keywords_drive_correct_state_transitions() {
+        // begin() → Started
+        let s = Mutex::new(TxState::NotStarted);
+        Reserved::observe_sql(&s, "BEGIN");
+        assert_eq!(
+            state(&s),
+            TxState::Started,
+            "begin() keyword should transition to Started"
+        );
+
+        // commit() → Closed
+        Reserved::observe_sql(&s, "COMMIT");
+        assert_eq!(
+            state(&s),
+            TxState::Closed,
+            "commit() keyword should transition to Closed"
+        );
+
+        // rollback() → Closed (reset to Started first)
+        Reserved::observe_sql(&s, "BEGIN");
+        assert_eq!(state(&s), TxState::Started);
+        Reserved::observe_sql(&s, "ROLLBACK");
+        assert_eq!(
+            state(&s),
+            TxState::Closed,
+            "rollback() keyword should transition to Closed"
+        );
     }
 
     #[test]
