@@ -70,6 +70,17 @@ proptest = "1"
 pretty_assertions = "1"
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-test = "0.4"
+# Test-only `tracing-subscriber` so the Task 10 / PRO-588 integration test
+# can install a custom `Layer` that captures span open + `record(...)`
+# updates as well as events. `tracing-test` was evaluated first but
+# relies on the default `FmtSubscriber`, which only emits events to its
+# buffer — `tracing::instrument` (Tasks 7/8) opens a span without
+# emitting an event, and `Span::current().record("tier", ...)` (Task 7's
+# routing-tier marker) likewise doesn't emit, so a `FmtSubscriber`-backed
+# tester would observe an empty buffer for the `Pool::execute` path. The
+# custom-Layer route is the same shape the `tracing` book recommends for
+# verifying span instrumentation.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"] }
 # Mock TLS+WebSocket server harness (Task 21 / PRO-417).
 # rcgen mints self-signed certs at test time; tokio-rustls drives the
 # server-side TLS acceptor. Both are dev-only — they never ship in the
