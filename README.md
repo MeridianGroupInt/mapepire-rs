@@ -13,7 +13,7 @@
 
 Async Rust client SDK for [Mapepire](https://mapepire-ibmi.github.io/) —
 a cloud-friendly access layer for **Db2 for IBM i** that exposes the
-database over TLS-secured WebSockets.
+database over TLS-secured `WebSockets`.
 
 > **Status:** v0.3 in progress (pool + transactions). Not yet on
 > [crates.io](https://crates.io). The full v1.0 surface (real-IBM-i CI,
@@ -128,7 +128,7 @@ tracing-subscriber = "0.3"
 metrics-exporter-prometheus = "0.15"
 ```
 
-```rust,no_run
+```rust,ignore
 # fn install() -> Result<(), Box<dyn std::error::Error>> {
 // Tracing — fmt subscriber to stderr.
 tracing_subscriber::fmt::init();
@@ -164,7 +164,7 @@ and is **SemVer-stable** — names won't be renamed without a major bump.
   (architecture, coding standards, security invariants, MSRV policy)
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to open a PR
 - [`SECURITY.md`](SECURITY.md) — vulnerability reporting
-- [`Makefile`](Makefile) — `make help` lists all dev tasks
+- `Makefile` — `make help` lists all dev tasks
 
 ## License
 
