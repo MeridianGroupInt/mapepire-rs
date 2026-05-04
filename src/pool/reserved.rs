@@ -27,12 +27,32 @@
 //! ```
 
 use std::ops::Deref;
+use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
 use deadpool::managed::Object;
 
 use crate::job::Job;
 use crate::pool::manager::JobManager;
+
+/// Transactional state of the connection held by a [`Reserved`].
+///
+/// Updated on every observed `BEGIN` / `COMMIT` / `ROLLBACK` that goes
+/// through [`Reserved::execute`] / [`Reserved::execute_with`]. Read by
+/// `Drop for Reserved` to gate the opt-in [`Reserved::rollback_on_drop`]
+/// `ROLLBACK` fire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TxState {
+    /// No `BEGIN` observed since reservation. Drop with `rollback_on_drop`
+    /// is a no-op (nothing to roll back).
+    NotStarted,
+    /// `BEGIN` observed; no matching `COMMIT`/`ROLLBACK` yet. Drop with
+    /// `rollback_on_drop` fires `ROLLBACK`.
+    Started,
+    /// `COMMIT` or explicit `ROLLBACK` observed since the last `BEGIN`. Drop
+    /// with `rollback_on_drop` is a no-op until the next `BEGIN`.
+    Closed,
+}
 
 /// Exclusive single-connection handle. Drops back to the pool on `Drop`.
 ///
@@ -44,11 +64,29 @@ use crate::pool::manager::JobManager;
 /// `Reserved` is intentionally `!Clone`. The `rollback_on_drop()` opt-in
 /// (added in Task 15 / PRO-445) provides safety against forgotten
 /// `COMMIT`/`ROLLBACK`.
+///
+/// ## Transaction state tracking (v0.4+)
+///
+/// [`Reserved::execute`] and [`Reserved::execute_with`] track
+/// `BEGIN` / `COMMIT` / `ROLLBACK` prefixes (case-insensitive first-word
+/// match) to maintain a 3-state machine. The state is read by
+/// [`Reserved::rollback_on_drop`]'s Drop firing (see Task 19 / PRO-597) to
+/// suppress redundant `ROLLBACK`s.
+///
+/// **Escape hatch:** `Job::execute(&**conn, sql).await` bypasses tracking
+/// and goes straight to [`crate::Job::execute`]. State stays whatever it
+/// was. Useful for raw transaction-statement bypass; rare in practice.
 pub struct Reserved {
     obj: Object<JobManager>,
     /// Opt-in: fire ROLLBACK on drop. Set via [`Reserved::rollback_on_drop`];
     /// honoured by `Drop` (Task 16 / PRO-446).
     rollback_on_drop: bool,
+    /// In-transaction state. `Reserved` is `Sync` (`Object<JobManager>` is
+    /// `Send + Sync`), and `execute`/`execute_with` take `&self` — so two
+    /// async tasks holding `&Reserved` can race observers. `Mutex` keeps
+    /// the state-machine update atomic; the lock is uncontended in the
+    /// common single-task case.
+    tx_state: Mutex<TxState>,
 }
 
 impl Reserved {
@@ -62,6 +100,7 @@ impl Reserved {
         Self {
             obj,
             rollback_on_drop: false,
+            tx_state: Mutex::new(TxState::NotStarted),
         }
     }
 
@@ -82,6 +121,11 @@ impl Reserved {
     /// best-effort `ROLLBACK` follow the `COMMIT` — Db2 returns a no-op
     /// `SQLSTATE 25000` ("invalid transaction state") which the pool's
     /// recycle path tolerates.
+    ///
+    /// **v0.4 status:** `TxState` tracking infrastructure has landed
+    /// (Task 18 / PRO-596) but Drop still fires `ROLLBACK` unconditionally.
+    /// Task 19 / PRO-597 will gate the fire on `tx_state == Started`,
+    /// suppressing the redundant `ROLLBACK` after an explicit `COMMIT`.
     ///
     /// # Example
     ///
@@ -109,6 +153,92 @@ impl Reserved {
         self.rollback_on_drop = true;
         self
     }
+
+    /// Execute SQL through the held connection.
+    ///
+    /// Functionally identical to [`crate::Job::execute`], but additionally
+    /// observes the SQL prefix (case-insensitive first word) and updates
+    /// the [`Reserved`]'s in-transaction state machine on success:
+    ///
+    /// - `BEGIN`     → `Started`
+    /// - `COMMIT`    → `Closed`
+    /// - `ROLLBACK`  → `Closed`
+    ///
+    /// All other SQL leaves the state untouched. The state is read by Drop
+    /// (Task 19 / PRO-597) to gate the [`Reserved::rollback_on_drop`] fire.
+    ///
+    /// State is updated only on `Ok` so a failed `BEGIN` (for example a
+    /// server-side error) does not flip the connection into `Started`.
+    ///
+    /// **Escape hatch:** call `Job::execute(&**conn, sql).await` to dispatch
+    /// directly through the [`Deref`] target without state observation.
+    /// Rare in practice — the tracked path is what most callers want.
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::Job::execute`].
+    ///
+    /// # Per-pool parameter logging
+    ///
+    /// `Reserved::execute` does not consult [`crate::Pool`]'s
+    /// `parameter_logging` policy — it dispatches via [`crate::Job::execute`]
+    /// directly. The asymmetry vs. [`crate::Pool::execute_with`] is
+    /// documented in Task 9 / PRO-587.
+    pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
+        let job: &Job = &self.obj;
+        let result = Job::execute(job, sql).await;
+        if result.is_ok() {
+            Self::observe_sql(&self.tx_state, sql);
+        }
+        result
+    }
+
+    /// Parameterized variant of [`Reserved::execute`].
+    ///
+    /// Same state-tracking semantics as [`Reserved::execute`] — the SQL
+    /// prefix is observed on success and the state machine updates
+    /// accordingly.
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::Job::execute_with`].
+    ///
+    /// # Per-pool parameter logging
+    ///
+    /// `Reserved::execute_with` does not consult [`crate::Pool`]'s
+    /// `parameter_logging` policy — it dispatches via
+    /// [`crate::Job::execute_with`] directly, so its tracing spans emit
+    /// `ParameterLogging::None` semantics. The asymmetry vs.
+    /// [`crate::Pool::execute_with`] (which does consult the per-pool
+    /// policy) is documented in Task 9 / PRO-587.
+    pub async fn execute_with(
+        &self,
+        sql: &str,
+        params: &[serde_json::Value],
+    ) -> crate::Result<crate::query::Rows> {
+        let job: &Job = &self.obj;
+        let result = Job::execute_with(job, sql, params).await;
+        if result.is_ok() {
+            Self::observe_sql(&self.tx_state, sql);
+        }
+        result
+    }
+
+    /// Apply the BEGIN/COMMIT/ROLLBACK state-machine transition for `sql`.
+    ///
+    /// Pure helper, lives outside `execute`/`execute_with` so the unit
+    /// tests at the bottom of this file can drive the state machine
+    /// without spinning up a Job.
+    fn observe_sql(state: &Mutex<TxState>, sql: &str) {
+        let head = sql.split_whitespace().next().unwrap_or("");
+        let mut tx = state.lock().expect("tx_state mutex poisoned");
+        if head.eq_ignore_ascii_case("BEGIN") {
+            *tx = TxState::Started;
+        } else if head.eq_ignore_ascii_case("COMMIT") || head.eq_ignore_ascii_case("ROLLBACK") {
+            *tx = TxState::Closed;
+        }
+        // Other SQL doesn't change state.
+    }
 }
 
 impl Deref for Reserved {
@@ -126,10 +256,10 @@ impl Drop for Reserved {
         //    is spawned so Drop never blocks. spawn_best_effort guards on Handle::try_current() —
         //    no destructor panic if there's no runtime.
         //
-        //    v0.3 limitation: this fires unconditionally when the flag is
-        //    set, even if the user already issued an explicit COMMIT. Tighter
-        //    "only-if-still-in-tx" semantics need BEGIN/COMMIT state tracking
-        //    on Reserved and are deferred to v0.4.
+        //    v0.4 Task 18: state tracking added; Task 19 / PRO-597 gates the
+        //    ROLLBACK fire on `tx_state == Started`. Until Task 19 lands,
+        //    ROLLBACK still fires unconditionally — preserving v0.3 behavior
+        //    so the existing v0.3 contract tests continue to pass.
         if self.rollback_on_drop {
             let handle = self.obj.inner.handle.clone();
             let id = self.obj.inner.ids.next();
@@ -160,5 +290,75 @@ impl Drop for Reserved {
         //    `reserved: AtomicBool` flag for cleaner separation.
         self.obj.inner.in_flight.store(0, Ordering::Relaxed);
         // 4. Object<JobManager>'s own Drop returns the Job to the pool.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    fn state(s: &Mutex<TxState>) -> TxState {
+        *s.lock().unwrap()
+    }
+
+    #[test]
+    fn observe_sql_transitions() {
+        let s = Mutex::new(TxState::NotStarted);
+
+        Reserved::observe_sql(&s, "BEGIN");
+        assert_eq!(state(&s), TxState::Started);
+
+        Reserved::observe_sql(&s, "UPDATE T SET C = 1");
+        assert_eq!(state(&s), TxState::Started, "DML should not change state");
+
+        Reserved::observe_sql(&s, "COMMIT");
+        assert_eq!(state(&s), TxState::Closed);
+
+        Reserved::observe_sql(&s, "begin"); // case-insensitive
+        assert_eq!(state(&s), TxState::Started);
+
+        Reserved::observe_sql(&s, "  rollback   "); // whitespace tolerance
+        assert_eq!(state(&s), TxState::Closed);
+    }
+
+    #[test]
+    fn observe_sql_ignores_dml_and_select() {
+        let s = Mutex::new(TxState::NotStarted);
+
+        Reserved::observe_sql(&s, "SELECT * FROM SYSIBM.SYSDUMMY1");
+        assert_eq!(state(&s), TxState::NotStarted);
+
+        Reserved::observe_sql(&s, "INSERT INTO T VALUES (1)");
+        assert_eq!(state(&s), TxState::NotStarted);
+
+        Reserved::observe_sql(&s, "DELETE FROM T WHERE ID = 1");
+        assert_eq!(state(&s), TxState::NotStarted);
+    }
+
+    #[test]
+    fn observe_sql_rollback_closes_started_state() {
+        let s = Mutex::new(TxState::NotStarted);
+
+        Reserved::observe_sql(&s, "BEGIN");
+        assert_eq!(state(&s), TxState::Started);
+
+        Reserved::observe_sql(&s, "ROLLBACK");
+        assert_eq!(state(&s), TxState::Closed);
+    }
+
+    #[test]
+    fn observe_sql_empty_string_no_panic() {
+        let s = Mutex::new(TxState::NotStarted);
+
+        // Empty / whitespace-only SQL must not panic — split_whitespace
+        // returns None, unwrap_or("") yields the empty string, and neither
+        // BEGIN nor COMMIT/ROLLBACK matches.
+        Reserved::observe_sql(&s, "");
+        assert_eq!(state(&s), TxState::NotStarted);
+
+        Reserved::observe_sql(&s, "   ");
+        assert_eq!(state(&s), TxState::NotStarted);
     }
 }
