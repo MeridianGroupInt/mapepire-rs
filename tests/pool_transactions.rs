@@ -150,6 +150,74 @@ async fn reserved_runs_begin_dml_commit_on_one_socket() {
     tokio::time::sleep(Duration::from_millis(20)).await;
 }
 
+/// Multi-connection extension of `reserved_runs_begin_dml_commit_on_one_socket`
+/// (Task 14) — uses Task 26's multi-connection mock + `MockHandle` observation
+/// hooks to verify the spec §7.4 invariant *as an explicit equality* on
+/// observed socket ids, not just an architectural implication.
+///
+/// Setup: build a `Pool` of capacity 4 against a multi-connection mock,
+/// pre-populate two background sockets (so the routing scan has multiple
+/// least-busy candidates), then acquire a `Reserved` and run BEGIN /
+/// parameterized UPDATE / COMMIT through it. Assert that
+/// `MockHandle::last_socket_for_sql` returns the **same** socket id for all
+/// three statements.
+#[cfg(feature = "rustls-tls")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reserved_pins_transaction_to_one_socket() {
+    use common::spawn_mock_pool;
+
+    let (pool, mock) = spawn_mock_pool(4).await;
+
+    // Pre-populate two more sockets so the routing scan would otherwise
+    // see lower-in_flight candidates (background traffic). Drop the rows
+    // immediately so they're not held mid-Reserved.
+    drop(
+        Box::pin(pool.execute("SELECT 1 FROM SYSIBM.SYSDUMMY1"))
+            .await
+            .expect("bg1"),
+    );
+    drop(
+        Box::pin(pool.execute("SELECT 1 FROM SYSIBM.SYSDUMMY1"))
+            .await
+            .expect("bg2"),
+    );
+
+    // Now acquire a Reserved and run BEGIN/UPDATE/COMMIT.
+    let conn = Box::pin(pool.acquire()).await.expect("acquire");
+    drop(Box::pin(conn.execute("BEGIN")).await.expect("begin"));
+    drop(
+        Box::pin(conn.execute_with(
+            "UPDATE T SET C = ? WHERE I = ?",
+            &[serde_json::json!(1), serde_json::json!(2)],
+        ))
+        .await
+        .expect("dml"),
+    );
+    drop(Box::pin(conn.execute("COMMIT")).await.expect("commit"));
+
+    // All three transactional statements must land on the same socket id.
+    let socket_begin = mock
+        .last_socket_for_sql("BEGIN")
+        .expect("BEGIN must have been observed");
+    let socket_update = mock
+        .last_socket_for_sql("UPDATE")
+        .expect("UPDATE must have been observed");
+    let socket_commit = mock
+        .last_socket_for_sql("COMMIT")
+        .expect("COMMIT must have been observed");
+
+    assert_eq!(
+        socket_begin, socket_update,
+        "BEGIN and UPDATE must share a socket; saw {socket_begin} vs {socket_update}"
+    );
+    assert_eq!(
+        socket_update, socket_commit,
+        "UPDATE and COMMIT must share a socket; saw {socket_update} vs {socket_commit}"
+    );
+
+    drop(conn);
+}
+
 #[cfg(feature = "rustls-tls")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drop_with_rollback_on_drop_sends_rollback() {
