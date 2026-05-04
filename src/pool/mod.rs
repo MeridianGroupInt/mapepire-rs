@@ -6,12 +6,12 @@
 
 pub(crate) mod builder;
 pub(crate) mod manager;
-// `pool::pool` mirrors the spec layout (§4.6 names the type-bearing module
-// `pool`). External callers see `crate::Pool` via the re-export below.
-#[allow(clippy::module_inception)]
-pub(crate) mod pool;
 pub(crate) mod reserved;
 pub(crate) mod routing;
+// Renamed from `pool::pool` (Task 27 / PRO-605) to retire the v0.3
+// `clippy::module_inception` allow. External callers see `crate::Pool` via
+// the re-export below; the inner module name is an implementation detail.
+pub(crate) mod runtime;
 
 pub use builder::{ParameterLogging, PoolBuilder, RecyclingMethod};
 // `pub` (instead of `pub(crate)`) so integration tests in
@@ -21,5 +21,5 @@ pub use builder::{ParameterLogging, PoolBuilder, RecyclingMethod};
 // never need to touch `JobManager`. See plan §7.3.
 #[doc(hidden)]
 pub use manager::JobManager;
-pub use pool::{Pool, PoolStatus};
 pub use reserved::Reserved;
+pub use runtime::{Pool, PoolStatus};
