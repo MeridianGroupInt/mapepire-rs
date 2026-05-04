@@ -223,36 +223,12 @@ async fn reserved_pins_transaction_to_one_socket() {
 async fn drop_with_rollback_on_drop_sends_rollback() {
     use std::time::Duration;
 
-    use common::spawn_mock_pool_with_recorder;
-    use mapepire::protocol::{QueryResult, Request};
-    use mapepire::{Column, QueryMetaData};
+    use common::spawn_mock_pool;
 
-    // Three canned pages: one for the BEGIN, one for the UPDATE inside the
-    // transaction, and one for the ROLLBACK that fires from Drop. The mock
-    // stamps per-request ids onto each page before sending, so the
-    // placeholder is fine. A BEGIN is required so tx_state transitions to
-    // Started — under the v0.4 contract Drop only fires ROLLBACK when the
-    // connection is in-tx.
-    let canned = || QueryResult {
-        id: "placeholder".into(),
-        success: true,
-        execution_time: 0.0,
-        has_results: false,
-        update_count: 0,
-        metadata: QueryMetaData {
-            column_count: 0,
-            columns: Vec::<Column>::new(),
-        },
-        data: Vec::new(),
-        cont_id: None,
-        is_done: true,
-    };
-    let pages = vec![canned(), canned(), canned()];
-
-    let (server_arc, recorder) = spawn_mock_pool_with_recorder(pages);
-    let pool = Box::pin(mapepire::Pool::builder(server_arc).max_size(1).build())
-        .await
-        .expect("pool builds");
+    // Use the multi-connection mock so we get a MockHandle for wait_for_sql.
+    // The generic happy-path mock responds to any Sql request with an empty
+    // terminal QueryResult, which is all BEGIN / UPDATE / ROLLBACK need.
+    let (pool, mock) = spawn_mock_pool(1).await;
 
     {
         let conn = Box::pin(pool.acquire())
@@ -268,20 +244,18 @@ async fn drop_with_rollback_on_drop_sends_rollback() {
         // No COMMIT — drop fires ROLLBACK best-effort because tx_state == Started.
     }
 
-    // Drop is fire-and-forget; allow time for the spawned task to land
-    // the Sql("ROLLBACK") on the wire and the mock to record it.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for the fire-and-forget Drop ROLLBACK to land at the mock.
+    // Polls every 10ms up to a 2s budget — tighter than the former 100ms
+    // sleep and immune to CI scheduler pressure.
+    let arrived = mock.wait_for_sql("ROLLBACK", Duration::from_secs(2)).await;
+    assert!(arrived, "ROLLBACK should have arrived within 2s budget");
 
-    let observed = recorder.lock().expect("recorder mutex").clone();
-    let saw_rollback = observed.iter().any(|r| {
-        matches!(
-            r,
-            Request::Sql { sql, .. } if sql.eq_ignore_ascii_case("ROLLBACK")
-        )
-    });
+    // Belt-and-suspenders: confirm via last_socket_for_sql that the mock
+    // recorded a Sql request whose text is exactly "ROLLBACK" (not just a
+    // substring match on another request). Redundant but cheap.
     assert!(
-        saw_rollback,
-        "expected ROLLBACK in observed requests, got {observed:?}"
+        mock.last_socket_for_sql("ROLLBACK").is_some(),
+        "expected ROLLBACK in observed SQL history"
     );
 }
 

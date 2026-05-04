@@ -733,6 +733,30 @@ impl MockHandle {
         }
         ResponsePauseGuard { state }
     }
+
+    /// Wait until at least one observed request matches `needle` (case-
+    /// insensitive substring match against `Request::Sql { sql, .. }` and
+    /// `Request::PrepareSqlExecute { sql, .. }`), or until `timeout` elapses.
+    ///
+    /// Returns `true` if the SQL arrived within the budget, `false` on
+    /// timeout. Polls every 10 ms — coarse enough to be cheap, fine enough
+    /// that test wall-clock matches actual arrival within ~10 ms.
+    ///
+    /// Used by tests waiting on fire-and-forget Drop side effects (e.g.,
+    /// `Reserved::rollback_on_drop`'s spawned ROLLBACK).
+    pub async fn wait_for_sql(&self, needle: &str, timeout: std::time::Duration) -> bool {
+        let needle_upper = needle.to_ascii_uppercase();
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if self.last_socket_for_sql(&needle_upper).is_some() {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
 }
 
 /// RAII guard returned by [`MockHandle::pause_responses`]. Dropping it
