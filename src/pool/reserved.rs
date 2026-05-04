@@ -70,8 +70,8 @@ enum TxState {
 /// [`Reserved::execute`] and [`Reserved::execute_with`] track
 /// `BEGIN` / `COMMIT` / `ROLLBACK` prefixes (case-insensitive first-word
 /// match) to maintain a 3-state machine. The state is read by
-/// [`Reserved::rollback_on_drop`]'s Drop firing (see Task 19 / PRO-597) to
-/// suppress redundant `ROLLBACK`s.
+/// [`Reserved::rollback_on_drop`]'s Drop firing to suppress redundant
+/// `ROLLBACK`s.
 ///
 /// **Escape hatch:** `Job::execute(&**conn, sql).await` bypasses tracking
 /// and goes straight to [`crate::Job::execute`]. State stays whatever it
@@ -113,19 +113,12 @@ impl Reserved {
     /// error is silently dropped — the pool's next `recycle()` will pick up
     /// the failed connection.
     ///
-    /// **v0.3 limitation:** the rollback fires unconditionally when this flag
-    /// is set, even if the caller already issued an explicit `COMMIT`.
-    /// Tighter "only-if-still-in-tx" semantics need `BEGIN`/`COMMIT` state
-    /// tracking on `Reserved` and are deferred to v0.4. For now, callers who
-    /// set `rollback_on_drop()` and then `COMMIT` explicitly will see a
-    /// best-effort `ROLLBACK` follow the `COMMIT` — Db2 returns a no-op
-    /// `SQLSTATE 25000` ("invalid transaction state") which the pool's
-    /// recycle path tolerates.
-    ///
-    /// **v0.4 status:** `TxState` tracking infrastructure has landed
-    /// (Task 18 / PRO-596) but Drop still fires `ROLLBACK` unconditionally.
-    /// Task 19 / PRO-597 will gate the fire on `tx_state == Started`,
-    /// suppressing the redundant `ROLLBACK` after an explicit `COMMIT`.
+    /// **v0.4:** Drop fires `ROLLBACK` only when both (a) `rollback_on_drop`
+    /// is set and (b) a `BEGIN` has been observed without a matching
+    /// `COMMIT`/`ROLLBACK`. An explicit `COMMIT` or `ROLLBACK` already issued
+    /// through [`Reserved::execute`] or [`Reserved::execute_with`] suppresses
+    /// the Drop firing. Drop is also a no-op when no `BEGIN` has been observed
+    /// (state is `NotStarted` or `Closed`).
     ///
     /// # Example
     ///
@@ -251,16 +244,24 @@ impl Deref for Reserved {
 
 impl Drop for Reserved {
     fn drop(&mut self) {
-        // 1. If opt-in, fire a best-effort ROLLBACK. The dispatcher is still alive (Reserved holds
-        //    Object<JobManager> which holds Arc<Job>), so the request can be enqueued; the future
-        //    is spawned so Drop never blocks. spawn_best_effort guards on Handle::try_current() —
-        //    no destructor panic if there's no runtime.
+        // 1. If opt-in AND currently in-tx, fire a best-effort ROLLBACK. The dispatcher is still
+        //    alive (Reserved holds Object<JobManager> which holds Arc<Job>), so the request can be
+        //    enqueued; the future is spawned so Drop never blocks. spawn_best_effort guards on
+        //    Handle::try_current() — no destructor panic if there's no runtime.
         //
-        //    v0.4 Task 18: state tracking added; Task 19 / PRO-597 gates the
-        //    ROLLBACK fire on `tx_state == Started`. Until Task 19 lands,
-        //    ROLLBACK still fires unconditionally — preserving v0.3 behavior
-        //    so the existing v0.3 contract tests continue to pass.
-        if self.rollback_on_drop {
+        //    v0.4 Task 19 / PRO-597: the gate is now active. Drop is a no-op when the connection
+        //    is not in-tx (state is NotStarted or Closed) — suppressing redundant ROLLBACKs after
+        //    an explicit COMMIT and on connections that never began a transaction.
+        //
+        //    Mutex poisoning during Drop: lock().expect(...) is intentional — a poisoned tx_state
+        //    mutex means a prior panic inside observe_sql, and surfacing the poison here is correct
+        //    (we are already on a teardown path).
+        let in_tx = matches!(
+            *self.tx_state.lock().expect("tx_state mutex poisoned"),
+            TxState::Started
+        );
+        let rolled_back = self.rollback_on_drop && in_tx;
+        if rolled_back {
             let handle = self.obj.inner.handle.clone();
             let id = self.obj.inner.ids.next();
             crate::job_helpers::spawn_best_effort(async move {
@@ -277,12 +278,11 @@ impl Drop for Reserved {
         }
 
         // 2. Emit a single trace event capturing the state-at-drop. Fires after the best-effort
-        //    ROLLBACK enqueue (so the rolled_back flag reflects what we actually did) and before
-        //    the routing-skip sentinel reset (so observers see Reserved's last moment as a held
-        //    connection). The `in_tx` field will be added in Task 18 / PRO-596 once TxState
-        //    tracking lands.
+        //    ROLLBACK enqueue (so rolled_back reflects what we actually did) and before the
+        //    routing-skip sentinel reset (so observers see Reserved's last moment as a held
+        //    connection). The in_tx field distinguishes "opt-in unset" from "nothing to roll back".
         #[cfg(feature = "tracing")]
-        tracing::trace!(rolled_back = self.rollback_on_drop, "Reserved dropped");
+        tracing::trace!(rolled_back, in_tx, "Reserved dropped");
 
         // 3. Reset the routing-skip sentinel so the Job is reusable. The fetch_add(1)/fetch_sub(1)
         //    ping-pong on u32::MAX is benign for routing (Task 24 special-cases u32::MAX) but we

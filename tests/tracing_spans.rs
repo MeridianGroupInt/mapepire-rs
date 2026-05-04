@@ -213,14 +213,17 @@ async fn reserved_drop_emits_trace_event_with_rolled_back() {
 
     let (pool, _mock) = spawn_mock_pool(1).await;
 
-    // Act — acquire a Reserved with rollback-on-drop armed, then drop it
-    // synchronously. The trace event fires from the synchronous Drop
-    // impl wired up in Task 8 (`src/pool/reserved.rs`).
+    // Act — acquire a Reserved with rollback-on-drop armed, issue a BEGIN
+    // so tx_state transitions to Started, then drop without COMMIT. Under
+    // the v0.4 contract Drop fires ROLLBACK only when both rollback_on_drop
+    // is set AND the connection is in-tx; the trace event's rolled_back
+    // field reflects the actual decision.
     {
         let conn = Box::pin(pool.acquire())
             .await
             .expect("acquire ok")
             .rollback_on_drop();
+        drop(Box::pin(conn.execute("BEGIN")).await.expect("begin"));
         drop(conn);
     }
 
