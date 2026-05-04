@@ -1,0 +1,10 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+{
+  "type": "setconfig",
+  "id": "1",
+  "tracelevel": "OFF",
+  "tracedest": ""
+}
