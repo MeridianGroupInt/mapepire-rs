@@ -1,4 +1,4 @@
-.PHONY: help setup build build-release test test-min test-doc lint format format-check fix audit deny coverage fuzz outdated msrv-check update-toolchain doc doc-open doc-private ci pre-commit pre-pr release-check
+.PHONY: help setup build build-release test test-min test-doc lint format format-check fix audit deny coverage fuzz fuzz-quick outdated msrv-check update-toolchain doc doc-open doc-private ci pre-commit pre-pr release-check
 
 # Default goal — keep it informative.
 .DEFAULT_GOAL := help
@@ -28,7 +28,8 @@ help:
 	@echo ""
 	@echo "  Coverage & fuzz:"
 	@echo "    coverage      cargo llvm-cov --all-features (HTML report in target/llvm-cov)"
-	@echo "    fuzz          cargo fuzz run codec_response (Ctrl-C to stop)"
+	@echo "    fuzz          cargo +nightly fuzz run decode_response (Ctrl-C to stop)"
+	@echo "    fuzz-quick    smoke each fuzz target for 60s (contributor pre-PR sanity)"
 	@echo ""
 	@echo "  Docs:"
 	@echo "    doc           cargo doc --no-deps --all-features"
@@ -109,7 +110,16 @@ coverage-ci:
 	cargo llvm-cov --all-features --lcov --output-path lcov.info
 
 fuzz:
-	cargo fuzz run codec_response -- -max_total_time=60
+	cargo +nightly fuzz run decode_response -- -max_total_time=60
+
+# Smoke each target for 60 seconds. Mirrors what fuzz-cron.yml runs on the
+# weekly schedule, just shorter — gives contributors a "did I break the
+# decode boundary?" signal before pushing.
+fuzz-quick:
+	@for target in decode_response decode_query_result decode_error_response round_trip; do \
+		echo "=== $$target ==="; \
+		cargo +nightly fuzz run $$target -- -max_total_time=60 || exit 1; \
+	done
 
 # --- Documentation -------------------------------------------------------
 

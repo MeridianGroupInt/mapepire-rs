@@ -1,2 +1,11 @@
 /target
 Cargo.lock
+
+# cargo-fuzz: build outputs, crash artifacts, and corpus all stay local.
+# Per PRO-613, the corpus starts empty and is added selectively only if
+# signal-producing seeds emerge — at which point a fuzz/corpus/<target>/
+# directory can be added to git via `git add -f`.
+fuzz/target
+fuzz/artifacts
+fuzz/corpus
+fuzz/Cargo.lock

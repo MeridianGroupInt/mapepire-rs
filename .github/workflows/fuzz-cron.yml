@@ -1,0 +1,50 @@
+name: Fuzz (scheduled)
+
+on:
+  schedule:
+    # Monday early UTC (04:17) — off-peak, weekly cadence per PRO-613.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - decode_response
+          - decode_query_result
+          - decode_error_response
+          - round_trip
+    steps:
+      - uses: actions/checkout@v6
+      # libFuzzer integration in cargo-fuzz requires a nightly toolchain.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            fuzz
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Run ${{ matrix.target }}
+        # 5-minute wall-time per target (PRO-613). -max_total_time accepts
+        # seconds. exit code is non-zero if the target panics — libFuzzer
+        # writes the offending input to fuzz/artifacts/<target>/ which we
+        # upload below for triage.
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=300
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
