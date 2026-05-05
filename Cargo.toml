@@ -82,7 +82,7 @@ tokio-test = "0.4"
 # tester would observe an empty buffer for the `Pool::execute` path. The
 # custom-Layer route is the same shape the `tracing` book recommends for
 # verifying span instrumentation.
-tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry", "fmt", "env-filter"] }
 # Mock TLS+WebSocket server harness (Task 21 / PRO-417).
 # rcgen mints self-signed certs at test time; tokio-rustls drives the
 # server-side TLS acceptor. Both are dev-only — they never ship in the
@@ -103,6 +103,13 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # 0.20 is API-aligned with the `metrics 0.24` dep so cargo-deny's
 # multiple-versions = "deny" stays clean.
 metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
+
+# Examples shipping under examples/ — declared explicitly when they
+# depend on a non-default Cargo feature so `cargo build --examples`
+# without that feature skips them rather than failing to resolve symbols.
+[[example]]
+name = "with_tracing"
+required-features = ["tracing"]
 
 [package.metadata.docs.rs]
 all-features = true
