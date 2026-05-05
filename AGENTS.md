@@ -132,9 +132,34 @@ make outdated       # check for newer dependency versions
 make doc-open       # build docs and open in browser
 make msrv-check     # verify the crate still builds on the declared MSRV
 make release-check  # full pre-pr + cargo publish --dry-run
+make fuzz-quick     # smoke each fuzz target for 60s (nightly toolchain)
 ```
 
 `make help` lists everything.
+
+### Fuzzing
+
+The crate ships a `fuzz/` workspace member with four libFuzzer targets
+covering the wire-protocol decode boundary: `decode_response`,
+`decode_query_result`, `decode_error_response`, `round_trip`.
+
+- **Quick smoke (~5min total):** `make fuzz-quick` — runs each target
+  for 60s. Use before pushing changes that touch `src/protocol/` or
+  `src/error.rs`.
+- **Single target deep run:** `cargo +nightly fuzz run <target>` (no
+  `-max_total_time` → runs until Ctrl-C). Use when triaging an
+  artifact under `fuzz/artifacts/<target>/`.
+- **CI:** the weekly `.github/workflows/fuzz-cron.yml` runs each target
+  for 5 minutes every Monday and uploads any artifacts on failure.
+
+A panic discovered by fuzzing is treated like a security finding —
+follow `SECURITY.md`'s private-disclosure flow before opening a public
+PR with the fix.
+
+The fuzz crate is not part of the main workspace, so `cargo build` /
+`cargo test` at the repo root never pull `libfuzzer-sys` (nightly-only).
+And `fuzz/` is excluded from the published crate via the `include`
+whitelist in `Cargo.toml`.
 
 ### Formatting
 

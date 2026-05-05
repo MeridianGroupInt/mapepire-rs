@@ -1,0 +1,61 @@
+[package]
+name = "mapepire-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Fuzz crate is a workspace member of its own — NOT included in the main
+# workspace, so `cargo build` / `cargo test` at the repo root never touch
+# this crate or pull libfuzzer-sys (nightly-only). Drive fuzzing from
+# inside `fuzz/`: `cargo +nightly fuzz run <target>`.
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+# `arbitrary` for the derive macro on per-target Input structs. The
+# libfuzzer-sys re-export of the trait is convenient at the call site, but
+# the derive macro itself lives in this crate.
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.mapepire]
+path = ".."
+default-features = false
+# rustls-tls is required because mapepire's compile_error! guard demands
+# at least one TLS backend. The fuzz targets only exercise pure-decode
+# code paths — no actual TLS handshake — but the crate still needs a
+# valid feature set to compile.
+features = ["rustls-tls"]
+
+# Each [[bin]] declaration matches a file under fuzz_targets/. cargo-fuzz
+# discovers and runs them by name: `cargo +nightly fuzz run <name>`.
+
+[[bin]]
+name = "decode_response"
+path = "fuzz_targets/decode_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_query_result"
+path = "fuzz_targets/decode_query_result.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_error_response"
+path = "fuzz_targets/decode_error_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "round_trip"
+path = "fuzz_targets/round_trip.rs"
+test = false
+doc = false
+bench = false
