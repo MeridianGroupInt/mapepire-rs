@@ -70,6 +70,24 @@ it into a zeroizing buffer (`Password`). `DaemonServer` is not `Clone` —
 the `Pool::builder` constructor takes `impl Into<Arc<DaemonServer>>` so the
 single config is shared across every pooled connection.
 
+### Runnable examples
+
+The [`examples/`](examples/) directory ships six runnable demos covering
+the common patterns:
+
+| Example | Demonstrates |
+|---|---|
+| [`examples/one_shot.rs`](examples/one_shot.rs) | `Pool::builder` → `pool.execute(sql)` → iterate rows |
+| [`examples/prepared.rs`](examples/prepared.rs) | `Job::prepare` + `Query::execute_with` reused across calls |
+| [`examples/transaction.rs`](examples/transaction.rs) | `pool.acquire().rollback_on_drop()` + v0.4 typed `begin/commit` |
+| [`examples/streaming.rs`](examples/streaming.rs) | `Rows::stream_typed::<T>` with a `serde::Deserialize` row struct |
+| [`examples/with_tracing.rs`](examples/with_tracing.rs) | `tracing-subscriber` registration + per-execute span output |
+| [`examples/cl_command.rs`](examples/cl_command.rs) | `Job::cl(...)` + `ClMessage` walkthrough |
+
+Each example reads `MAPEPIRE_HOST`, `MAPEPIRE_USER`, and `MAPEPIRE_PASSWORD`
+from the environment. Run with `cargo run --example <name>` (or
+`cargo run --example with_tracing --features tracing` for the tracing demo).
+
 ### Single-connection alternative
 
 If you only need one connection (e.g. a CLI tool or a one-shot script),

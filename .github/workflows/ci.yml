@@ -79,7 +79,10 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-features
+      # `--all-targets` includes examples/ alongside lib + tests + benches,
+      # so the six runnable demos under examples/ get the full OS x
+      # toolchain matrix coverage (PRO-612 acceptance).
+      - run: cargo check --all-targets --all-features
 
   msrv:
     name: msrv
