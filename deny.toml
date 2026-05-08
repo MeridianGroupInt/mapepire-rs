@@ -55,6 +55,15 @@ skip = [
     # coexists at link time with the 0.61 copy on our supported targets.
     # Re-evaluate when ring upgrades its windows-sys dependency.
     { crate = "windows-sys" },
+    # webpki-roots 1.0.x is our direct dep (Mozilla CA bundle, latest API).
+    # `tokio-tungstenite 0.29` still pins `webpki-roots 0.26.x`, which
+    # upstream now ships as a thin semver-trick shim that re-exports the
+    # 1.x types verbatim (see 0.26.11's lib.rs: "This crate version is a
+    # semver trick to webpki-roots v1"). The duplicate is therefore a
+    # zero-cost upstream-lag artifact, not a real binary-bloat or
+    # type-mismatch hazard. Drop this skip when tokio-tungstenite
+    # migrates its webpki-roots dep to 1.x.
+    { crate = "webpki-roots" },
 ]
 skip-tree = []
 
