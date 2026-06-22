@@ -23,7 +23,7 @@ jobs:
           - decode_error_response
           - round_trip
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # libFuzzer integration in cargo-fuzz requires a nightly toolchain.
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
