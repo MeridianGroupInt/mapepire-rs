@@ -64,6 +64,15 @@ skip = [
     # type-mismatch hazard. Drop this skip when tokio-tungstenite
     # migrates its webpki-roots dep to 1.x.
     { crate = "webpki-roots" },
+    # syn 2.0.x and 3.0.x coexist while the proc-macro ecosystem migrates.
+    # syn 3: async-trait, futures-macro, serde_derive, thiserror-impl,
+    # tokio-macros. syn 2: openssl-macros (native-tls only),
+    # tracing-attributes, zeroize_derive. Both are build-time-only
+    # proc-macro dependencies -- neither reaches the produced binary, so
+    # the duplicate costs compile time and nothing else. No dependency
+    # move available to this crate closes it; it closes when those three
+    # laggards upgrade. Re-evaluate then.
+    { crate = "syn" },
 ]
 skip-tree = []
 
