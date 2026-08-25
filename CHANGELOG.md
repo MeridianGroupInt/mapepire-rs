@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-08-25
+
+A dependency-hygiene patch. No API changes.
+
+### Fixed
+
+- **CI clippy break on Rust 1.98.** `tests/drop_rows.rs` tripped the
+  `clippy::useless_borrows_in_formatting` lint (`&*guard` in a `panic!`
+  argument), which `make lint` / the `clippy` CI job run as
+  `-D warnings`. Pre-existing code, newly linted by the current stable
+  toolchain.
+- **`rcgen` dev-dependency resolved above the declared MSRV.** `rcgen`
+  `0.14.8`+ declares `rust-version = "1.88"` while this crate declares
+  `1.85`, so a fresh resolve would break any MSRV job. The dev-dependency
+  is now capped at `>=0.14.1, <0.14.8` with a comment pointing at the
+  reason; lift the cap when the MSRV moves. This is the same 1.88 tension
+  already documented in the `deny.toml` RUSTSEC-2026-0009 ignore.
+
+### Changed
+
+- Raised the TLS-stack dependency floors to current: `rustls`
+  `0.23.18` -> `0.23.43`, `tokio-rustls` `0.26` -> `0.26.4`,
+  `rustls-pki-types` `1` -> `1.15.1`, `webpki-roots` `1` -> `1.0.9`.
+  There is no advisory between `0.23.18` (the RUSTSEC-2024-0399 patch
+  level) and `0.23.43` — this is hardening against minimal-version
+  resolution and stale downstream lockfiles, not a vulnerability fix.
+  The `rustls` and `tokio-rustls` dev-dependency entries were moved in
+  lockstep so `cargo-deny`'s `multiple-versions = "deny"` stays clean.
+- The `tokio = "1.23.1"` floor is deliberately left alone; nothing in the
+  crate needs a newer API.
+
 ## [0.4.0] — 2026-05-04
 
 The observability + cleanup milestone. v0.4 layers opt-in `tracing` and
@@ -468,7 +499,8 @@ harness used to validate them.
 - README badges (CI, Audit, deps.rs, MSRV from Cargo.toml, License).
 - PR template, issue templates, CODEOWNERS.
 
-[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/MeridianGroupInt/mapepire-rs/releases/tag/v0.4.0
 [0.3.0]: https://github.com/MeridianGroupInt/mapepire-rs/releases/tag/v0.3.0
 [0.2.0]: https://github.com/MeridianGroupInt/mapepire-rs/releases/tag/v0.2.0

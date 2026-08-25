@@ -82,7 +82,7 @@ async fn wait_for(
         }
         if Instant::now() >= deadline {
             let guard = recorder.lock().expect("recorder mutex not poisoned");
-            panic!("timed out waiting for: {label}; observed = {:?}", &*guard);
+            panic!("timed out waiting for: {label}; observed = {:?}", *guard);
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
