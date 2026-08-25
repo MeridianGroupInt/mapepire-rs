@@ -27,10 +27,10 @@ impl Drop for StreamState {
         // open, fire a best-effort sqlclose. `done` is set when the
         // server reports `is_done = true` (see `unfold` body), so we
         // skip the close in the natural-exhaustion path.
-        if !self.done {
-            if let Some(cont_id) = self.cont_id.take() {
-                spawn_close(self.handle.clone(), cont_id);
-            }
+        if !self.done
+            && let Some(cont_id) = self.cont_id.take()
+        {
+            spawn_close(self.handle.clone(), cont_id);
         }
     }
 }
@@ -666,10 +666,10 @@ impl Drop for Rows {
         // the cursor and there's nothing to close. Skip when
         // `cont_id` is `None` for the same reason, including the
         // post-`stream()` case where `stream` already `take()`d it.
-        if !self.inner.is_done {
-            if let Some(cont_id) = self.inner.cont_id.take() {
-                spawn_close(self.handle.clone(), cont_id);
-            }
+        if !self.inner.is_done
+            && let Some(cont_id) = self.inner.cont_id.take()
+        {
+            spawn_close(self.handle.clone(), cont_id);
         }
     }
 }

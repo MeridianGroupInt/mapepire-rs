@@ -1,8 +1,8 @@
 [package]
 name = "mapepire"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 description = "Async Rust client for Mapepire — Db2 for IBM i over secure WebSockets"
 repository = "https://github.com/MeridianGroupInt/mapepire-rs"
@@ -48,9 +48,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23.1", optional = true }
 tokio = { version = "1.23.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
-tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 futures = "0.3"
 pin-project-lite = "0.2"
 async-trait = "0.1"
@@ -88,9 +88,11 @@ tracing-subscriber = { version = "0.3.20", default-features = false, features = 
 # server-side TLS acceptor. Both are dev-only — they never ship in the
 # published crate. tokio-rustls version is pinned to match the regular dep
 # exactly so cargo-deny's multiple-versions = "deny" stays clean.
-# Capped below 0.14.8: rcgen 0.14.8+ declares rust-version = "1.88", above
-# this crate's declared MSRV of 1.85. Lift the cap when the MSRV moves.
-rcgen = ">=0.14.1, <0.14.8"
+# `default-features = false` drops rcgen's `pem` feature, which is unused
+# here (the harness only needs DER: `cert.der()` + `signing_key.serialize_der()`)
+# and which pulls `pem -> base64 0.22`, colliding with our own `base64 0.23`
+# under cargo-deny's `multiple-versions = "deny"`.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 tokio-rustls = { version = "0.26.4", default-features = false }
 # Enable rustls' ring provider so the process-level CryptoProvider is
 # populated when running tests. rcgen pulls ring into the dep tree, but

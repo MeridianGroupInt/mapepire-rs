@@ -20,14 +20,10 @@ jobs:
       - name: Generate Cargo.lock for audit
         run: cargo generate-lockfile
       # TODO(PRO-395): bump when Node-24 release available — currently on Node 20 (deprecated 2026-09-16)
-      # Ignored advisory: rcgen (dev-dep) pulls time 0.3.45 which has a
-      # stack-exhaustion CVE in RFC-2822 parsing. rcgen never invokes
-      # parsing, only DER serialization — unreachable code path. Patched
-      # time 0.3.47 requires Rust 1.88, exceeds our MSRV 1.85.
-      # Justification + analysis lives in deny.toml's [advisories.ignore].
-      # Mirrors the same `ignore:` on ci.yml's audit job; without this the
-      # daily cron files a fresh github-actions issue every run (gh #51).
+      # No `ignore:` list, matching ci.yml's audit job. RUSTSEC-2026-0009
+      # (time 0.3.45) was ignored only because the patched time 0.3.47
+      # requires Rust 1.88; the 0.5.0 MSRV bump lets it resolve normally,
+      # so the daily cron no longer needs the suppression (gh #51).
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ignore: RUSTSEC-2026-0009

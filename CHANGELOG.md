@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-25
+
+The MSRV milestone. Raises the declared minimum supported Rust version to
+**1.88** and removes the three workarounds the old 1.85 floor forced on
+us. No breaking API changes — the major-version-shaped bump is the MSRV
+raise itself, which `AGENTS.md` §9 classifies as a minor bump.
+
+### Changed
+
+- **MSRV raised from 1.85 to 1.88** (`rust-version` in `Cargo.toml`, the
+  `msrv` CI job). Consumers on 1.85–1.87 must stay on `0.4.x`.
+- **`tokio-tungstenite` 0.29 -> 0.30.** The TLS feature flags forward
+  into it (`tokio-tungstenite/rustls-tls-webpki-roots`,
+  `tokio-tungstenite/native-tls`), so the tungstenite / rustls /
+  native-tls stacks move together in a single commit to keep
+  `cargo-deny`'s `multiple-versions = "deny"` satisfied.
+- **`base64` 0.22 -> 0.23.1** (reachable only under `serde-config`, for
+  decoding the pinned-CA DER in `TlsSpec`). No API change at our call
+  sites — `Engine`, `engine::general_purpose::STANDARD` and `DecodeError`
+  are unchanged.
+- The `rcgen` dev-dependency now builds with `default-features = false,
+  features = ["crypto", "ring"]`. The harness only ever needs DER
+  (`cert.der()`, `signing_key.serialize_der()`); rcgen's default `pem`
+  feature pulls `pem -> base64 0.22`, which would collide with the new
+  `base64 0.23` under `multiple-versions = "deny"`.
+- Two `if !flag { if let Some(x) = … }` blocks in `src/query.rs`
+  (`StreamState::drop`, `Rows::drop`) collapsed into let-chains. With
+  `rust-version = "1.88"` declared, `clippy::collapsible_if` now knows
+  let-chains are available and flags the nested form; the `clippy` CI job
+  runs `-D warnings`. Behaviour is identical.
+
+### Removed
+
+- **The `rcgen` version cap.** `rcgen = ">=0.14.1, <0.14.8"` is back to
+  plain `rcgen = "0.14"`. The cap existed only because rcgen 0.14.8+
+  declares `rust-version = "1.88"`.
+- **The `RUSTSEC-2026-0009` advisory ignore** — removed from
+  `deny.toml`'s `[advisories]` and from the `ignore:` input on both the
+  `audit` job in `ci.yml` and the daily `audit-cron.yml`. The ignore
+  existed only because the fix, `time` 0.3.47, declares
+  `rust-version = "1.88"`. With the MSRV at 1.88 a fresh resolve picks
+  `time` 0.3.55 and `cargo deny check advisories` passes with
+  `ignore = []`.
+- **The workflow-level `RUSTFLAGS: "-D warnings"` in `ci.yml`.** It
+  applied to every dependency as well as this crate, which busts the
+  shared build cache (`RUSTFLAGS` is part of the fingerprint) and turns
+  upstream warnings we do not control into build failures. Lint
+  enforcement is unchanged in substance and now lives only where it
+  belongs: the `clippy` job's `-- -D warnings`, the `docs` job's
+  `RUSTDOCFLAGS`, and the `[lints]` table in `Cargo.toml`.
+
+### Known issues
+
+- `cargo deny check bans` still fails with a duplicate `syn` (2.0.119 vs
+  3.0.4) under `--all-features`. This is pre-existing — it fails on
+  `main` and on `0.4.1` too — and the 0.5.0 dependency moves do not
+  close it: the syn-2 holdouts are `openssl-macros` (via `native-tls`),
+  `tracing-attributes` and `zeroize_derive`, none of which we can move.
+  Deliberately **not** papered over with a `[bans] skip`; the strict
+  policy is intentional.
+
 ## [0.4.1] — 2026-08-25
 
 A dependency-hygiene patch. No API changes.
@@ -499,7 +560,8 @@ harness used to validate them.
 - README badges (CI, Audit, deps.rs, MSRV from Cargo.toml, License).
 - PR template, issue templates, CODEOWNERS.
 
-[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/MeridianGroupInt/mapepire-rs/releases/tag/v0.4.0
 [0.3.0]: https://github.com/MeridianGroupInt/mapepire-rs/releases/tag/v0.3.0
