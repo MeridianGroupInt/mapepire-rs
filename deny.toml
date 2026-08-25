@@ -11,14 +11,12 @@ all-features = true
 
 [advisories]
 yanked = "deny"
-ignore = [
-    # RUSTSEC-2026-0009: time v0.3.45 stack exhaustion via RFC 2822 parsing.
-    # Only affects user-controlled RFC 2822 input — rcgen uses time for X.509
-    # validity dates, not for parsing untrusted strings, so the attack surface
-    # does not apply. The fix (0.3.47) requires Rust 1.88.0; this crate targets
-    # Rust 1.85 and cannot upgrade until the MSRV is raised in a future release.
-    { id = "RUSTSEC-2026-0009", reason = "time is used by rcgen (dev-only) for X.509 date encoding, not RFC 2822 parsing; unreachable code path. Fix requires Rust 1.88.0 which exceeds our MSRV 1.85." },
-]
+# No ignores. The RUSTSEC-2026-0009 entry (time 0.3.45 stack exhaustion via
+# RFC 2822 parsing, reached only through the dev-only rcgen -> time edge)
+# existed solely because the fix — time 0.3.47 — declares rust-version
+# 1.88, above this crate's then-MSRV of 1.85. The 0.5.0 MSRV bump to 1.88
+# lets time resolve to a patched release, so the ignore is gone.
+ignore = []
 
 [licenses]
 allow = [
@@ -56,7 +54,7 @@ skip = [
     # Re-evaluate when ring upgrades its windows-sys dependency.
     { crate = "windows-sys" },
     # webpki-roots 1.0.x is our direct dep (Mozilla CA bundle, latest API).
-    # `tokio-tungstenite 0.29` still pins `webpki-roots 0.26.x`, which
+    # `tokio-tungstenite 0.30` still pins `webpki-roots 0.26.x`, which
     # upstream now ships as a thin semver-trick shim that re-exports the
     # 1.x types verbatim (see 0.26.11's lib.rs: "This crate version is a
     # semver trick to webpki-roots v1"). The duplicate is therefore a

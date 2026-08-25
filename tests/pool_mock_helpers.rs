@@ -84,7 +84,7 @@ async fn spawn_mock_pool_observes_multiple_connections() {
 
     // Sanity check: drop the pool quickly so the test doesn't hang on
     // background tasks. `Instant` import keeps this test compiling on
-    // MSRV 1.85 without pulling in dev-dependency churn.
+    // MSRV 1.88 without pulling in dev-dependency churn.
     let _ = Instant::now();
     drop(pool);
 }

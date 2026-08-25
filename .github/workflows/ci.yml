@@ -8,7 +8,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+# NOTE: deliberately no workflow-level `RUSTFLAGS: "-D warnings"`. It applies
+# to every dependency as well as this crate, which busts the shared build
+# cache (RUSTFLAGS is part of the fingerprint) and turns upstream warnings
+# we do not control into build failures. Lint enforcement lives where it
+# belongs: the `clippy` job's `-- -D warnings`, the `docs` job's
+# `RUSTDOCFLAGS`, and the `[lints]` table in Cargo.toml.
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -92,7 +97,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.85
+      - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
 
@@ -155,14 +160,12 @@ jobs:
       - name: Generate Cargo.lock for audit
         run: cargo generate-lockfile
       # TODO(PRO-395): bump when Node-24 release available — currently on Node 20 (deprecated 2026-09-16)
-      # Ignored advisory: rcgen (dev-dep) pulls time 0.3.45 which has a
-      # stack-exhaustion CVE in RFC-2822 parsing. rcgen never invokes
-      # parsing, only DER serialization — unreachable code path.
-      # Justification + analysis lives in deny.toml's [advisories.ignore].
+      # No `ignore:` list. RUSTSEC-2026-0009 (time 0.3.45) was ignored only
+      # because the patched time 0.3.47 requires Rust 1.88; the 0.5.0 MSRV
+      # bump lets it resolve normally.
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ignore: RUSTSEC-2026-0009
 
   deny:
     name: deny
