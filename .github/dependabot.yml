@@ -33,3 +33,14 @@ updates:
     commit-message:
       prefix: ci(deps)
       include: scope
+    groups:
+      actions:
+        update-types: ["major", "minor", "patch"]
+    ignore:
+      # The msrv job pins dtolnay/rust-toolchain to an exact MSRV toolchain.
+      # Bumping the ref rewrites the MSRV floor and makes the job meaningless.
+      - dependency-name: "dtolnay/rust-toolchain"
+      # Every action here is pinned to a floating major on purpose. `@v2`
+      # already resolves past any patch Dependabot proposes, so a patch pin is
+      # a no-op that only freezes us behind the tag we pinned.
+      - dependency-name: "taiki-e/install-action"
