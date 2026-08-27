@@ -315,15 +315,103 @@ mod tests {
 
     #[test]
     fn non_secret_variants_debug_faithfully() {
-        let r = Request::SqlMore {
-            id: "20".into(),
-            cont_id: "cur-1".into(),
-            rows: 100,
-        };
-        assert_eq!(
-            format!("{r:?}"),
-            r#"SqlMore { id: "20", cont_id: "cur-1", rows: 100 }"#
-        );
+        // Every variant, so each arm of the hand-written `Debug` is exercised
+        // and none of them silently stops rendering a field. `Connect` is
+        // covered by `connect_debug_redacts_password` instead -- its expected
+        // output is the redacted form, not the faithful one.
+        //
+        // A new variant cannot slip past this unnoticed: `Debug`'s match has no
+        // wildcard arm, so adding one fails to compile until it is handled.
+        let cases: Vec<(Request, &str)> = vec![
+            (
+                Request::Sql {
+                    id: "1".into(),
+                    sql: "SELECT 1".into(),
+                    rows: Some(10),
+                    parameters: None,
+                },
+                r#"Sql { id: "1", sql: "SELECT 1", rows: Some(10), parameters: None }"#,
+            ),
+            (
+                Request::PrepareSql {
+                    id: "2".into(),
+                    sql: "SELECT ?".into(),
+                },
+                r#"PrepareSql { id: "2", sql: "SELECT ?" }"#,
+            ),
+            (
+                Request::PrepareSqlExecute {
+                    id: "3".into(),
+                    sql: "SELECT ?".into(),
+                    parameters: None,
+                    rows: None,
+                },
+                r#"PrepareSqlExecute { id: "3", sql: "SELECT ?", parameters: None, rows: None }"#,
+            ),
+            (
+                Request::Execute {
+                    id: "4".into(),
+                    cont_id: "cur-1".into(),
+                    parameters: Some(vec![serde_json::Value::from("x")]),
+                },
+                r#"Execute { id: "4", cont_id: "cur-1", parameters: Some([String("x")]) }"#,
+            ),
+            (
+                Request::SqlMore {
+                    id: "20".into(),
+                    cont_id: "cur-1".into(),
+                    rows: 100,
+                },
+                r#"SqlMore { id: "20", cont_id: "cur-1", rows: 100 }"#,
+            ),
+            (
+                Request::SqlClose {
+                    id: "5".into(),
+                    cont_id: "cur-1".into(),
+                },
+                r#"SqlClose { id: "5", cont_id: "cur-1" }"#,
+            ),
+            (
+                Request::Cl {
+                    id: "6".into(),
+                    cmd: "WRKACTJOB".into(),
+                },
+                r#"Cl { id: "6", cmd: "WRKACTJOB" }"#,
+            ),
+            (
+                Request::GetVersion { id: "7".into() },
+                r#"GetVersion { id: "7" }"#,
+            ),
+            (
+                Request::GetDbJob { id: "8".into() },
+                r#"GetDbJob { id: "8" }"#,
+            ),
+            (
+                Request::SetConfig {
+                    id: "9".into(),
+                    tracelevel: "errors".into(),
+                    tracedest: "in_mem".into(),
+                },
+                r#"SetConfig { id: "9", tracelevel: "errors", tracedest: "in_mem" }"#,
+            ),
+            (
+                Request::GetTraceData { id: "10".into() },
+                r#"GetTraceData { id: "10" }"#,
+            ),
+            (
+                Request::Dove {
+                    id: "11".into(),
+                    sql: "SELECT 1".into(),
+                },
+                r#"Dove { id: "11", sql: "SELECT 1" }"#,
+            ),
+            (Request::Ping { id: "12".into() }, r#"Ping { id: "12" }"#),
+            (Request::Exit { id: "13".into() }, r#"Exit { id: "13" }"#),
+        ];
+
+        for (request, expected) in cases {
+            assert_eq!(format!("{request:?}"), expected);
+        }
     }
 
     #[test]
