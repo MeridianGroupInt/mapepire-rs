@@ -311,8 +311,9 @@ mod tests {
         let cases: &[Request] = &[
             Request::Connect {
                 id: id.clone(),
-                user: "u".into(),
-                password: "p".into(),
+                technique: "tcp".into(),
+                application: "mapepire-rs".into(),
+                props: None,
             },
             Request::Sql {
                 id: id.clone(),

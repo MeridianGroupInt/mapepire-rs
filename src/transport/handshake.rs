@@ -91,19 +91,16 @@ pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<ConnectedDis
     let dispatcher = Dispatcher::spawn(Box::pin(transport), Arc::clone(&in_flight));
     let handle = dispatcher.handle();
 
-    // 4. Send the Connect request and await the Connected response.
+    // 4. Send the Connect request and await the Connected response. Live daemon auth is HTTP Basic
+    //    on the upgrade, not this body. Sibling SQLJob: {id, type:connect, technique:tcp,
+    //    application, props?}.
     let ids = IdAllocator::new();
     let connect_id = ids.next();
     let request = Request::Connect {
         id: connect_id.clone(),
-        user: server.user.clone(),
-        // Security note: `.to_string()` clones the plaintext into a
-        // non-zeroizing `String` field of `Request::Connect`. The bytes
-        // sit in heap memory until the allocator reuses the page after
-        // the `Request` is dropped post-serialization. Accepted tradeoff
-        // at the wire-protocol boundary; see SECURITY.md and the
-        // `Password::expose` doc.
-        password: server.password.expose().to_string(),
+        technique: "tcp".into(),
+        application: server.application.clone(),
+        props: server.jdbc_props.clone(),
     };
 
     let response = handle.send(request).await?;

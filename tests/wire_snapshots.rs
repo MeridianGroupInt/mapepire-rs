@@ -11,8 +11,9 @@ use mapepire::protocol::response::{
 fn snapshot_request_connect() {
     let r = Request::Connect {
         id: "test".into(),
-        user: "DCURTIS".into(),
-        password: "hunter2".into(),
+        technique: "tcp".into(),
+        application: "mapepire-rs".into(),
+        props: None,
     };
     insta::assert_json_snapshot!(r);
 }

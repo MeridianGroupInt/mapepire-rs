@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`Request::Connect` matches the live mapepire-js wire body.** The
+  variant is now `{id, technique, application, props?}` — no `user` or
+  `password` fields. Live daemon authentication is HTTP Basic on the
+  WebSocket upgrade, not JSON credentials. Handshake always sends
+  `technique: "tcp"`; `application` defaults to `"mapepire-rs"`; JDBC
+  properties come from `DaemonServer::jdbc_props`.
+- **`DaemonServer` gains `application` (default `"mapepire-rs"`) and
+  `jdbc_props`.** Builder methods `.application(...)` and
+  `.jdbc_props(...)`; `DaemonServerSpec` (`serde-config`) accepts both
+  as optional fields.
+
+### Security
+
+- `Request::Connect` no longer carries a password. `Password::expose`
+  remains for the HTTP Basic header on the WebSocket upgrade and is
+  unused on the JSON body.
+
 ## [0.5.1] — 2026-08-27
 
 ### Security

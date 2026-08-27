@@ -52,6 +52,15 @@ pub struct DaemonServer {
     pub password: Password,
     /// TLS verification mode.
     pub tls: TlsConfig,
+    /// JDBC properties forwarded on connect as the `props` string.
+    ///
+    /// Semicolon-delimited, e.g. `"access=read only;auto commit=true"`.
+    /// Omitted from the connect body when `None`.
+    pub jdbc_props: Option<String>,
+    /// Client application name sent on connect.
+    ///
+    /// Defaults to `"mapepire-rs"` when unset on the builder.
+    pub application: String,
 }
 
 impl DaemonServer {
@@ -126,6 +135,8 @@ pub struct DaemonServerBuilder {
     user: Option<String>,
     password: Option<Password>,
     tls: Option<TlsConfig>,
+    jdbc_props: Option<String>,
+    application: Option<String>,
 }
 
 impl DaemonServerBuilder {
@@ -165,6 +176,55 @@ impl DaemonServerBuilder {
         self
     }
 
+    /// Set JDBC properties forwarded as the connect `props` string.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mapepire::DaemonServer;
+    ///
+    /// let server = DaemonServer::builder()
+    ///     .host("ibmi.example.com")
+    ///     .user("DCURTIS")
+    ///     .password("secret".to_string())
+    ///     .jdbc_props("access=read only;auto commit=true")
+    ///     .build()
+    ///     .expect("required fields set");
+    /// assert_eq!(
+    ///     server.jdbc_props.as_deref(),
+    ///     Some("access=read only;auto commit=true")
+    /// );
+    /// ```
+    #[must_use]
+    pub fn jdbc_props(mut self, props: impl Into<String>) -> Self {
+        self.jdbc_props = Some(props.into());
+        self
+    }
+
+    /// Override the client application name sent on connect.
+    ///
+    /// Defaults to `"mapepire-rs"` when unset.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mapepire::DaemonServer;
+    ///
+    /// let server = DaemonServer::builder()
+    ///     .host("ibmi.example.com")
+    ///     .user("DCURTIS")
+    ///     .password("secret".to_string())
+    ///     .application("my-app")
+    ///     .build()
+    ///     .expect("required fields set");
+    /// assert_eq!(server.application, "my-app");
+    /// ```
+    #[must_use]
+    pub fn application(mut self, name: impl Into<String>) -> Self {
+        self.application = Some(name.into());
+        self
+    }
+
     /// Finalize the builder.
     ///
     /// # Errors
@@ -180,6 +240,8 @@ impl DaemonServerBuilder {
                 .password
                 .ok_or(BuilderError::MissingField("password"))?,
             tls: self.tls.unwrap_or_default(),
+            jdbc_props: self.jdbc_props,
+            application: self.application.unwrap_or_else(|| "mapepire-rs".into()),
         })
     }
 }
@@ -230,7 +292,38 @@ mod tests {
         assert_eq!(s.host, "ibmi.example.com");
         assert_eq!(s.port, DaemonServer::DEFAULT_PORT);
         assert_eq!(s.user, "DCURTIS");
+        assert_eq!(s.application, "mapepire-rs");
+        assert_eq!(s.jdbc_props, None);
         assert!(matches!(s.tls, TlsConfig::Verified));
+    }
+
+    #[test]
+    fn builder_defaults_application_to_mapepire_rs() {
+        let s = DaemonServer::builder()
+            .host("h")
+            .user("u")
+            .password("p".to_string())
+            .build()
+            .expect("DaemonServer builds with all required fields set");
+        assert_eq!(s.application, "mapepire-rs");
+        assert_eq!(s.jdbc_props, None);
+    }
+
+    #[test]
+    fn builder_jdbc_props_round_trips() {
+        let s = DaemonServer::builder()
+            .host("h")
+            .user("u")
+            .password("p".to_string())
+            .jdbc_props("access=read only;auto commit=true")
+            .application("cli")
+            .build()
+            .expect("DaemonServer builds with jdbc_props set");
+        assert_eq!(
+            s.jdbc_props.as_deref(),
+            Some("access=read only;auto commit=true")
+        );
+        assert_eq!(s.application, "cli");
     }
 
     #[test]
@@ -311,6 +404,15 @@ pub struct DaemonServerSpec {
     /// in the config file.
     #[serde(default)]
     pub tls: TlsConfigSpec,
+    /// JDBC properties forwarded on connect as the `props` string.
+    #[serde(default)]
+    pub jdbc_props: Option<String>,
+    /// Client application name sent on connect.
+    ///
+    /// When absent, [`DaemonServerSpec::try_into_server`] fills
+    /// `"mapepire-rs"`.
+    #[serde(default)]
+    pub application: Option<String>,
 }
 
 /// TLS configuration as it appears in serialized config.
@@ -353,6 +455,8 @@ impl DaemonServerSpec {
             user: self.user,
             password: Password::new(self.password),
             tls,
+            jdbc_props: self.jdbc_props,
+            application: self.application.unwrap_or_else(|| "mapepire-rs".into()),
         })
     }
 }
@@ -392,6 +496,29 @@ mod spec_tests {
             .expect("DaemonServerSpec converts to DaemonServer");
         assert_eq!(server.host, "ibmi.example.com");
         assert_eq!(server.port, DaemonServer::DEFAULT_PORT);
+        assert_eq!(server.application, "mapepire-rs");
+        assert_eq!(server.jdbc_props, None);
+    }
+
+    #[test]
+    fn parses_jdbc_props_and_application() {
+        let json = r#"{
+            "host": "ibmi.example.com",
+            "user": "DCURTIS",
+            "password": "hunter2",
+            "jdbc_props": "access=read only;auto commit=true",
+            "application": "cli"
+        }"#;
+        let spec: DaemonServerSpec =
+            serde_json::from_str(json).expect("DaemonServerSpec parses from JSON");
+        let server = spec
+            .try_into_server()
+            .expect("DaemonServerSpec converts to DaemonServer");
+        assert_eq!(
+            server.jdbc_props.as_deref(),
+            Some("access=read only;auto commit=true")
+        );
+        assert_eq!(server.application, "cli");
     }
 
     #[test]

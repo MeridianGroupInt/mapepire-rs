@@ -9,22 +9,53 @@ use serde::{Deserialize, Serialize};
 /// Tagged on the wire by the `type` field. Variants are added in
 /// subsequent protocol tasks.
 ///
-/// [`Debug`] is hand-written, not derived: it renders `Connect`'s password
-/// as `[REDACTED]` so a downstream `tracing::debug!("{req:?}")` cannot put
-/// an IBM i password in a log. `Serialize` is untouched — the plaintext
-/// password is what goes on the wire, inside TLS.
+/// [`Debug`] is hand-written, not derived, and exhaustive with **no
+/// wildcard arm**. Adding a variant (or a secret field on an existing
+/// one) fails to compile until this impl is updated — the canary that a
+/// new credential cannot silently print. `Connect` carries no secrets;
+/// credentials travel as HTTP Basic on the WebSocket upgrade, not in
+/// this JSON.
 #[non_exhaustive]
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    /// Establish a daemon session and authenticate.
+    /// Establish a daemon session.
+    ///
+    /// Live daemon authentication is HTTP Basic on the WebSocket
+    /// upgrade, not this JSON body. Sibling `SQLJob` sends
+    /// `{id, type: "connect", technique: "tcp", application, props?}`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mapepire::protocol::request::Request;
+    ///
+    /// let r = Request::Connect {
+    ///     id: "1".into(),
+    ///     technique: "tcp".into(),
+    ///     application: "mapepire-rs".into(),
+    ///     props: None,
+    /// };
+    /// let json = serde_json::to_string(&r).expect("Request serializes");
+    /// assert_eq!(
+    ///     json,
+    ///     r#"{"type":"connect","id":"1","technique":"tcp","application":"mapepire-rs"}"#
+    /// );
+    /// assert!(!json.contains("password"));
+    /// assert!(!json.contains("user"));
+    /// ```
     Connect {
         /// Caller-supplied correlation id.
         id: String,
-        /// IBM i user profile.
-        user: String,
-        /// IBM i password (plain — the WebSocket is TLS).
-        password: String,
+        /// Connection technique. Handshake always sends `"tcp"`.
+        technique: String,
+        /// Client identifier reported to the daemon. Defaults to `"mapepire-rs"`.
+        application: String,
+        /// Optional JDBC properties string (semicolon-delimited).
+        ///
+        /// Omitted from the wire when `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        props: Option<String>,
     },
 
     /// Execute a SQL statement (DML, DDL, or query) without preparing it.
@@ -156,37 +187,28 @@ pub enum Request {
     },
 }
 
-/// Stand-in for a secret field in [`Request`]'s [`Debug`] output.
-///
-/// Renders bare `[REDACTED]` rather than the `"[REDACTED]"` a `&str` would
-/// print, matching [`Password`](crate::Password)'s `Password([REDACTED])`.
-struct Redacted;
-
-impl fmt::Debug for Redacted {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("[REDACTED]")
-    }
-}
-
-/// Hand-written to redact `Connect { password }`.
+/// Hand-written so a new secret field cannot silently print.
 ///
 /// The match is exhaustive with **no wildcard arm** on purpose. `Request` is
 /// `#[non_exhaustive]`, which constrains downstream crates but not this one,
 /// so adding a variant breaks this `impl` at compile time and forces a
 /// deliberate decision about whether the new variant carries a secret. A
-/// `_ => ...` arm would silently print one.
+/// `_ => ...` arm would silently print one. `Connect` currently has no
+/// secrets; print its fields faithfully.
 impl fmt::Debug for Request {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Connect {
                 id,
-                user,
-                password: _,
+                technique,
+                application,
+                props,
             } => f
                 .debug_struct("Connect")
                 .field("id", id)
-                .field("user", user)
-                .field("password", &Redacted)
+                .field("technique", technique)
+                .field("application", application)
+                .field("props", props)
                 .finish(),
             Self::Sql {
                 id,
@@ -283,46 +305,80 @@ mod tests {
     }
 
     #[test]
-    fn connect_round_trips() {
+    fn test_connect_serializes_live_shape_without_password() {
         let r = Request::Connect {
             id: "2".into(),
-            user: "DCURTIS".into(),
-            password: "hunter2".into(),
+            technique: "tcp".into(),
+            application: "mapepire-rs".into(),
+            props: Some("access=read only;auto commit=true".into()),
         };
         let json = serde_json::to_string(&r).unwrap();
         assert_eq!(
             json,
-            r#"{"type":"connect","id":"2","user":"DCURTIS","password":"hunter2"}"#
+            r#"{"type":"connect","id":"2","technique":"tcp","application":"mapepire-rs","props":"access=read only;auto commit=true"}"#
         );
+        assert!(!json.contains("password"));
+        assert!(!json.contains("user"));
         let back: Request = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back, Request::Connect { user, .. } if user == "DCURTIS"));
+        assert!(matches!(
+            back,
+            Request::Connect {
+                technique,
+                application,
+                props: Some(p),
+                ..
+            } if technique == "tcp"
+                && application == "mapepire-rs"
+                && p == "access=read only;auto commit=true"
+        ));
+        let debug = format!("{r:?}");
+        assert!(
+            debug.contains(r#"technique: "tcp""#),
+            "technique missing from Debug: {debug}"
+        );
+        assert!(
+            debug.contains(r#"application: "mapepire-rs""#),
+            "application missing from Debug: {debug}"
+        );
+        assert!(
+            !debug.contains("password"),
+            "password leaked into Debug: {debug}"
+        );
+        assert!(!debug.contains("user"), "user leaked into Debug: {debug}");
     }
 
     #[test]
-    fn connect_debug_redacts_password() {
+    fn test_connect_omits_empty_props() {
         let r = Request::Connect {
             id: "2".into(),
-            user: "DCURTIS".into(),
-            password: "hunter2".into(),
+            technique: "tcp".into(),
+            application: "mapepire-rs".into(),
+            props: None,
         };
-        let s = format!("{r:?}");
-        assert!(!s.contains("hunter2"), "password leaked into Debug: {s}");
-        assert!(s.contains("[REDACTED]"), "missing redaction marker: {s}");
-        // Non-secret fields still render faithfully.
-        assert!(s.contains("DCURTIS"), "user missing from Debug: {s}");
-        assert!(s.contains(r#"id: "2""#), "id missing from Debug: {s}");
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("props"));
     }
 
     #[test]
     fn non_secret_variants_debug_faithfully() {
         // Every variant, so each arm of the hand-written `Debug` is exercised
-        // and none of them silently stops rendering a field. `Connect` is
-        // covered by `connect_debug_redacts_password` instead -- its expected
-        // output is the redacted form, not the faithful one.
+        // and none of them silently stops rendering a field. `Connect` has no
+        // secrets; JSON regression in
+        // `test_connect_serializes_live_shape_without_password` is the other
+        // canary that credentials do not reappear on the body.
         //
         // A new variant cannot slip past this unnoticed: `Debug`'s match has no
         // wildcard arm, so adding one fails to compile until it is handled.
         let cases: Vec<(Request, &str)> = vec![
+            (
+                Request::Connect {
+                    id: "0".into(),
+                    technique: "tcp".into(),
+                    application: "mapepire-rs".into(),
+                    props: None,
+                },
+                r#"Connect { id: "0", technique: "tcp", application: "mapepire-rs", props: None }"#,
+            ),
             (
                 Request::Sql {
                     id: "1".into(),
