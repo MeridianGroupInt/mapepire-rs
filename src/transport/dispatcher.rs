@@ -383,6 +383,7 @@ mod tests {
             metadata: QueryMetaData {
                 column_count: 0,
                 columns: vec![],
+                job: None,
             },
             data: vec![],
             execution_time: 0.0,

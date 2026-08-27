@@ -1028,6 +1028,7 @@ fn canned_empty_query_result(id: String) -> QueryResult {
         metadata: QueryMetaData {
             column_count: 0,
             columns: Vec::<Column>::new(),
+            job: None,
         },
         data: Vec::new(),
         execution_time: 0.0,

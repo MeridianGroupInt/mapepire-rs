@@ -12,7 +12,8 @@ expression: "Response::QueryResult(q)"
   "is_done": true,
   "metadata": {
     "column_count": 0,
-    "columns": []
+    "columns": [],
+    "job": null
   },
   "data": [],
   "execution_time": 0.5

@@ -8,6 +8,7 @@
 //! discriminated-union scaffolding (`Request`, `Response`, `IdAllocator`).
 
 pub mod codec;
+mod decode;
 pub mod request;
 pub mod response;
 

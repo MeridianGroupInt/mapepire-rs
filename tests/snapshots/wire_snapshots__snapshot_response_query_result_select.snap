@@ -21,7 +21,8 @@ expression: "Response::QueryResult(q)"
         "precision": 10,
         "scale": 0
       }
-    ]
+    ],
+    "job": null
   },
   "data": [
     {

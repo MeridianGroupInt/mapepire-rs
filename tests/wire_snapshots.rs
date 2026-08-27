@@ -155,6 +155,7 @@ fn snapshot_response_query_result_select() {
                 precision: Some(10),
                 scale: Some(0),
             }],
+            job: None,
         },
         data: vec![{
             let mut m = serde_json::Map::new();
