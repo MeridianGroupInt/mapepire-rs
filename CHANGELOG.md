@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`user:password` via `Password::expose()`). HTTP 401/403 map to
   `Error::Auth`. The password is not on the query string and is not in
   `Request::Connect` JSON.
+- **`TlsConfig::Ca` is a rustls leaf pin.** IBM i Mapepire certs are
+  often CN-only (no SAN). rustls 0.23/webpki refuses them even when the
+  leaf is a trust anchor. When the presented leaf DER equals the pin,
+  name checks are skipped; a non-matching leaf still uses
+  `WebPkiServerVerifier`. `TlsConfig::Verified` is unchanged. The
+  `native-tls` backend is unchanged. Do not use `insecure-tls` for this.
 
 ### Changed
 

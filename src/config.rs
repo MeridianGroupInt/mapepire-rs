@@ -20,11 +20,20 @@ pub enum TlsConfig {
     #[default]
     Verified,
 
-    /// Pin a specific CA certificate (DER-encoded bytes).
+    /// Pin a specific CA or leaf certificate (DER-encoded bytes).
     ///
-    /// In v0.2, use this with the bytes returned by
-    /// `DaemonServer::fetch_certificate` to bootstrap trust on a self-signed
-    /// daemon. v0.1 only declares the variant.
+    /// Use this with the bytes returned by `DaemonServer::fetch_certificate`
+    /// to bootstrap trust on a self-signed daemon.
+    ///
+    /// On the `rustls-tls` backend, if the server presents a leaf whose DER
+    /// equals this pin, name checks (SAN / CN) are skipped — TLS already
+    /// proved possession of the matching private key. IBM i Mapepire daemons
+    /// often ship CN-only self-signed certificates that rustls 0.23 would
+    /// otherwise reject. If the presented leaf does **not** match, the pin
+    /// is still added as a trust anchor and webpki name checks apply.
+    ///
+    /// The `native-tls` backend is unchanged: the pin is added as a root
+    /// and OpenSSL's CN fallback applies.
     Ca(Vec<u8>),
 
     /// Skip server-cert verification entirely. Available only when the crate

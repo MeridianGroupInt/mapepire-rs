@@ -41,8 +41,12 @@ regressions are treated as **P0**:
 - TLS is mandatory. There is no plaintext path to the daemon. The
   `TlsConfig::Insecure` variant must be opted into via the `insecure-tls`
   Cargo feature at compile time and emits a runtime warning when used.
-- Default TLS verification uses webpki roots; `cargo deny check` enforces
-  the supply-chain policy on every PR.
+- Default TLS verification uses webpki roots (`TlsConfig::Verified`) and
+  never skips name checks. On rustls, `TlsConfig::Ca` treats an exact
+  leaf-DER match as a pin (SAN skipped); a non-matching leaf still uses
+  `WebPkiServerVerifier` with name checks. native-tls is unchanged
+  (OpenSSL CN fallback). `cargo deny check` enforces the supply-chain
+  policy on every PR.
 - `IdAllocator` produces collision-free correlation ids across `Job`
   instances. Modifying its construction requires a regression test.
 - Parameter logging defaults to `ParameterLogging::None` and never logs

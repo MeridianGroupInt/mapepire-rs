@@ -54,17 +54,27 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> crate::Result<T
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
-    if let TlsConfig::Ca(der) = &server.tls {
-        let cert = rustls_pki_types::CertificateDer::from(der.clone());
-        roots
-            .add(cert)
-            .map_err(|e| Error::Internal(format!("invalid Ca cert: {e}")))?;
-    }
-
     let config = match &server.tls {
-        TlsConfig::Verified | TlsConfig::Ca(_) => ClientConfig::builder()
+        TlsConfig::Verified => ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth(),
+
+        TlsConfig::Ca(der) => {
+            let cert = rustls_pki_types::CertificateDer::from(der.clone());
+            roots
+                .add(cert)
+                .map_err(|e| Error::Internal(format!("invalid Ca cert: {e}")))?;
+            let inner = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+                .build()
+                .map_err(|e| Error::Internal(format!("tls verifier: {e}")))?;
+            ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(PinOrWebpki {
+                    pin: Some(der.clone()),
+                    inner,
+                }))
+                .with_no_client_auth()
+        }
 
         #[cfg(feature = "insecure-tls")]
         TlsConfig::Insecure => {
@@ -90,6 +100,63 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> crate::Result<T
         .connect(dns, tcp)
         .await
         .map_err(|e| Error::from(TransportError::Io(e)))
+}
+
+/// rustls verifier for [`TlsConfig::Ca`].
+///
+/// If the presented leaf DER equals the pin, skip SAN/name checks — TLS
+/// already proved possession of the matching private key. IBM i Mapepire
+/// certs are often CN-only; rustls 0.23/webpki would otherwise reject
+/// them even as a trust anchor. A non-matching leaf still goes through
+/// rustls `WebPkiServerVerifier` (pin added as a root) **with** name
+/// checks. [`TlsConfig::Verified`] does not use this type.
+#[cfg(feature = "rustls-tls")]
+#[derive(Debug)]
+struct PinOrWebpki {
+    pin: Option<Vec<u8>>,
+    inner: Arc<rustls::client::WebPkiServerVerifier>,
+}
+
+#[cfg(feature = "rustls-tls")]
+impl rustls::client::danger::ServerCertVerifier for PinOrWebpki {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls_pki_types::CertificateDer<'_>,
+        intermediates: &[rustls_pki_types::CertificateDer<'_>],
+        server_name: &rustls_pki_types::ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls_pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if let Some(pin) = &self.pin
+            && end_entity.as_ref() == pin.as_slice()
+        {
+            return Ok(rustls::client::danger::ServerCertVerified::assertion());
+        }
+        self.inner
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
 }
 
 #[cfg(all(not(feature = "rustls-tls"), feature = "native-tls"))]

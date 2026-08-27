@@ -280,14 +280,75 @@ pub fn spawn_mock(behavior: MockBehavior) -> (SocketAddr, Vec<u8>) {
 #[allow(dead_code)]
 pub fn spawn_mock_with_probe(behavior: MockBehavior, probe: UpgradeProbe) -> (SocketAddr, Vec<u8>) {
     let (acceptor, cert_der) = mint_localhost_tls();
+    let addr = spawn_one_connection(behavior, probe, acceptor);
+    (addr, cert_der)
+}
+
+/// One-connection mock with a caller-supplied cert and PKCS#8 key (DER).
+///
+/// Same HTTP Basic + `/db/` gates as [`spawn_mock`]. Used by CN-only TLS
+/// pin tests that cannot use [`rcgen::generate_simple_self_signed`] (that
+/// helper always emits a SAN and hides the rustls 0.23 name-check failure).
+#[allow(dead_code)]
+pub fn spawn_mock_with_cert(
+    behavior: MockBehavior,
+    cert_der: &[u8],
+    key_der: Vec<u8>,
+) -> SocketAddr {
+    let acceptor = tls_acceptor_from_der(cert_der, key_der);
+    spawn_one_connection(behavior, UpgradeProbe::default(), acceptor)
+}
+
+/// Spawn a mock whose leaf is CN-only (`cn` in the subject, **no SAN**).
+///
+/// Returns the bound address and the leaf DER so tests can pin it with
+/// [`mapepire::TlsConfig::Ca`].
+#[allow(dead_code)]
+pub fn spawn_mock_cn_only(cn: &str, behavior: MockBehavior) -> (SocketAddr, Vec<u8>) {
+    let (cert_der, key_der) = mint_cn_only(cn);
+    let addr = spawn_mock_with_cert(behavior, &cert_der, key_der);
+    (addr, cert_der)
+}
+
+/// Mint a self-signed leaf with `CN=<cn>` and an empty SAN list.
+///
+/// [`rcgen::generate_simple_self_signed`] always writes a SAN extension.
+/// IBM i Mapepire certs are often CN-only; rustls 0.23/webpki then reports
+/// "certificate is not valid for any names (according to its
+/// subjectAltName extension)" even when the leaf is a trust anchor.
+#[allow(dead_code)]
+pub fn mint_cn_only(cn: &str) -> (Vec<u8>, Vec<u8>) {
+    let mut params =
+        rcgen::CertificateParams::new(Vec::<String>::new()).expect("empty SAN list is valid");
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, cn);
+    params.subject_alt_names.clear();
+    let signing_key = rcgen::KeyPair::generate().expect("rcgen key");
+    let cert = params
+        .self_signed(&signing_key)
+        .expect("rcgen CN-only self-signed");
+    (cert.der().as_ref().to_vec(), signing_key.serialize_der())
+}
+
+/// Accept exactly one TCP connection, then run the mock JSON loop.
+///
+/// TLS handshake failure is not a mock panic: fail-closed pin tests
+/// (wrong `TlsConfig::Ca` bytes, `TlsConfig::Verified` + CN-only) make
+/// the client abort the handshake. `Job::connect` surfaces that error.
+fn spawn_one_connection(
+    behavior: MockBehavior,
+    probe: UpgradeProbe,
+    acceptor: TlsAcceptor,
+) -> SocketAddr {
     let (listener, addr) = bind_loopback();
 
     tokio::spawn(async move {
         let (tcp_stream, _peer) = listener.accept().await.expect("mock accept");
-        let tls_stream = acceptor
-            .accept(tcp_stream)
-            .await
-            .expect("mock TLS handshake");
+        let Ok(tls_stream) = acceptor.accept(tcp_stream).await else {
+            return;
+        };
         let gate = match &behavior {
             MockBehavior::HttpForbidden => UpgradeGate::Forbidden,
             _ => UpgradeGate::RequireDbAndBasic,
@@ -298,24 +359,28 @@ pub fn spawn_mock_with_probe(behavior: MockBehavior, probe: UpgradeProbe) -> (So
         }
     });
 
-    (addr, cert_der)
+    addr
 }
 
-/// Mint a self-signed cert for `127.0.0.1` and a rustls acceptor.
+/// Mint a self-signed cert for `127.0.0.1` (with SAN) and a rustls acceptor.
 fn mint_localhost_tls() -> (TlsAcceptor, Vec<u8>) {
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
             .expect("rcgen self-signed cert");
     let cert_der: Vec<u8> = cert.der().as_ref().to_vec();
     let key_der = signing_key.serialize_der();
+    (tls_acceptor_from_der(&cert_der, key_der), cert_der)
+}
+
+fn tls_acceptor_from_der(cert_der: &[u8], key_der: Vec<u8>) -> TlsAcceptor {
     let server_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(
-            vec![CertificateDer::from(cert_der.clone())],
+            vec![CertificateDer::from(cert_der.to_vec())],
             PrivatePkcs8KeyDer::from(key_der).into(),
         )
         .expect("rustls ServerConfig");
-    (TlsAcceptor::from(Arc::new(server_config)), cert_der)
+    TlsAcceptor::from(Arc::new(server_config))
 }
 
 /// Bind `127.0.0.1:0` without `block_on` inside an already-running runtime.
