@@ -31,6 +31,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # Nightly toolchain required for the unstable rustfmt options
       # configured in `.rustfmt.toml` (wrap_comments, format_code_in_doc_comments,
       # imports_granularity, group_imports). See AGENTS.md §4.
@@ -47,6 +49,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -61,6 +65,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: raven-actions/actionlint@v2
         with:
           fail-on-error: true
@@ -78,9 +84,15 @@ jobs:
         toolchain: [stable, beta]
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # `dtolnay/rust-toolchain` does not tag releases; `@master` is the
       # documented usage when passing a parameterized `toolchain:` input.
-      - uses: dtolnay/rust-toolchain@master
+      # Pinned to the commit `master` resolved to on 2026-08-27 rather than
+      # tracking the branch, so six matrix jobs do not execute a mutable ref.
+      # Dependabot ignores this action by design (see .github/dependabot.yml),
+      # so the SHA is bumped by hand.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
@@ -97,6 +109,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
@@ -109,6 +123,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Tests with all features
@@ -144,6 +160,8 @@ jobs:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --no-deps --all-features
@@ -156,6 +174,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Generate Cargo.lock for audit
         run: cargo generate-lockfile
@@ -175,6 +195,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Generate Cargo.lock for deny
         run: cargo generate-lockfile
