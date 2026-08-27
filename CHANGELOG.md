@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-08-27
+
 ### Security
 
 - **`Request`'s `Debug` no longer prints the `Connect` password.** The impl
@@ -568,7 +570,8 @@ harness used to validate them.
 - README badges (CI, Audit, deps.rs, MSRV from Cargo.toml, License).
 - PR template, issue templates, CODEOWNERS.
 
-[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/MeridianGroupInt/mapepire-rs/releases/tag/v0.4.0
