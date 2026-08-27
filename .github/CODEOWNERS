@@ -1,5 +1,8 @@
-# Default owner — every PR auto-requests review from @danielrcurtis.
-# When more contributors join, add path-specific entries below the
-# wildcard line; later rules override earlier ones for the matched paths.
+# Default owners — every PR auto-requests review from all three. Any one of
+# them satisfies the code-owner review requirement, so a PR opened by one
+# owner can still be approved by another.
+#
+# Add path-specific entries below the wildcard line; later rules override
+# earlier ones for the matched paths.
 
-* @danielrcurtis
+* @danielrcurtis @sophneum @joshalon
