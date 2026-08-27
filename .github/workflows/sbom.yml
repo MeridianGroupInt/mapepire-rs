@@ -14,8 +14,43 @@ permissions:
   contents: read
 
 jobs:
+  # Push / manual runs: the SBOMs are workflow artifacts and nothing is
+  # attached anywhere, so the job stays read-only.
   generate:
     name: Generate SBOM
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve dependencies (so Cargo.lock exists for Syft to scan)
+        run: cargo generate-lockfile
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          artifact-name: mapepire-sbom.cyclonedx.json
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          format: spdx-json
+          artifact-name: mapepire-sbom.spdx.json
+
+  # Release runs only: same generation, but `anchore/sbom-action` also
+  # attaches the SBOMs to the published release, which is the one path that
+  # needs `contents: write`. Split out so the push trigger never gets it.
+  release-assets:
+    name: Attach SBOM to release
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
