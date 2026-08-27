@@ -21,6 +21,17 @@ pub(crate) type TlsStream = tokio_rustls::client::TlsStream<TcpStream>;
 #[cfg(all(not(feature = "rustls-tls"), feature = "native-tls"))]
 pub(crate) type TlsStream = tokio_native_tls::TlsStream<TcpStream>;
 
+/// Install rustls' ring `CryptoProvider` if the process has none yet.
+///
+/// `ClientConfig::builder()` panics without a process-level provider. We
+/// install ring ourselves so consumers of this crate do not have to.
+/// `AlreadyInstalled` is ignored so an application that already chose a
+/// provider (e.g. aws-lc-rs) keeps it.
+#[cfg(feature = "rustls-tls")]
+fn ensure_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// Establish a TCP connection then complete the TLS handshake to the
 /// daemon. The returned stream is ready for HTTP/1.1 Upgrade.
 pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<TlsStream> {
@@ -37,6 +48,8 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> crate::Result<T
     use rustls::{ClientConfig, RootCertStore};
     use rustls_pki_types::ServerName;
     use tokio_rustls::TlsConnector;
+
+    ensure_crypto_provider();
 
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -227,6 +240,8 @@ pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> 
     use rustls_pki_types::ServerName;
     use tokio_rustls::TlsConnector;
 
+    ensure_crypto_provider();
+
     let addr = format!("{host}:{port}");
     let tcp = TcpStream::connect(&addr)
         .await
@@ -333,4 +348,17 @@ pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> 
         .ok_or_else(|| Error::Internal("server did not present a certificate".into()))?;
     cert.to_der()
         .map_err(|e| Error::from(TransportError::Io(std::io::Error::other(e))))
+}
+
+#[cfg(all(test, feature = "rustls-tls"))]
+mod tests {
+    #[test]
+    fn test_rustls_crypto_provider_is_installed() {
+        // Must not panic on ClientConfig::builder for the rustls-tls feature.
+        let _ = rustls::ClientConfig::builder();
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_some(),
+            "rustls has no process-level CryptoProvider; enable the ring feature"
+        );
+    }
 }
