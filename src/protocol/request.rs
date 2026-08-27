@@ -1,13 +1,20 @@
 //! Request messages — outgoing wire types. Variants added in subsequent tasks.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// Discriminated union of all request types the client can send.
 ///
 /// Tagged on the wire by the `type` field. Variants are added in
 /// subsequent protocol tasks.
+///
+/// [`Debug`] is hand-written, not derived: it renders `Connect`'s password
+/// as `[REDACTED]` so a downstream `tracing::debug!("{req:?}")` cannot put
+/// an IBM i password in a log. `Serialize` is untouched — the plaintext
+/// password is what goes on the wire, inside TLS.
 #[non_exhaustive]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
     /// Establish a daemon session and authenticate.
@@ -149,6 +156,117 @@ pub enum Request {
     },
 }
 
+/// Stand-in for a secret field in [`Request`]'s [`Debug`] output.
+///
+/// Renders bare `[REDACTED]` rather than the `"[REDACTED]"` a `&str` would
+/// print, matching [`Password`](crate::Password)'s `Password([REDACTED])`.
+struct Redacted;
+
+impl fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+/// Hand-written to redact `Connect { password }`.
+///
+/// The match is exhaustive with **no wildcard arm** on purpose. `Request` is
+/// `#[non_exhaustive]`, which constrains downstream crates but not this one,
+/// so adding a variant breaks this `impl` at compile time and forces a
+/// deliberate decision about whether the new variant carries a secret. A
+/// `_ => ...` arm would silently print one.
+impl fmt::Debug for Request {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Connect {
+                id,
+                user,
+                password: _,
+            } => f
+                .debug_struct("Connect")
+                .field("id", id)
+                .field("user", user)
+                .field("password", &Redacted)
+                .finish(),
+            Self::Sql {
+                id,
+                sql,
+                rows,
+                parameters,
+            } => f
+                .debug_struct("Sql")
+                .field("id", id)
+                .field("sql", sql)
+                .field("rows", rows)
+                .field("parameters", parameters)
+                .finish(),
+            Self::PrepareSql { id, sql } => f
+                .debug_struct("PrepareSql")
+                .field("id", id)
+                .field("sql", sql)
+                .finish(),
+            Self::PrepareSqlExecute {
+                id,
+                sql,
+                parameters,
+                rows,
+            } => f
+                .debug_struct("PrepareSqlExecute")
+                .field("id", id)
+                .field("sql", sql)
+                .field("parameters", parameters)
+                .field("rows", rows)
+                .finish(),
+            Self::Execute {
+                id,
+                cont_id,
+                parameters,
+            } => f
+                .debug_struct("Execute")
+                .field("id", id)
+                .field("cont_id", cont_id)
+                .field("parameters", parameters)
+                .finish(),
+            Self::SqlMore { id, cont_id, rows } => f
+                .debug_struct("SqlMore")
+                .field("id", id)
+                .field("cont_id", cont_id)
+                .field("rows", rows)
+                .finish(),
+            Self::SqlClose { id, cont_id } => f
+                .debug_struct("SqlClose")
+                .field("id", id)
+                .field("cont_id", cont_id)
+                .finish(),
+            Self::Cl { id, cmd } => f
+                .debug_struct("Cl")
+                .field("id", id)
+                .field("cmd", cmd)
+                .finish(),
+            Self::GetVersion { id } => f.debug_struct("GetVersion").field("id", id).finish(),
+            Self::GetDbJob { id } => f.debug_struct("GetDbJob").field("id", id).finish(),
+            Self::GetTraceData { id } => f.debug_struct("GetTraceData").field("id", id).finish(),
+            Self::SetConfig {
+                id,
+                tracelevel,
+                tracedest,
+            } => f
+                .debug_struct("SetConfig")
+                .field("id", id)
+                .field("tracelevel", tracelevel)
+                .field("tracedest", tracedest)
+                .finish(),
+            Self::Dove { id, sql } => f
+                .debug_struct("Dove")
+                .field("id", id)
+                .field("sql", sql)
+                .finish(),
+            Self::Ping { id } => f.debug_struct("Ping").field("id", id).finish(),
+            Self::Exit { id } => f.debug_struct("Exit").field("id", id).finish(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -178,6 +296,34 @@ mod tests {
         );
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, Request::Connect { user, .. } if user == "DCURTIS"));
+    }
+
+    #[test]
+    fn connect_debug_redacts_password() {
+        let r = Request::Connect {
+            id: "2".into(),
+            user: "DCURTIS".into(),
+            password: "hunter2".into(),
+        };
+        let s = format!("{r:?}");
+        assert!(!s.contains("hunter2"), "password leaked into Debug: {s}");
+        assert!(s.contains("[REDACTED]"), "missing redaction marker: {s}");
+        // Non-secret fields still render faithfully.
+        assert!(s.contains("DCURTIS"), "user missing from Debug: {s}");
+        assert!(s.contains(r#"id: "2""#), "id missing from Debug: {s}");
+    }
+
+    #[test]
+    fn non_secret_variants_debug_faithfully() {
+        let r = Request::SqlMore {
+            id: "20".into(),
+            cont_id: "cur-1".into(),
+            rows: 100,
+        };
+        assert_eq!(
+            format!("{r:?}"),
+            r#"SqlMore { id: "20", cont_id: "cur-1", rows: 100 }"#
+        );
     }
 
     #[test]

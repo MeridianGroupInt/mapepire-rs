@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`Request`'s `Debug` no longer prints the `Connect` password.** The impl
+  is hand-written and renders that field as `[REDACTED]`; every other
+  variant and field formats as before. `Serialize` is unchanged — the
+  plaintext password is what goes on the wire, inside TLS. Downstream code
+  doing `tracing::debug!("{req:?}")` no longer logs an IBM i password.
+
 ## [0.5.0] — 2026-08-25
 
 The MSRV milestone. Raises the declared minimum supported Rust version to
