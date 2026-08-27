@@ -1,0 +1,47 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 355
+expression: r
+---
+QueryResult(
+    QueryResult {
+        id: "query3",
+        success: true,
+        has_results: true,
+        update_count: -1,
+        cont_id: None,
+        is_done: true,
+        metadata: QueryMetaData {
+            column_count: 1,
+            columns: [
+                Column {
+                    name: "READY",
+                    label: Some(
+                        "READY",
+                    ),
+                    type_name: Some(
+                        "INTEGER",
+                    ),
+                    display_size: Some(
+                        11,
+                    ),
+                    precision: Some(
+                        10,
+                    ),
+                    scale: Some(
+                        0,
+                    ),
+                },
+            ],
+            job: Some(
+                "123456/QUSER/QZDASOINIT",
+            ),
+        },
+        data: [
+            {
+                "READY": Number(1),
+            },
+        ],
+        execution_time: 215.0,
+    },
+)

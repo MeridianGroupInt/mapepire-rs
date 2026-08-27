@@ -18,6 +18,10 @@
 //! **No SQL parsing.** Both mocks dispatch on the *type* of the inbound
 //! request, not the SQL text. They return canned responses.
 //!
+//! **Live response dialect.** `Connected`, `QueryResult`, and `Error` are
+//! sent untagged (no `"type"` field), matching Mapepire-on-i. Other variants
+//! keep internally tagged serde so `Pong` remains `{"type":"pong",...}`.
+//!
 //! **No `unsafe`.** Test-style `.unwrap()` / `.expect()` are used freely
 //! throughout since panics become test failures.
 
@@ -223,6 +227,32 @@ const MOCK_VERSION: &str = "0.0.0-mock";
 /// Mock Db2 job name echoed in [`Response::Connected`].
 const MOCK_JOB: &str = "MOCK/QUSER/000001";
 
+/// Encode a [`Response`] as the live daemon would.
+///
+/// `Connected` / `QueryResult` / `Error` omit `"type"`. Other variants use
+/// tagged `Serialize` so `Pong` stays `{"type":"pong",...}`. Local to the
+/// mock: integration tests cannot see `pub(crate)` helpers, and a public
+/// `encode_live` would expand the crate API for test-only JSON.
+fn encode_live_response(response: &Response) -> String {
+    match response {
+        Response::Connected { id, version, job } => {
+            let mut v = serde_json::json!({
+                "id": id,
+                "job": job,
+                "success": true,
+                "execution_time": 0
+            });
+            if !version.is_empty() {
+                v["version"] = serde_json::json!(version);
+            }
+            v.to_string()
+        }
+        Response::QueryResult(q) => serde_json::to_string(q).expect("serialize QueryResult"),
+        Response::Error(e) => serde_json::to_string(e).expect("serialize ErrorResponse"),
+        other => serde_json::to_string(other).expect("serialize tagged response"),
+    }
+}
+
 /// Spawn a mock TLS+WebSocket server bound to `127.0.0.1:0`.
 ///
 /// Returns the bound [`SocketAddr`] (so tests can connect to
@@ -357,10 +387,10 @@ where
 {
     let (mut sink, mut stream) = ws_stream.split();
 
-    // Helper: serialize a Response and send it as a text frame.
+    // Helper: serialize a Response in the live dialect and send it as a text frame.
     macro_rules! send_response {
         ($resp:expr) => {{
-            let json = serde_json::to_string(&$resp).expect("serialize response");
+            let json = encode_live_response(&$resp);
             sink.send(Message::Text(json.into()))
                 .await
                 .expect("send response frame");
@@ -1026,7 +1056,7 @@ async fn run_pool_connection<S>(
 
     macro_rules! send_response {
         ($resp:expr) => {{
-            let json = serde_json::to_string(&$resp).expect("serialize response");
+            let json = encode_live_response(&$resp);
             // If a response can't be sent (peer dropped, etc.), the test
             // harness has already lost interest — exit cleanly rather than
             // panicking, which would surface as a noisy task-panic in

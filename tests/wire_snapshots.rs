@@ -1,6 +1,11 @@
 //! Snapshot tests pinning the on-the-wire JSON shape of every request and
 //! response variant. Any accidental field rename, casing change, or default
 //! shift will break these — review the diff carefully on update.
+//!
+//! Serialize snapshots pin what `Response`'s internally tagged `Serialize`
+//! emits (`{"type":"connected",...}`). Live daemon frames are untagged
+//! `{id, success, ...}` objects; those shapes are pinned by the
+//! `snapshot_decode_live_*` tests.
 
 use mapepire::protocol::request::Request;
 use mapepire::protocol::response::{
@@ -222,6 +227,8 @@ fn snapshot_response_cl_result() {
 
 #[test]
 fn snapshot_response_connected() {
+    // Tagged serialize output — not the live daemon frame. Decode of the
+    // untagged connect body is `snapshot_decode_live_connect`.
     let r = Response::Connected {
         id: "test".into(),
         version: "2.3.5".into(),
@@ -307,4 +314,56 @@ fn snapshot_response_dove_result() {
         }),
     };
     insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_connect() {
+    let json = serde_json::json!({
+        "id": "test",
+        "job": "nnnnnn/QUSER/QZDASOINIT",
+        "success": true,
+        "execution_time": 1.0
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_query_result() {
+    let json = serde_json::json!({
+        "id": "query3",
+        "has_results": true,
+        "update_count": -1,
+        "metadata": {
+            "column_count": 1,
+            "job": "123456/QUSER/QZDASOINIT",
+            "columns": [{
+                "name": "READY",
+                "type": "INTEGER",
+                "display_size": 11,
+                "label": "READY",
+                "precision": 10,
+                "scale": 0
+            }]
+        },
+        "data": [{"READY": 1}],
+        "is_done": true,
+        "success": true,
+        "execution_time": 215
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_error() {
+    let json = serde_json::json!({
+        "id": "x",
+        "success": false,
+        "error": "nope",
+        "sql_rc": -803,
+        "sql_state": "23505"
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
 }
