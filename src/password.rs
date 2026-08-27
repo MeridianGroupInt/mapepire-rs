@@ -44,11 +44,9 @@ impl Password {
     ///
     /// The remaining call site is the handshake's HTTP Basic
     /// `Authorization` header, **not** [`Request::Connect`](crate::Request).
-    /// `Connect` matches mapepire-js and carries no credentials. Until
-    /// that header is wired, production code does not call this method;
-    /// `expose_returns_inner` is the compile-time proof the accessor
-    /// still exists.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// `Connect` matches mapepire-js and carries no credentials. The
+    /// `user:pass` concatenation is a [`zeroize::Zeroizing<String>`] and
+    /// is dropped after Base64 encoding; the header value is not logged.
     pub(crate) fn expose(&self) -> &str {
         &self.0
     }

@@ -33,6 +33,8 @@ pub use mock_server::{MockBehavior, RequestRecorder, spawn_mock};
 // re-export shape intact for binaries that DO use them (Tasks 27–30).
 #[allow(unused_imports)]
 pub use mock_server::{MockHandle, ResponsePauseGuard, spawn_pool_mock};
+#[allow(unused_imports)]
+pub use mock_server::{UpgradeProbe, spawn_mock_with_probe};
 use tokio::sync::oneshot;
 
 /// Spawn a mock with [`MockBehavior::AcceptAndConnect`], build a

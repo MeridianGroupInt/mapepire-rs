@@ -31,8 +31,12 @@ use rustls_pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_rustls::TlsAcceptor;
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::server::{
+    Request as WsUpgradeRequest, Response as WsUpgradeResponse,
+};
+use tokio_tungstenite::tungstenite::http::{Response as HttpResponse, StatusCode};
 
 /// Optional recorder that captures every [`Request`] received by the mock.
 ///
@@ -41,6 +45,71 @@ use tokio_tungstenite::tungstenite::Message;
 /// cloning the `Arc`. Used by Cleanup D's drop-rows tests to confirm that
 /// best-effort `SqlClose` requests reached the wire.
 pub type RequestRecorder = Arc<Mutex<Vec<Request>>>;
+
+/// Observed WebSocket-upgrade request-target and `Authorization` header.
+///
+/// Shared between the mock accept callback and the test thread. One probe
+/// covers both path and Basic assertions so tests do not need two spawn
+/// entry points. Cheap to clone (`Arc`).
+///
+/// Each integration-test binary compiles `common` independently, so
+/// binaries that never record the upgrade see this type as unused.
+#[allow(dead_code)]
+#[derive(Clone, Default)]
+pub struct UpgradeProbe {
+    path: Arc<Mutex<Option<String>>>,
+    authorization: Arc<Mutex<Option<String>>>,
+}
+
+#[allow(dead_code)]
+impl UpgradeProbe {
+    /// Empty probe — neither field observed yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Request-target the mock saw on the upgrade (`"/db/"`, `"/db2"`, …).
+    #[must_use]
+    pub fn path(&self) -> Option<String> {
+        self.path
+            .lock()
+            .expect("upgrade probe mutex not poisoned")
+            .clone()
+    }
+
+    /// Raw `Authorization` header value, if the client sent one.
+    #[must_use]
+    pub fn authorization(&self) -> Option<String> {
+        self.authorization
+            .lock()
+            .expect("upgrade probe mutex not poisoned")
+            .clone()
+    }
+
+    fn record(&self, req: &WsUpgradeRequest) {
+        let path = req.uri().path().to_owned();
+        let authorization = req
+            .headers()
+            .get("Authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        *self.path.lock().expect("upgrade probe mutex not poisoned") = Some(path);
+        *self
+            .authorization
+            .lock()
+            .expect("upgrade probe mutex not poisoned") = authorization;
+    }
+}
+
+/// HTTP-layer gate applied by [`accept_hdr_async`] before the JSON loop.
+#[derive(Clone, Copy)]
+enum UpgradeGate {
+    /// Live Jetty shape: request-target `/db/` (or `/db`) and a `Basic` header.
+    RequireDbAndBasic,
+    /// Always 403 — missing Authorization or invalid Basic (wrong password).
+    Forbidden,
+}
 
 /// Pre-programmed response behavior for a mock server instance.
 ///
@@ -64,8 +133,14 @@ pub enum MockBehavior {
 
     /// Accept the WebSocket upgrade but respond to [`Request::Connect`] with
     /// a [`Response::Error`] carrying the provided message. Simulates an
-    /// authentication-rejection scenario.
+    /// authentication-rejection scenario (JSON `success: false` after Upgrade).
     AuthFail(String),
+
+    /// Reject the WebSocket upgrade with HTTP 403. Models Jetty's gate on
+    /// missing or invalid `Authorization: Basic` (wrong password) before
+    /// any JSON frame. Distinct from [`MockBehavior::AuthFail`], which is
+    /// a post-upgrade `Error` response.
+    HttpForbidden,
 
     /// Accept connect with success, then respond to the first
     /// SQL-variant request (`Sql`, `PrepareSqlExecute`, or `Execute`) with
@@ -151,47 +226,31 @@ const MOCK_JOB: &str = "MOCK/QUSER/000001";
 /// Spawn a mock TLS+WebSocket server bound to `127.0.0.1:0`.
 ///
 /// Returns the bound [`SocketAddr`] (so tests can connect to
-/// `wss://127.0.0.1:<port>/db2`) and the self-signed cert as DER bytes
+/// `wss://127.0.0.1:<port>/db/`) and the self-signed cert as DER bytes
 /// (so tests using [`mapepire::TlsConfig::Ca`] can pin it).
 ///
 /// The spawned task handles exactly **one** TCP connection, then exits.
 /// Spawn a fresh mock per test function.
+///
+/// Upgrade gating (Jetty-shaped):
+/// - request-target other than `/db/` or `/db` → HTTP 404
+/// - [`MockBehavior::HttpForbidden`] → HTTP 403 (missing or invalid Basic)
+/// - otherwise a `Authorization: Basic …` header is required; missing → 403
 ///
 /// # Panics
 ///
 /// Must be called from within a tokio async context (i.e., inside a
 /// `#[tokio::test]` function or similar). Panics if called outside a runtime.
 pub fn spawn_mock(behavior: MockBehavior) -> (SocketAddr, Vec<u8>) {
-    // Mint a self-signed cert for 127.0.0.1. generate_simple_self_signed
-    // auto-detects the string as an IP address and emits an IP SAN.
-    let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
-            .expect("rcgen self-signed cert");
+    spawn_mock_with_probe(behavior, UpgradeProbe::default())
+}
 
-    // DER bytes for the cert — returned to the caller for TlsConfig::Ca pinning.
-    let cert_der: Vec<u8> = cert.der().as_ref().to_vec();
-
-    // PKCS#8 DER bytes for the private key — used to build the server config.
-    let key_der = signing_key.serialize_der();
-
-    // Build rustls ServerConfig with the self-signed cert.
-    let server_config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![CertificateDer::from(cert_der.clone())],
-            PrivatePkcs8KeyDer::from(key_der).into(),
-        )
-        .expect("rustls ServerConfig");
-
-    let acceptor = TlsAcceptor::from(Arc::new(server_config));
-
-    // Bind using std::net::TcpListener (synchronous — no runtime needed)
-    // and immediately convert to tokio for async I/O. This avoids calling
-    // block_on inside an already-running tokio runtime.
-    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
-    std_listener.set_nonblocking(true).expect("set_nonblocking");
-    let addr = std_listener.local_addr().expect("mock local_addr");
-    let listener = TcpListener::from_std(std_listener).expect("convert to tokio listener");
+/// [`spawn_mock`] plus an [`UpgradeProbe`] that records the upgrade path and
+/// `Authorization` header (including on 403/404 rejects).
+#[allow(dead_code)]
+pub fn spawn_mock_with_probe(behavior: MockBehavior, probe: UpgradeProbe) -> (SocketAddr, Vec<u8>) {
+    let (acceptor, cert_der) = mint_localhost_tls();
+    let (listener, addr) = bind_loopback();
 
     tokio::spawn(async move {
         let (tcp_stream, _peer) = listener.accept().await.expect("mock accept");
@@ -199,14 +258,90 @@ pub fn spawn_mock(behavior: MockBehavior) -> (SocketAddr, Vec<u8>) {
             .accept(tcp_stream)
             .await
             .expect("mock TLS handshake");
-        let ws_stream = accept_async(tls_stream)
-            .await
-            .expect("mock WebSocket upgrade");
-
-        run_mock(ws_stream, behavior).await;
+        let gate = match &behavior {
+            MockBehavior::HttpForbidden => UpgradeGate::Forbidden,
+            _ => UpgradeGate::RequireDbAndBasic,
+        };
+        // 403/404: the client maps `WsError::Http`; the mock's job is done.
+        if let Ok(ws_stream) = accept_hdr_async(tls_stream, upgrade_callback(probe, gate)).await {
+            run_mock(ws_stream, behavior).await;
+        }
     });
 
     (addr, cert_der)
+}
+
+/// Mint a self-signed cert for `127.0.0.1` and a rustls acceptor.
+fn mint_localhost_tls() -> (TlsAcceptor, Vec<u8>) {
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
+            .expect("rcgen self-signed cert");
+    let cert_der: Vec<u8> = cert.der().as_ref().to_vec();
+    let key_der = signing_key.serialize_der();
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from(cert_der.clone())],
+            PrivatePkcs8KeyDer::from(key_der).into(),
+        )
+        .expect("rustls ServerConfig");
+    (TlsAcceptor::from(Arc::new(server_config)), cert_der)
+}
+
+/// Bind `127.0.0.1:0` without `block_on` inside an already-running runtime.
+fn bind_loopback() -> (TcpListener, SocketAddr) {
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
+    std_listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = std_listener.local_addr().expect("mock local_addr");
+    let listener = TcpListener::from_std(std_listener).expect("convert to tokio listener");
+    (listener, addr)
+}
+
+fn http_error(status: StatusCode, body: &str) -> HttpResponse<Option<String>> {
+    let mut res = HttpResponse::new(Some(body.to_string()));
+    *res.status_mut() = status;
+    res
+}
+
+// tungstenite's `Callback` returns `ErrorResponse = http::Response<Option<String>>`
+// (~136 bytes). Boxing would not match the trait; allow the large `Err`.
+#[allow(clippy::result_large_err)]
+fn upgrade_callback(
+    probe: UpgradeProbe,
+    gate: UpgradeGate,
+) -> impl FnOnce(
+    &WsUpgradeRequest,
+    WsUpgradeResponse,
+) -> Result<WsUpgradeResponse, HttpResponse<Option<String>>> {
+    move |req, response| {
+        probe.record(req);
+        let path = req.uri().path();
+        if path != "/db/" && path != "/db" {
+            return Err(http_error(StatusCode::NOT_FOUND, "not found"));
+        }
+        let authorization = req
+            .headers()
+            .get("Authorization")
+            .and_then(|v| v.to_str().ok());
+        match gate {
+            UpgradeGate::Forbidden => {
+                let body = if authorization.is_none() {
+                    "Authorization header missing"
+                } else {
+                    "invalid credentials"
+                };
+                Err(http_error(StatusCode::FORBIDDEN, body))
+            }
+            UpgradeGate::RequireDbAndBasic => match authorization {
+                Some(value) if value.starts_with("Basic ") => Ok(response),
+                Some(_) => Err(http_error(StatusCode::FORBIDDEN, "invalid credentials")),
+                None => Err(http_error(
+                    StatusCode::FORBIDDEN,
+                    "Authorization header missing",
+                )),
+            },
+        }
+    }
 }
 
 /// Drive the mock request/response loop for one connection.
@@ -274,6 +409,10 @@ where
             }));
             // Close after auth failure.
             let _ = sink.send(Message::Close(None)).await;
+        }
+
+        MockBehavior::HttpForbidden => {
+            panic!("HttpForbidden must reject at HTTP upgrade, not reach the JSON loop");
         }
 
         MockBehavior::AcceptAndConnect => {
@@ -808,26 +947,8 @@ impl Drop for ResponsePauseGuard {
 /// outside a runtime.
 #[allow(dead_code)]
 pub fn spawn_pool_mock() -> (SocketAddr, Vec<u8>, MockHandle) {
-    // Mint a self-signed cert for 127.0.0.1 — same shape as `spawn_mock`.
-    let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
-            .expect("rcgen self-signed cert");
-    let cert_der: Vec<u8> = cert.der().as_ref().to_vec();
-    let key_der = signing_key.serialize_der();
-
-    let server_config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![CertificateDer::from(cert_der.clone())],
-            PrivatePkcs8KeyDer::from(key_der).into(),
-        )
-        .expect("rustls ServerConfig");
-    let acceptor = TlsAcceptor::from(Arc::new(server_config));
-
-    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
-    std_listener.set_nonblocking(true).expect("set_nonblocking");
-    let addr = std_listener.local_addr().expect("mock local_addr");
-    let listener = TcpListener::from_std(std_listener).expect("convert to tokio listener");
+    let (acceptor, cert_der) = mint_localhost_tls();
+    let (listener, addr) = bind_loopback();
 
     let state = Arc::new(Mutex::new(MockState {
         requests: Vec::new(),
@@ -868,8 +989,13 @@ pub fn spawn_pool_mock() -> (SocketAddr, Vec<u8>, MockHandle) {
                 let Ok(tls_stream) = acceptor.accept(tcp_stream).await else {
                     return;
                 };
-                // WS upgrade failure → drop. Same rationale as above.
-                let Ok(ws_stream) = accept_async(tls_stream).await else {
+                // WS upgrade failure (wrong path, missing Basic, teardown) → drop.
+                let Ok(ws_stream) = accept_hdr_async(
+                    tls_stream,
+                    upgrade_callback(UpgradeProbe::default(), UpgradeGate::RequireDbAndBasic),
+                )
+                .await
+                else {
                     return;
                 };
                 run_pool_connection(ws_stream, socket_id, conn_state).await;

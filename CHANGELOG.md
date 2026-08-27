@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **WebSocket upgrade targets `/db/` and sends `Authorization: Basic`.**
+  Live Jetty Mapepire 404s `/db2` and 403s `/db/` without HTTP Basic
+  (`user:password` via `Password::expose()`). HTTP 401/403 map to
+  `Error::Auth`. The password is not on the query string and is not in
+  `Request::Connect` JSON.
+
 ### Changed
 
 - **`Request::Connect` matches the live mapepire-js wire body.** The
@@ -19,12 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `jdbc_props`.** Builder methods `.application(...)` and
   `.jdbc_props(...)`; `DaemonServerSpec` (`serde-config`) accepts both
   as optional fields.
+- **`base64` is a required dependency** (was `serde-config` only). The
+  handshake encodes HTTP Basic; `serde-config` still uses it to decode
+  pinned-CA DER.
 
 ### Security
 
 - `Request::Connect` no longer carries a password. `Password::expose`
-  remains for the HTTP Basic header on the WebSocket upgrade and is
-  unused on the JSON body.
+  builds `Authorization: Basic` on the WebSocket upgrade. The
+  `user:pass` concatenation is a `Zeroizing<String>` dropped after
+  encoding; the header value is not logged.
 
 ## [0.5.1] — 2026-08-27
 

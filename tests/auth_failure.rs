@@ -46,3 +46,33 @@ async fn test_connect_with_bad_password_returns_auth_error() {
         other => panic!("expected Err(Error::Auth(...)), got {other:?}"),
     }
 }
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_connect_without_reaching_json_auth_returns_http_403() {
+    use mapepire::{DaemonServer, Error, Job, TlsConfig};
+
+    // Mock 403s on invalid Basic (wrong password) before Upgrade completes.
+    // Job::connect still sends Basic; the mock rejects it at the HTTP gate.
+    let (addr, cert_der) = common::spawn_mock(common::MockBehavior::HttpForbidden);
+    let server = DaemonServer::builder()
+        .host(addr.ip().to_string())
+        .port(addr.port())
+        .user("USER")
+        .password("WRONGPASS".to_string())
+        .tls(TlsConfig::Ca(cert_der))
+        .build()
+        .expect("DaemonServer builder fields all set");
+
+    let result = Job::connect(&server).await;
+
+    match result {
+        Err(Error::Auth(msg)) => {
+            assert!(
+                msg.contains("403") || msg.contains("Authorization"),
+                "unexpected Auth message: {msg}"
+            );
+        }
+        other => panic!("expected Auth, got {other:?}"),
+    }
+}

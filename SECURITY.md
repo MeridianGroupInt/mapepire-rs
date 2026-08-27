@@ -33,12 +33,11 @@ regressions are treated as **P0**:
   `PartialEq`, or `Hash`. Its inner buffer is zeroized on drop.
 - **Wire-protocol boundary:** `Request::Connect` does **not** carry
   credentials. Live daemon authentication is HTTP Basic on the WebSocket
-  upgrade. `Password::expose() -> &str` is the escape hatch that
-  materializes the plaintext into that header. The cloned bytes are not
-  zeroized — they live until the header is dropped after the upgrade. A
-  future revision may thread `Zeroizing<String>` through Basic-header
-  construction to close this gap. The `Password` itself remains
-  zeroize-on-drop.
+  upgrade. `Password::expose() -> &str` is used to build the
+  `Authorization: Basic` header. The `user:pass` concatenation is a
+  `Zeroizing<String>` and is dropped after Base64 encoding. The header
+  value is not logged. The password is not on the query string and is
+  not in connect JSON. The `Password` itself remains zeroize-on-drop.
 - TLS is mandatory. There is no plaintext path to the daemon. The
   `TlsConfig::Insecure` variant must be opted into via the `insecure-tls`
   Cargo feature at compile time and emits a runtime warning when used.

@@ -36,3 +36,54 @@ async fn test_connect_returns_version_and_job() {
     );
     assert_eq!(job.in_flight(), 0, "fresh Job has 0 in-flight requests");
 }
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_connect_upgrade_request_target_is_db_slash() {
+    use mapepire::{DaemonServer, Job, TlsConfig};
+
+    let probe = common::UpgradeProbe::new();
+    let (addr, cert_der) =
+        common::spawn_mock_with_probe(common::MockBehavior::AcceptAndConnect, probe.clone());
+    let server = DaemonServer::builder()
+        .host("127.0.0.1")
+        .port(addr.port())
+        .user("USER")
+        .password("s3cret".to_string())
+        .tls(TlsConfig::Ca(cert_der))
+        .build()
+        .expect("DaemonServer builder fields all set");
+    Job::connect(&server).await.unwrap();
+    let got = probe.path().expect("mock saw upgrade");
+    assert_eq!(got, "/db/");
+}
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_connect_sends_http_basic() {
+    use base64::Engine;
+    use mapepire::{DaemonServer, Job, TlsConfig};
+
+    let probe = common::UpgradeProbe::new();
+    let (addr, cert_der) =
+        common::spawn_mock_with_probe(common::MockBehavior::AcceptAndConnect, probe.clone());
+    let server = DaemonServer::builder()
+        .host("127.0.0.1")
+        .port(addr.port())
+        .user("USER")
+        .password("s3cret".to_string())
+        .tls(TlsConfig::Ca(cert_der))
+        .build()
+        .expect("DaemonServer builder fields all set");
+    Job::connect(&server).await.unwrap();
+    let header = probe.authorization().expect("Authorization");
+    assert!(
+        header.starts_with("Basic "),
+        "Authorization should be Basic, got {header:?}"
+    );
+    let b64 = header.trim_start_matches("Basic ");
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .expect("Basic payload is standard base64");
+    assert_eq!(raw, b"USER:s3cret");
+}

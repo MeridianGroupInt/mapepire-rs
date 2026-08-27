@@ -4,19 +4,22 @@
 //!
 //! # Error mapping
 //!
-//! | Stage                    | Error variant                            |
-//! |--------------------------|------------------------------------------|
-//! | TCP + TLS                | `Error::Transport(...)` (via `?`)        |
-//! | WebSocket upgrade        | `Error::Internal(...)`                   |
-//! | Malformed WS request     | `Error::Internal(...)`                   |
-//! | Auth rejected by server  | `Error::Auth(...)`                       |
-//! | Unexpected response type | `Error::Protocol(CorrelationMismatch)`   |
+//! | Stage                    | Error variant                          |
+//! |--------------------------|----------------------------------------|
+//! | TCP + TLS                | `Error::Transport(...)` (via `?`)      |
+//! | Upgrade HTTP 401/403     | `Error::Auth(...)`                     |
+//! | Other WebSocket upgrade  | `Error::Internal(...)`                 |
+//! | Malformed WS request     | `Error::Internal(...)`                 |
+//! | Auth rejected by server  | `Error::Auth(...)`                     |
+//! | Unexpected response type | `Error::Protocol(CorrelationMismatch)` |
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
+use base64::Engine;
 use tokio_tungstenite::client_async;
 use tokio_tungstenite::tungstenite::handshake::client::{Request as WsRequest, generate_key};
+use zeroize::Zeroizing;
 
 use crate::config::DaemonServer;
 use crate::error::{Error, ProtocolError};
@@ -24,6 +27,9 @@ use crate::protocol::{IdAllocator, Request, Response};
 use crate::transport::dispatcher::Dispatcher;
 use crate::transport::socket::WsTransport;
 use crate::transport::tls;
+
+/// Live Mapepire daemon request-target (trailing slash). Jetty 404s `/db2`.
+const WS_PATH: &str = "/db/";
 
 /// A fully-initialized dispatcher, together with the metadata returned by
 /// the daemon's `connected` response.
@@ -59,28 +65,35 @@ pub(crate) struct ConnectedDispatcher {
 /// # Errors
 ///
 /// Returns [`Error::Transport`] if the TCP or TLS layer fails,
-/// [`Error::Internal`] if the WebSocket upgrade fails,
-/// [`Error::Auth`] if the daemon rejects the credentials, or
-/// [`Error::Protocol`] if the response does not match the expected shape.
+/// [`Error::Auth`] if the upgrade is rejected with HTTP 401/403 or the
+/// daemon rejects the credentials,
+/// [`Error::Internal`] if the WebSocket upgrade fails for another reason,
+/// or [`Error::Protocol`] if the response does not match the expected shape.
 pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<ConnectedDispatcher> {
     // 1. TCP + TLS.
     let tls_stream = tls::connect(server).await?;
 
-    // 2. WebSocket Upgrade.
-    let url = format!("wss://{}:{}/db2", server.host, server.port);
+    // 2. WebSocket Upgrade. Live Jetty Mapepire serves `/db/` and 403s without HTTP Basic. Password
+    //    is not placed on the query string or in the subsequent JSON `Connect` body.
+    let url = format!("wss://{}:{}{WS_PATH}", server.host, server.port);
+    let authorization = basic_authorization(&server.user, server.password.expose());
     let ws_request = WsRequest::builder()
         .uri(&url)
         .header("Host", &server.host)
+        .header("Authorization", &authorization)
         .header("Upgrade", "websocket")
         .header("Connection", "Upgrade")
         .header("Sec-WebSocket-Version", "13")
         .header("Sec-WebSocket-Key", generate_key())
         .body(())
         .map_err(|e| Error::Internal(format!("malformed ws request: {e}")))?;
+    // Copied into the request headers; do not log this value.
+    drop(authorization);
 
-    let (ws_stream, _http_response) = client_async(ws_request, tls_stream)
-        .await
-        .map_err(|e| Error::Internal(format!("websocket upgrade failed: {e}")))?;
+    let (ws_stream, _http_response) = match client_async(ws_request, tls_stream).await {
+        Ok(pair) => pair,
+        Err(e) => return Err(map_upgrade_error(e)),
+    };
 
     // 3. Spawn dispatcher around the now-framed stream. The shared `in_flight` counter starts at
     //    zero; the dispatcher task and `JobInner` each hold an `Arc` clone. The handshake's
@@ -126,4 +139,99 @@ pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<ConnectedDis
         ids,
         in_flight,
     })
+}
+
+/// Build `Authorization: Basic …` from `user:password`.
+///
+/// Concatenates into a [`zeroize::Zeroizing<String>`] so the plaintext pair
+/// is wiped after Base64 encoding. The returned header value is not logged.
+fn basic_authorization(user: &str, password: &str) -> String {
+    let material = Zeroizing::new(format!("{user}:{password}"));
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&*material);
+    format!("Basic {encoded}")
+}
+
+/// Map a tungstenite upgrade failure onto crate [`Error`].
+///
+/// tungstenite 0.30's `Error::Http` holds `Box<http::Response<Option<Vec<u8>>>>`
+/// (not a bare `Response`). HTTP 401/403 are Jetty's credential gate and
+/// become [`Error::Auth`]; every other upgrade failure is [`Error::Internal`].
+fn map_upgrade_error(e: tokio_tungstenite::tungstenite::Error) -> Error {
+    use tokio_tungstenite::tungstenite::Error as WsError;
+    match e {
+        WsError::Http(res) if matches!(res.status().as_u16(), 401 | 403) => {
+            Error::Auth(format!("websocket upgrade rejected: HTTP {}", res.status()))
+        }
+        other => Error::Internal(format!("websocket upgrade failed: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use tokio_tungstenite::tungstenite::Error as WsError;
+    use tokio_tungstenite::tungstenite::http::{Response, StatusCode};
+
+    use super::*;
+
+    fn http_error(status: StatusCode) -> WsError {
+        let res = Response::builder()
+            .status(status)
+            .body(None)
+            .expect("status-only HTTP response");
+        WsError::Http(Box::new(res))
+    }
+
+    #[test]
+    fn test_basic_authorization_encodes_user_password() {
+        let header = basic_authorization("USER", "s3cret");
+        assert!(
+            header.starts_with("Basic "),
+            "header should be Basic, got {header:?}"
+        );
+        let b64 = header.trim_start_matches("Basic ");
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .expect("standard base64");
+        assert_eq!(raw, b"USER:s3cret");
+    }
+
+    #[test]
+    fn test_map_upgrade_error_http_403_is_auth() {
+        match map_upgrade_error(http_error(StatusCode::FORBIDDEN)) {
+            Error::Auth(msg) => {
+                assert!(
+                    msg.contains("403"),
+                    "Auth message should mention 403, got {msg}"
+                );
+            }
+            other => panic!("expected Auth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_map_upgrade_error_http_401_is_auth() {
+        match map_upgrade_error(http_error(StatusCode::UNAUTHORIZED)) {
+            Error::Auth(msg) => {
+                assert!(
+                    msg.contains("401"),
+                    "Auth message should mention 401, got {msg}"
+                );
+            }
+            other => panic!("expected Auth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_map_upgrade_error_http_404_is_internal() {
+        match map_upgrade_error(http_error(StatusCode::NOT_FOUND)) {
+            Error::Internal(msg) => {
+                assert!(
+                    msg.contains("404"),
+                    "Internal message should mention 404, got {msg}"
+                );
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
 }
