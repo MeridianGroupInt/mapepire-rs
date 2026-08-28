@@ -193,12 +193,12 @@ impl DaemonServer {
     ///     .expect("all fields set");
     /// # Ok(()) }
     /// ```
-    pub async fn fetch_certificate_from(
+    pub fn fetch_certificate_from(
         server_name: &str,
         connect_address: &str,
         port: u16,
-    ) -> crate::Result<Vec<u8>> {
-        crate::transport::tls::fetch_certificate_from(server_name, connect_address, port).await
+    ) -> impl std::future::Future<Output = crate::Result<Vec<u8>>> + Send {
+        crate::transport::tls::fetch_certificate_from(server_name, connect_address, port)
     }
 }
 

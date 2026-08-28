@@ -206,53 +206,49 @@ mod tests {
     #[test]
     fn test_map_upgrade_error_io_is_internal() {
         let e = WsError::Io(std::io::Error::other("boom"));
-        match map_upgrade_error(e) {
-            Error::Internal(msg) => {
-                assert!(
-                    msg.contains("boom") || msg.contains("websocket"),
-                    "unexpected Internal message: {msg}"
-                );
-            }
-            other => panic!("expected Internal, got {other:?}"),
+        let err = map_upgrade_error(e);
+        assert!(matches!(err, Error::Internal(_)));
+        if let Error::Internal(msg) = err {
+            assert!(
+                msg.contains("boom") || msg.contains("websocket"),
+                "unexpected Internal message: {msg}"
+            );
         }
     }
 
     #[test]
     fn test_map_upgrade_error_http_403_is_auth() {
-        match map_upgrade_error(http_error(StatusCode::FORBIDDEN)) {
-            Error::Auth(msg) => {
-                assert!(
-                    msg.contains("403"),
-                    "Auth message should mention 403, got {msg}"
-                );
-            }
-            other => panic!("expected Auth, got {other:?}"),
+        let err = map_upgrade_error(http_error(StatusCode::FORBIDDEN));
+        assert!(matches!(err, Error::Auth(_)));
+        if let Error::Auth(msg) = err {
+            assert!(
+                msg.contains("403"),
+                "Auth message should mention 403, got {msg}"
+            );
         }
     }
 
     #[test]
     fn test_map_upgrade_error_http_401_is_auth() {
-        match map_upgrade_error(http_error(StatusCode::UNAUTHORIZED)) {
-            Error::Auth(msg) => {
-                assert!(
-                    msg.contains("401"),
-                    "Auth message should mention 401, got {msg}"
-                );
-            }
-            other => panic!("expected Auth, got {other:?}"),
+        let err = map_upgrade_error(http_error(StatusCode::UNAUTHORIZED));
+        assert!(matches!(err, Error::Auth(_)));
+        if let Error::Auth(msg) = err {
+            assert!(
+                msg.contains("401"),
+                "Auth message should mention 401, got {msg}"
+            );
         }
     }
 
     #[test]
     fn test_map_upgrade_error_http_404_is_internal() {
-        match map_upgrade_error(http_error(StatusCode::NOT_FOUND)) {
-            Error::Internal(msg) => {
-                assert!(
-                    msg.contains("404"),
-                    "Internal message should mention 404, got {msg}"
-                );
-            }
-            other => panic!("expected Internal, got {other:?}"),
+        let err = map_upgrade_error(http_error(StatusCode::NOT_FOUND));
+        assert!(matches!(err, Error::Internal(_)));
+        if let Error::Internal(msg) = err {
+            assert!(
+                msg.contains("404"),
+                "Internal message should mention 404, got {msg}"
+            );
         }
     }
 }

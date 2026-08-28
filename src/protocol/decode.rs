@@ -267,13 +267,11 @@ mod tests {
         let json =
             r#"{"id":"abc","job":"123456/QUSER/QZDASOINIT","success":true,"execution_time":12.5}"#;
         let r: Response = serde_json::from_str(json).unwrap();
-        match r {
-            Response::Connected { id, job, version } => {
-                assert_eq!(id, "abc");
-                assert_eq!(job, "123456/QUSER/QZDASOINIT");
-                assert_eq!(version, "");
-            }
-            other => panic!("expected Connected, got {other:?}"),
+        assert!(matches!(r, Response::Connected { .. }));
+        if let Response::Connected { id, job, version } = r {
+            assert_eq!(id, "abc");
+            assert_eq!(job, "123456/QUSER/QZDASOINIT");
+            assert_eq!(version, "");
         }
     }
 
@@ -287,13 +285,11 @@ mod tests {
             "data":[{"READY":1}],"is_done":true,"success":true,"execution_time":215
         }"#;
         let r: Response = serde_json::from_str(json).unwrap();
-        match r {
-            Response::QueryResult(q) => {
-                assert!(q.success && q.has_results && q.is_done);
-                assert_eq!(q.data[0]["READY"], 1);
-                assert_eq!(q.metadata.job.as_deref(), Some("123456/QUSER/QZDASOINIT"));
-            }
-            other => panic!("expected QueryResult, got {other:?}"),
+        assert!(matches!(r, Response::QueryResult(_)));
+        if let Response::QueryResult(q) = r {
+            assert!(q.success && q.has_results && q.is_done);
+            assert_eq!(q.data[0]["READY"], 1);
+            assert_eq!(q.metadata.job.as_deref(), Some("123456/QUSER/QZDASOINIT"));
         }
     }
 
@@ -301,12 +297,10 @@ mod tests {
     fn test_decode_live_error_sql_rc_alias() {
         let json = r#"{"id":"x","success":false,"error":"nope","sql_rc":-803,"sql_state":"23505"}"#;
         let r: Response = serde_json::from_str(json).unwrap();
-        match r {
-            Response::Error(e) => {
-                assert_eq!(e.sqlcode, Some(-803));
-                assert_eq!(e.sqlstate.as_deref(), Some("23505"));
-            }
-            other => panic!("expected Error, got {other:?}"),
+        assert!(matches!(r, Response::Error(_)));
+        if let Response::Error(e) = r {
+            assert_eq!(e.sqlcode, Some(-803));
+            assert_eq!(e.sqlstate.as_deref(), Some("23505"));
         }
     }
 
@@ -322,17 +316,16 @@ mod tests {
     fn test_decode_live_version_without_type() {
         let json = r#"{"id":"v1","success":true,"version":"2.3.5"}"#;
         let r: Response = serde_json::from_str(json).unwrap();
-        match r {
-            Response::Version {
-                id,
-                success,
-                version,
-            } => {
-                assert_eq!(id, "v1");
-                assert!(success);
-                assert_eq!(version, "2.3.5");
-            }
-            other => panic!("expected Version, got {other:?}"),
+        assert!(matches!(r, Response::Version { .. }));
+        if let Response::Version {
+            id,
+            success,
+            version,
+        } = r
+        {
+            assert_eq!(id, "v1");
+            assert!(success);
+            assert_eq!(version, "2.3.5");
         }
     }
 
@@ -421,13 +414,11 @@ mod tests {
     fn test_decode_live_connect_coerces_non_string_id_job() {
         let json = r#"{"job":null,"id":null,"success":true}"#;
         let r: Response = serde_json::from_str(json).unwrap();
-        match r {
-            Response::Connected { id, job, version } => {
-                assert_eq!(id, "");
-                assert_eq!(job, "");
-                assert_eq!(version, "");
-            }
-            other => panic!("expected Connected, got {other:?}"),
+        assert!(matches!(r, Response::Connected { .. }));
+        if let Response::Connected { id, job, version } = r {
+            assert_eq!(id, "");
+            assert_eq!(job, "");
+            assert_eq!(version, "");
         }
     }
 }

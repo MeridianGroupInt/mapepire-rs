@@ -504,12 +504,27 @@ pub async fn fetch_certificate_from(
 
 #[cfg(all(test, feature = "rustls-tls"))]
 mod tests {
+    use std::sync::Arc;
+
+    use rustls::ServerConfig;
+    use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+    use tokio_rustls::TlsAcceptor;
+
     use super::*;
     use crate::config::{DaemonServer, TlsConfig};
     use crate::error::Error;
 
     fn dummy_pass() -> String {
         String::from("test") + "-only"
+    }
+
+    fn accept_one() -> (u16, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("local_addr").port();
+        let handle = std::thread::spawn(move || {
+            let _ = listener.accept();
+        });
+        (port, handle)
     }
 
     #[test]
@@ -524,13 +539,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_rejects_invalid_hostname() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
-        let port = listener.local_addr().expect("local_addr").port();
-        tokio::spawn(async move {
-            let _ = listener.accept().await;
-        });
+        let (port, accept) = accept_one();
         let server = DaemonServer::builder()
             .host("[")
             .connect_address("127.0.0.1")
@@ -540,26 +549,20 @@ mod tests {
             .tls(TlsConfig::Verified)
             .build()
             .expect("builder");
-        match connect(&server).await {
-            Err(Error::Internal(msg)) => {
-                assert!(
-                    msg.contains("invalid hostname"),
-                    "unexpected Internal: {msg}"
-                );
-            }
-            other => panic!("expected Internal invalid hostname, got {other:?}"),
+        let err = connect(&server).await.expect_err("invalid hostname");
+        assert!(matches!(err, Error::Internal(_)));
+        if let Error::Internal(msg) = err {
+            assert!(
+                msg.contains("invalid hostname"),
+                "unexpected Internal: {msg}"
+            );
         }
+        let _ = accept.join();
     }
 
     #[tokio::test]
     async fn test_connect_rejects_invalid_ca_der() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
-        let port = listener.local_addr().expect("local_addr").port();
-        tokio::spawn(async move {
-            let _ = listener.accept().await;
-        });
+        let (port, accept) = accept_one();
         let server = DaemonServer::builder()
             .host("localhost")
             .connect_address("127.0.0.1")
@@ -569,35 +572,69 @@ mod tests {
             .tls(TlsConfig::Ca(vec![0xff, 0x00, 0x01]))
             .build()
             .expect("builder");
-        match connect(&server).await {
-            Err(Error::Internal(msg)) => {
-                assert!(
-                    msg.contains("invalid Ca cert"),
-                    "unexpected Internal: {msg}"
-                );
-            }
-            other => panic!("expected Internal invalid Ca cert, got {other:?}"),
+        let err = connect(&server).await.expect_err("invalid Ca");
+        assert!(matches!(err, Error::Internal(_)));
+        if let Error::Internal(msg) = err {
+            assert!(
+                msg.contains("invalid Ca cert"),
+                "unexpected Internal: {msg}"
+            );
         }
+        let _ = accept.join();
     }
 
     #[cfg(feature = "insecure-tls")]
     #[tokio::test]
     async fn test_fetch_certificate_from_rejects_invalid_hostname() {
+        let (port, accept) = accept_one();
+        let err = fetch_certificate_from("[", "127.0.0.1", port)
+            .await
+            .expect_err("invalid hostname");
+        assert!(matches!(err, Error::Internal(_)));
+        if let Error::Internal(msg) = err {
+            assert!(
+                msg.contains("invalid hostname"),
+                "unexpected Internal: {msg}"
+            );
+        }
+        let _ = accept.join();
+    }
+
+    #[tokio::test]
+    async fn test_ca_pin_tls12_handshake_covers_tls12_signature() {
+        ensure_crypto_provider();
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("rcgen");
+        let cert_der: Vec<u8> = cert.der().as_ref().to_vec();
+        let key_der = signing_key.serialize_der();
+        let server_config =
+            ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![CertificateDer::from(cert_der.clone())],
+                    PrivatePkcs8KeyDer::from(key_der).into(),
+                )
+                .expect("tls12 server");
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
         let port = listener.local_addr().expect("local_addr").port();
-        tokio::spawn(async move {
-            let _ = listener.accept().await;
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            acceptor.accept(tcp).await
         });
-        match fetch_certificate_from("[", "127.0.0.1", port).await {
-            Err(Error::Internal(msg)) => {
-                assert!(
-                    msg.contains("invalid hostname"),
-                    "unexpected Internal: {msg}"
-                );
-            }
-            other => panic!("expected Internal invalid hostname, got {other:?}"),
-        }
+        let server = DaemonServer::builder()
+            .host("localhost")
+            .connect_address("127.0.0.1")
+            .port(port)
+            .user("u")
+            .password(dummy_pass())
+            .tls(TlsConfig::Ca(cert_der))
+            .build()
+            .expect("builder");
+        let client = connect(&server).await;
+        assert!(client.is_ok(), "tls12 Ca pin handshake failed");
+        let _ = server_task.await;
     }
 }

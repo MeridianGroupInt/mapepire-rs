@@ -408,9 +408,9 @@ mod tests {
     fn test_connected_version_defaults_when_absent() {
         let json = r#"{"type":"connected","id":"2","job":"QZDASOINIT/QUSER/123456"}"#;
         let r: Response = serde_json::from_str(json).unwrap();
-        match r {
-            Response::Connected { version, .. } => assert_eq!(version, ""),
-            other => panic!("expected Connected, got {other:?}"),
+        assert!(matches!(r, Response::Connected { .. }));
+        if let Response::Connected { version, .. } = r {
+            assert_eq!(version, "");
         }
     }
 }
