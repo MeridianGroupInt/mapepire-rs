@@ -414,3 +414,88 @@ async fn test_prepare_without_cont_id_then_two_execute_with() {
         "no cursor to close: {observed:?}"
     );
 }
+
+/// Live prepare (no `cont_id`) + `Query::execute_opts` sends
+/// `prepare_sql_execute` with the requested page size and skips `sqlclose`.
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_prepare_without_cont_id_execute_opts_sends_rows() {
+    use mapepire::ExecuteOptions;
+    use mapepire::protocol::Request;
+
+    let (job, recorder) = common::connect_to_mock_with_recorder(vec![
+        int_row("placeholder", 7),
+        int_row("placeholder", 11),
+    ])
+    .await;
+
+    let query = job
+        .prepare("VALUES (CAST(? AS INTEGER))")
+        .await
+        .expect("prepare ack without cont_id must succeed");
+    let rows = query
+        .execute_opts(
+            job.ids(),
+            ExecuteOptions {
+                rows: Some(10),
+                terse: false,
+            },
+        )
+        .await
+        .expect("Query::execute_opts");
+    drop(rows.into_dynamic().await.expect("into_dynamic"));
+    let bound_rows = query
+        .execute_with_opts(
+            job.ids(),
+            &[json!(11)],
+            ExecuteOptions {
+                rows: Some(25),
+                terse: false,
+            },
+        )
+        .await
+        .expect("Query::execute_with_opts");
+    drop(bound_rows.into_dynamic().await.expect("into_dynamic bound"));
+    drop(query);
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    let bound: Vec<&Request> = observed
+        .iter()
+        .filter(|r| matches!(r, Request::PrepareSqlExecute { .. }))
+        .collect();
+    assert_eq!(bound.len(), 2, "full trace: {observed:?}");
+    match bound[0] {
+        Request::PrepareSqlExecute {
+            rows,
+            parameters,
+            terse,
+            ..
+        } => {
+            assert_eq!(*rows, Some(10));
+            assert!(parameters.is_none(), "execute_opts has no bind set");
+            assert_eq!(*terse, None);
+        }
+        other => panic!("expected PrepareSqlExecute, got {other:?}"),
+    }
+    match bound[1] {
+        Request::PrepareSqlExecute {
+            rows, parameters, ..
+        } => {
+            assert_eq!(*rows, Some(25));
+            assert_eq!(parameters.as_ref(), Some(&vec![vec![json!(11)]]));
+        }
+        other => panic!("expected PrepareSqlExecute, got {other:?}"),
+    }
+    assert!(
+        !observed
+            .iter()
+            .any(|r| matches!(r, Request::Execute { .. })),
+        "no server handle, so no execute opcode: {observed:?}"
+    );
+    assert!(
+        !observed
+            .iter()
+            .any(|r| matches!(r, Request::SqlClose { .. })),
+        "no cursor to close: {observed:?}"
+    );
+}

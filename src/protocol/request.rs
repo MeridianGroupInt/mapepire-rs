@@ -872,4 +872,79 @@ mod tests {
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, Request::Dove { id, .. } if id == "60"));
     }
+
+    #[test]
+    fn execute_and_cl_serialize_terse_true() {
+        let execute = Request::Execute {
+            id: "14".into(),
+            cont_id: "stmt-7".into(),
+            parameters: None,
+            rows: Some(10),
+            terse: Some(true),
+        };
+        let json = serde_json::to_string(&execute).unwrap();
+        assert!(json.contains(r#""terse":true"#), "missing terse: {json}");
+        assert!(json.contains(r#""rows":10"#), "missing rows: {json}");
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back,
+            Request::Execute {
+                terse: Some(true),
+                rows: Some(10),
+                ..
+            }
+        ));
+
+        let cl = Request::Cl {
+            id: "30".into(),
+            cmd: "WRKACTJOB".into(),
+            terse: Some(true),
+        };
+        let json = serde_json::to_string(&cl).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"cl","id":"30","cmd":"WRKACTJOB","terse":true}"#
+        );
+    }
+
+    #[test]
+    fn prepare_sql_execute_parameters_null_and_non_array() {
+        let null_json =
+            r#"{"type":"prepare_sql_execute","id":"13","sql":"VALUES (?)","parameters":null}"#;
+        let back: Request = serde_json::from_str(null_json).unwrap();
+        match back {
+            Request::PrepareSqlExecute { parameters, .. } => assert!(parameters.is_none()),
+            other => panic!("expected PrepareSqlExecute, got {other:?}"),
+        }
+
+        let bad =
+            r#"{"type":"prepare_sql_execute","id":"13","sql":"VALUES (?)","parameters":{"a":1}}"#;
+        let err = serde_json::from_str::<Request>(bad).unwrap_err();
+        assert!(
+            err.to_string().contains("parameters must be a JSON array"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn prepare_sql_and_dove_serialize_terse_true() {
+        let prep = Request::PrepareSql {
+            id: "12".into(),
+            sql: "SELECT * FROM T WHERE A = ?".into(),
+            terse: Some(true),
+        };
+        let json = serde_json::to_string(&prep).unwrap();
+        assert!(json.contains(r#""terse":true"#), "missing terse: {json}");
+
+        let dove = Request::Dove {
+            id: "60".into(),
+            sql: "SELECT * FROM T".into(),
+            terse: Some(true),
+        };
+        let json = serde_json::to_string(&dove).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"dove","id":"60","sql":"SELECT * FROM T","terse":true}"#
+        );
+    }
 }

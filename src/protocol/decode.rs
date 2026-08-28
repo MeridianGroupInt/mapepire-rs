@@ -573,4 +573,39 @@ mod tests {
             "unexpected error: {msg}"
         );
     }
+
+    #[test]
+    fn test_decode_live_version_missing_success_defaults_true() {
+        let json = r#"{"id":"v1","version":"2.3.5"}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            r,
+            Response::Version {
+                id,
+                success: true,
+                version,
+            } if id == "v1" && version == "2.3.5"
+        ));
+    }
+
+    #[test]
+    fn test_decode_live_pong_missing_id_is_empty() {
+        let json = r#"{"success":true}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::Pong { id } if id.is_empty()));
+    }
+
+    #[test]
+    fn test_decode_live_version_non_string_fields_coerce_empty() {
+        let json = r#"{"id":1,"version":2}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            r,
+            Response::Version {
+                id,
+                success: true,
+                version,
+            } if id.is_empty() && version.is_empty()
+        ));
+    }
 }

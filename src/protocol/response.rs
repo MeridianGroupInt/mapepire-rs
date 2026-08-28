@@ -892,4 +892,95 @@ mod tests {
             "absent parameter_count must be omitted: {json}"
         );
     }
+
+    #[test]
+    fn test_query_result_terse_row_longer_than_columns_errors() {
+        let json = r#"{
+            "id":"q1","success":true,
+            "metadata":{"columns":[{"name":"A"}]},
+            "data":[[1,2]]
+        }"#;
+        let err = serde_json::from_str::<QueryResult>(json).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("terse row 0 has 2 values but metadata.columns has 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_query_result_rejects_non_object_or_array_row() {
+        let json = r#"{"id":"q1","success":true,"data":["not-a-row"]}"#;
+        let err = serde_json::from_str::<QueryResult>(json).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("query row 0 must be a JSON object or array"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_query_result_terse_partial_row_uses_leading_names() {
+        let json = r#"{
+            "id":"q1","success":true,
+            "metadata":{"column_count":2,"columns":[{"name":"A"},{"name":"B"}]},
+            "data":[[7]]
+        }"#;
+        let q: QueryResult = serde_json::from_str(json).unwrap();
+        assert_eq!(q.data.len(), 1);
+        assert_eq!(q.data[0]["A"], 7);
+        assert!(!q.data[0].contains_key("B"));
+    }
+
+    #[test]
+    fn test_job_log_entry_severity_null_float_u64_and_invalid() {
+        let null: JobLogEntry = serde_json::from_str(r#"{"SEVERITY":null}"#).unwrap();
+        assert_eq!(null.severity, None);
+
+        let omitted: JobLogEntry = serde_json::from_str("{}").unwrap();
+        assert_eq!(omitted.severity, None);
+
+        let float: JobLogEntry = serde_json::from_str(r#"{"SEVERITY":40.5}"#).unwrap();
+        assert_eq!(float.severity.as_deref(), Some("40.5"));
+
+        let big: JobLogEntry = serde_json::from_str(r#"{"SEVERITY":9223372036854775808}"#).unwrap();
+        assert_eq!(big.severity.as_deref(), Some("9223372036854775808"));
+
+        let err = serde_json::from_str::<JobLogEntry>(r#"{"SEVERITY":true}"#).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("SEVERITY must be a string or number"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parameter_result_defaults_null_value_and_ccsid() {
+        let missing: ParameterResult = serde_json::from_str(r#"{"name":"P1"}"#).unwrap();
+        assert_eq!(missing.index, 0);
+        assert_eq!(missing.type_name, "");
+        assert_eq!(missing.precision, 0);
+        assert_eq!(missing.scale, None);
+        assert_eq!(missing.ccsid, None);
+        assert_eq!(missing.value, None);
+
+        let null_value: ParameterResult =
+            serde_json::from_str(r#"{"index":1,"name":"P1","value":null}"#).unwrap();
+        assert_eq!(null_value.value, None);
+
+        let with_ccsid: ParameterResult =
+            serde_json::from_str(r#"{"name":"P1","ccsid":37,"value":"x"}"#).unwrap();
+        assert_eq!(with_ccsid.ccsid, Some(37));
+        assert_eq!(with_ccsid.value, Some(serde_json::json!("x")));
+    }
+
+    #[test]
+    fn test_parameter_detail_defaults() {
+        let p: ParameterDetail = serde_json::from_str("{}").unwrap();
+        assert_eq!(p.type_name, "");
+        assert_eq!(p.mode, "");
+        assert_eq!(p.precision, 0);
+        assert_eq!(p.scale, None);
+        assert_eq!(p.name, "");
+    }
 }

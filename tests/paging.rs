@@ -156,3 +156,34 @@ async fn test_sqlmore_uses_opening_page_size() {
         other => panic!("expected SqlMore, got {other:?}"),
     }
 }
+
+/// `is_done = false` with no cursor must not issue `sqlmore` (or `sqlclose`).
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_stream_skips_sqlmore_without_cursor() {
+    use mapepire::protocol::Request;
+
+    let pages = vec![page(0, 5, None, false)];
+    let (job, recorder) = common::connect_to_mock_with_recorder(pages).await;
+
+    let rows = job
+        .execute("SELECT n FROM SCHEMA.NUMBERS")
+        .await
+        .expect("execute");
+    let all = rows.into_dynamic().await.expect("into_dynamic");
+    assert_eq!(all.len(), 5);
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    assert!(
+        !observed
+            .iter()
+            .any(|r| matches!(r, Request::SqlMore { .. })),
+        "no cursor: sqlmore must be skipped, got {observed:?}"
+    );
+    assert!(
+        !observed
+            .iter()
+            .any(|r| matches!(r, Request::SqlClose { .. })),
+        "no cursor: sqlclose must be skipped, got {observed:?}"
+    );
+}
