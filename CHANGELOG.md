@@ -7,8 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Page size, terse rows, CALL/OUT parameters, and live leftover after 0.6.1
-`execute_with` / `prepare`.
+Page size, terse rows, CALL/OUT parameters, `setconfig` dest, and live leftover
+after 0.6.1 `execute_with` / `prepare`.
 
 ### Changed
 
@@ -22,6 +22,8 @@ Page size, terse rows, CALL/OUT parameters, and live leftover after 0.6.1
   succeeds** as a client-side `Query`. Each `Query::execute_with` then
   sends `prepare_sql_execute` (mapepire-js). A real `cont_id` still uses
   the `execute` opcode. Ping `{id,success}` remains `Pong`.
+- **`TraceLevel::All` sends `"ON"`** (mapepire-js `ServerTraceLevel`). The
+  daemon has no `ALL` constant.
 
 ### Added
 
@@ -40,6 +42,10 @@ Page size, terse rows, CALL/OUT parameters, and live leftover after 0.6.1
   `Rows::{output_parms, parameter_count, parameter_metadata}` surface
   them. Same `prepare_sql_execute` opcode; no CALL type and no QCMDEXC
   helper. Empty `output_parms` / `parameters` omit on serialize.
+- **`TraceDest::{File, InMem}`** (`FILE` / `IN_MEM`). `Job::set_trace(level)`
+  defaults dest to `IN_MEM` so `fetch_trace` can read the buffer.
+  `Job::set_trace_config(dest, level)` matches JS `setTraceConfig`. Empty
+  `tracedest` / `tracelevel` omit on serialize (leave current).
 
 ### Fixed
 
@@ -53,6 +59,9 @@ Page size, terse rows, CALL/OUT parameters, and live leftover after 0.6.1
   `Row::get("1")` works. Array rows with no `metadata.columns` are
   `ProtocolError::TerseRowsWithoutColumns` (no panic). Object rows still
   decode.
+- **`Job::set_trace` sent `tracedest: ""`.** Live Jetty/Gson
+  `No enum constant Tracer.Dest`. Dest is now `IN_MEM` (or `FILE` via
+  `set_trace_config`); empty string is never serialized.
 
 ## [0.6.2] — 2026-08-28
 

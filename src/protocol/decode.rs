@@ -388,6 +388,16 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_live_setconfig_with_dest_is_pong() {
+        // PROTOCOL.md §13 success: `{id, success, tracedest, tracelevel, …}`.
+        // Extra dest/level keys still land on Pong; dispatcher remaps
+        // outstanding SetConfig → ConfigSet (OSS-1).
+        let json = r#"{"id":"t1","success":true,"tracedest":"IN_MEM","tracelevel":"OFF","execution_time":1}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::Pong { id } if id == "t1"));
+    }
+
+    #[test]
     fn test_decode_live_version_without_type() {
         let json = r#"{"id":"v1","success":true,"version":"2.3.5"}"#;
         let r: Response = serde_json::from_str(json).unwrap();

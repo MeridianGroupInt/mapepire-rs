@@ -13,7 +13,8 @@
 //! - `sql` — SQL text for SQL-bearing methods.
 //! - `param_count` — number of parameters for parameterized variants.
 //! - `command` — CL command text for [`Job::cl`].
-//! - `level` — trace level for [`Job::set_trace`].
+//! - `level` — trace level for [`Job::set_trace`] / [`Job::set_trace_config`].
+//! - `dest` — trace destination for [`Job::set_trace_config`].
 //!
 //! Per-parameter values are governed by per-Pool [`crate::ParameterLogging`]
 //! policy (added in Task 9 / PRO-587). Direct-Job users get the equivalent
@@ -31,29 +32,74 @@ use crate::protocol::{ClMessage, IdAllocator, JobLogEntry, QueryResult, Request,
 use crate::query::ExecuteOptions;
 use crate::transport::{self, ConnectedDispatcher, Dispatcher, DispatcherHandle};
 
-/// Trace level for the daemon. Maps to the `setconfig.tracelevel` key.
+/// Trace level for `setconfig.tracelevel`.
 ///
-/// The daemon accepts opaque strings; this enum pins the documented set
-/// from the v0.2 wire-protocol notes. Use [`Job::set_trace`] to apply.
+/// mapepire-js `ServerTraceLevel` is `OFF | ON | ERRORS | DATASTREAM`.
+/// [`TraceLevel::All`] is the `"ON"` wire value — the daemon has no
+/// `ALL` constant. Use [`Job::set_trace`] or [`Job::set_trace_config`].
+///
+/// ```
+/// use mapepire::TraceLevel;
+///
+/// assert_eq!(TraceLevel::Off.as_str(), "OFF");
+/// assert_eq!(TraceLevel::All.as_str(), "ON");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceLevel {
-    /// No tracing.
+    /// No tracing (`"OFF"`).
     Off,
-    /// Errors only.
+    /// Errors only (`"ERRORS"`).
     Errors,
-    /// Errors + statement boundaries.
+    /// Errors + statement boundaries (`"DATASTREAM"`).
     Datastream,
-    /// Full diagnostic (high overhead — use sparingly).
+    /// Full diagnostic (`"ON"` on the wire). High overhead.
     All,
 }
 
 impl TraceLevel {
-    fn as_str(self) -> &'static str {
+    /// Wire token: `OFF`, `ON`, `ERRORS`, or `DATASTREAM`.
+    ///
+    /// [`TraceLevel::All`] returns `"ON"` (mapepire-js). Never `"ALL"`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             TraceLevel::Off => "OFF",
             TraceLevel::Errors => "ERRORS",
             TraceLevel::Datastream => "DATASTREAM",
-            TraceLevel::All => "ALL",
+            TraceLevel::All => "ON",
+        }
+    }
+}
+
+/// Trace destination for `setconfig.tracedest`.
+///
+/// Jetty `Tracer.Dest` is `FILE` or `IN_MEM`. Empty string is not a dest
+/// (`No enum constant Tracer.Dest`). [`Job::set_trace`] defaults to
+/// [`TraceDest::InMem`] so [`Job::fetch_trace`] can read the buffer.
+///
+/// ```
+/// use mapepire::TraceDest;
+///
+/// assert_eq!(TraceDest::File.as_str(), "FILE");
+/// assert_eq!(TraceDest::InMem.as_str(), "IN_MEM");
+/// assert_eq!(TraceDest::default(), TraceDest::InMem);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TraceDest {
+    /// Write trace records to a server-side file.
+    File,
+    /// Buffer in memory so [`Job::fetch_trace`] (`gettracedata`) can return them.
+    #[default]
+    InMem,
+}
+
+impl TraceDest {
+    /// Wire token: `"FILE"` or `"IN_MEM"`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TraceDest::File => "FILE",
+            TraceDest::InMem => "IN_MEM",
         }
     }
 }
@@ -618,8 +664,9 @@ impl Job {
 
     /// Configure the daemon's trace level via `setconfig`.
     ///
-    /// Sets `tracelevel` to the enum's string representation; `tracedest`
-    /// is left empty (server uses its default destination).
+    /// Destination is [`TraceDest::InMem`] so [`Job::fetch_trace`] can
+    /// read the buffer. Use [`Job::set_trace_config`] to write a
+    /// server-side [`TraceDest::File`]. Never sends `tracedest: ""`.
     ///
     /// # Errors
     ///
@@ -645,17 +692,56 @@ impl Job {
     /// ```
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, level = ?level))
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, dest = "IN_MEM", level = ?level))
     )]
     pub async fn set_trace(&self, level: TraceLevel) -> crate::Result<()> {
+        self.apply_trace(TraceDest::InMem, level).await
+    }
+
+    /// Configure daemon tracing with an explicit destination (JS
+    /// `setTraceConfig`).
+    ///
+    /// [`TraceDest::InMem`] buffers for [`Job::fetch_trace`];
+    /// [`TraceDest::File`] writes a server-side path. Never sends
+    /// `tracedest: ""`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::set_trace`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig, TraceDest, TraceLevel};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// job.set_trace_config(TraceDest::File, TraceLevel::Datastream)
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, dest = ?dest, level = ?level))
+    )]
+    pub async fn set_trace_config(&self, dest: TraceDest, level: TraceLevel) -> crate::Result<()> {
+        self.apply_trace(dest, level).await
+    }
+
+    async fn apply_trace(&self, dest: TraceDest, level: TraceLevel) -> crate::Result<()> {
         let id = self.inner.ids.next();
-        // `tracedest: String::new()` — empty string asks the daemon to use
-        // its default trace destination (no override).
         let resp = self
             .send(Request::SetConfig {
                 id: id.clone(),
                 tracelevel: level.as_str().to_owned(),
-                tracedest: String::new(),
+                tracedest: dest.as_str().to_owned(),
             })
             .await?;
         match resp {
@@ -675,8 +761,8 @@ impl Job {
     /// Fetch the daemon's accumulated trace data as raw text.
     ///
     /// Returns whatever the daemon has buffered since the last
-    /// [`Job::set_trace`] call — typically driver-side trace records, format
-    /// is daemon-defined.
+    /// [`Job::set_trace`] / [`Job::set_trace_config`] call. Only populated
+    /// when dest is [`TraceDest::InMem`] (the [`Job::set_trace`] default).
     ///
     /// # Errors
     ///
@@ -1068,5 +1154,41 @@ mod tests {
         });
         let err = cl_outcome_from_response("cl1", resp).unwrap_err();
         assert!(matches!(err, Error::Server(_)));
+    }
+
+    #[test]
+    fn test_trace_level_wire_strings() {
+        assert_eq!(TraceLevel::Off.as_str(), "OFF");
+        assert_eq!(TraceLevel::Errors.as_str(), "ERRORS");
+        assert_eq!(TraceLevel::Datastream.as_str(), "DATASTREAM");
+        assert_eq!(TraceLevel::All.as_str(), "ON");
+        assert_ne!(TraceLevel::All.as_str(), "ALL");
+    }
+
+    #[test]
+    fn test_trace_dest_wire_strings() {
+        assert_eq!(TraceDest::File.as_str(), "FILE");
+        assert_eq!(TraceDest::InMem.as_str(), "IN_MEM");
+        assert_eq!(TraceDest::default(), TraceDest::InMem);
+    }
+
+    #[test]
+    fn test_set_trace_request_never_sends_empty_dest() {
+        let r = Request::SetConfig {
+            id: "1".into(),
+            tracelevel: TraceLevel::Off.as_str().to_owned(),
+            tracedest: TraceDest::InMem.as_str().to_owned(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains(r#""tracedest":"IN_MEM""#));
+        assert!(!json.contains(r#""tracedest":"""#));
+        let all = Request::SetConfig {
+            id: "2".into(),
+            tracelevel: TraceLevel::All.as_str().to_owned(),
+            tracedest: TraceDest::InMem.as_str().to_owned(),
+        };
+        let json = serde_json::to_string(&all).unwrap();
+        assert!(json.contains(r#""tracelevel":"ON""#));
+        assert!(!json.contains(r#""tracelevel":"ALL""#));
     }
 }

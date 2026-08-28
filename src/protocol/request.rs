@@ -185,9 +185,13 @@ pub enum Request {
     SetConfig {
         /// Caller-supplied correlation id.
         id: String,
-        /// Tracing level — opaque server-defined string.
+        /// Tracing level — `OFF`, `ON`, `ERRORS`, `DATASTREAM`, or
+        /// `INPUT_AND_ERRORS`. Omitted or empty leaves the current level.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         tracelevel: String,
-        /// Trace destination — opaque server-defined string.
+        /// Trace destination — `FILE` or `IN_MEM`. Never `""` (Jetty
+        /// `Tracer.Dest` has no empty constant). Omitted leaves the current dest.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         tracedest: String,
     },
 
@@ -552,10 +556,10 @@ mod tests {
             (
                 Request::SetConfig {
                     id: "9".into(),
-                    tracelevel: "errors".into(),
-                    tracedest: "in_mem".into(),
+                    tracelevel: "ERRORS".into(),
+                    tracedest: "IN_MEM".into(),
                 },
-                r#"SetConfig { id: "9", tracelevel: "errors", tracedest: "in_mem" }"#,
+                r#"SetConfig { id: "9", tracelevel: "ERRORS", tracedest: "IN_MEM" }"#,
             ),
             (
                 Request::GetTraceData { id: "10".into() },
@@ -819,8 +823,41 @@ mod tests {
         );
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(
-            matches!(back, Request::SetConfig { tracelevel, .. } if tracelevel == "DATASTREAM")
+            matches!(back, Request::SetConfig { tracelevel, tracedest, .. }
+                if tracelevel == "DATASTREAM" && tracedest == "FILE")
         );
+    }
+
+    #[test]
+    fn setconfig_omits_empty_tracedest() {
+        let r = Request::SetConfig {
+            id: "50".into(),
+            tracelevel: "OFF".into(),
+            tracedest: String::new(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(json, r#"{"type":"setconfig","id":"50","tracelevel":"OFF"}"#);
+        assert!(!json.contains("tracedest"));
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back,
+            Request::SetConfig { tracedest, .. } if tracedest.is_empty()
+        ));
+    }
+
+    #[test]
+    fn setconfig_in_mem_is_present() {
+        let r = Request::SetConfig {
+            id: "50".into(),
+            tracelevel: "ON".into(),
+            tracedest: "IN_MEM".into(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"setconfig","id":"50","tracelevel":"ON","tracedest":"IN_MEM"}"#
+        );
+        assert!(!json.contains(r#""tracedest":"""#));
     }
 
     #[test]

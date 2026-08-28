@@ -1,0 +1,7 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+Pong {
+    id: "t1",
+}

@@ -165,12 +165,12 @@ fn snapshot_request_metadata_and_diagnostics() {
 
 #[test]
 fn set_config_trace_off() {
-    // Pins the typical shape produced by `Job::set_trace(TraceLevel::Off)`:
-    // `tracelevel: "OFF"` + empty-`tracedest` (default destination).
+    // Pins `Job::set_trace(TraceLevel::Off)`: `OFF` + `IN_MEM`. Empty dest
+    // is not a `Tracer.Dest` constant and must never appear on the wire.
     let r = Request::SetConfig {
         id: "1".into(),
         tracelevel: "OFF".into(),
-        tracedest: String::new(),
+        tracedest: "IN_MEM".into(),
     };
     insta::assert_json_snapshot!(r);
 }
@@ -536,6 +536,22 @@ fn snapshot_decode_live_pong() {
     let json = serde_json::json!({
         "id": "p1",
         "success": true
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_setconfig() {
+    // Live `setconfig` success is untagged `{id, success, tracedest,
+    // tracelevel}` (PROTOCOL.md §13). Decode is Pong; dispatcher remaps
+    // outstanding SetConfig → ConfigSet.
+    let json = serde_json::json!({
+        "id": "t1",
+        "success": true,
+        "tracedest": "IN_MEM",
+        "tracelevel": "OFF",
+        "execution_time": 1
     });
     let r: Response = serde_json::from_value(json).unwrap();
     insta::assert_debug_snapshot!(r);

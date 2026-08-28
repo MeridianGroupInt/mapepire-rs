@@ -88,7 +88,7 @@ pub use crate::error::{
 };
 pub use crate::executor::Executor;
 pub use crate::from_row::FromRow;
-pub use crate::job::{ClOutcome, Job, TraceLevel};
+pub use crate::job::{ClOutcome, Job, TraceDest, TraceLevel};
 pub use crate::password::Password;
 pub use crate::pool::{ParameterLogging, Pool, PoolBuilder, PoolStatus, RecyclingMethod, Reserved};
 pub use crate::protocol::{
