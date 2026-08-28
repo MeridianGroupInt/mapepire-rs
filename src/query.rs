@@ -152,9 +152,7 @@ impl Drop for StreamState {
 /// #     .expect("missing required field");
 /// let job = Job::connect(&server).await?;
 /// let query = job.prepare("SELECT * FROM ORDERS WHERE CUSTNO = ?").await?;
-/// let rows = query
-///     .execute_with(job.ids(), &[serde_json::json!(42)])
-///     .await?;
+/// let rows = query.execute_with(&[serde_json::json!(42)]).await?;
 /// drop(rows);
 /// # Ok(())
 /// # }
@@ -170,19 +168,27 @@ pub struct Query {
     sql: String,
     /// Cloned dispatcher handle for issuing follow-up requests.
     handle: DispatcherHandle,
+    /// Originating [`crate::Job`]'s allocator, cloned at `prepare`.
+    ids: Arc<IdAllocator>,
 }
 
 impl Query {
-    /// Create a new `Query` from a prepare ack and a clone of the
-    /// connection's [`DispatcherHandle`].
+    /// Create a new `Query` from a prepare ack, a clone of the
+    /// connection's [`DispatcherHandle`], and the job's [`IdAllocator`].
     ///
     /// `cont_id` is `None` when the live daemon acked prepare without a
     /// server handle; execute then sends `prepare_sql_execute`.
-    pub(crate) fn new(cont_id: Option<String>, sql: String, handle: DispatcherHandle) -> Self {
+    pub(crate) fn new(
+        cont_id: Option<String>,
+        sql: String,
+        handle: DispatcherHandle,
+        ids: Arc<IdAllocator>,
+    ) -> Self {
         Self {
             cont_id,
             sql,
             handle,
+            ids,
         }
     }
 
@@ -211,14 +217,13 @@ impl Query {
     /// #     .expect("missing required field");
     /// let job = Job::connect(&server).await?;
     /// let query = job.prepare("SELECT 1 FROM SYSIBM.SYSDUMMY1").await?;
-    /// let rows = query.execute(job.ids()).await?;
+    /// let rows = query.execute().await?;
     /// drop(rows);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn execute(&self, ids: &IdAllocator) -> crate::Result<Rows> {
-        self.execute_inner(ids, None, ExecuteOptions::default())
-            .await
+    pub async fn execute(&self) -> crate::Result<Rows> {
+        self.execute_inner(None, ExecuteOptions::default()).await
     }
 
     /// Execute the prepared statement with no parameters and explicit
@@ -244,24 +249,17 @@ impl Query {
     /// let job = Job::connect(&server).await?;
     /// let query = job.prepare("SELECT 1 FROM SYSIBM.SYSDUMMY1").await?;
     /// let rows = query
-    ///     .execute_opts(
-    ///         job.ids(),
-    ///         ExecuteOptions {
-    ///             rows: Some(50),
-    ///             terse: false,
-    ///         },
-    ///     )
+    ///     .execute_opts(ExecuteOptions {
+    ///         rows: Some(50),
+    ///         terse: false,
+    ///     })
     ///     .await?;
     /// drop(rows);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn execute_opts(
-        &self,
-        ids: &IdAllocator,
-        opts: ExecuteOptions,
-    ) -> crate::Result<Rows> {
-        self.execute_inner(ids, None, opts).await
+    pub async fn execute_opts(&self, opts: ExecuteOptions) -> crate::Result<Rows> {
+        self.execute_inner(None, opts).await
     }
 
     /// Execute the prepared statement with a single parameter set.
@@ -285,19 +283,13 @@ impl Query {
     /// #     .expect("missing required field");
     /// let job = Job::connect(&server).await?;
     /// let query = job.prepare("SELECT * FROM ORDERS WHERE CUSTNO = ?").await?;
-    /// let rows = query
-    ///     .execute_with(job.ids(), &[serde_json::json!(42)])
-    ///     .await?;
+    /// let rows = query.execute_with(&[serde_json::json!(42)]).await?;
     /// drop(rows);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn execute_with(
-        &self,
-        ids: &IdAllocator,
-        params: &[serde_json::Value],
-    ) -> crate::Result<Rows> {
-        self.execute_inner(ids, Some(params.to_vec()), ExecuteOptions::default())
+    pub async fn execute_with(&self, params: &[serde_json::Value]) -> crate::Result<Rows> {
+        self.execute_inner(Some(params.to_vec()), ExecuteOptions::default())
             .await
     }
 
@@ -325,7 +317,6 @@ impl Query {
     /// let query = job.prepare("SELECT * FROM ORDERS WHERE CUSTNO = ?").await?;
     /// let rows = query
     ///     .execute_with_opts(
-    ///         job.ids(),
     ///         &[serde_json::json!(42)],
     ///         ExecuteOptions {
     ///             rows: Some(50),
@@ -339,22 +330,20 @@ impl Query {
     /// ```
     pub async fn execute_with_opts(
         &self,
-        ids: &IdAllocator,
         params: &[serde_json::Value],
         opts: ExecuteOptions,
     ) -> crate::Result<Rows> {
-        self.execute_inner(ids, Some(params.to_vec()), opts).await
+        self.execute_inner(Some(params.to_vec()), opts).await
     }
 
     async fn execute_inner(
         &self,
-        ids: &IdAllocator,
         params: Option<Vec<serde_json::Value>>,
         opts: ExecuteOptions,
     ) -> crate::Result<Rows> {
         let page_size = opts.resolved_rows()?;
         let terse = opts.terse_on_wire();
-        let id = ids.next();
+        let id = self.ids.next();
         let request = match self.server_handle() {
             Some(cont_id) => Request::Execute {
                 id: id.clone(),
@@ -412,19 +401,18 @@ impl Query {
     /// let job = Job::connect(&server).await?;
     /// let query = job.prepare("INSERT INTO T VALUES(?)").await?;
     /// let batches: &[&[serde_json::Value]] = &[&[serde_json::json!(1)], &[serde_json::json!(2)]];
-    /// let results = query.execute_batch(job.ids(), batches).await?;
+    /// let results = query.execute_batch(batches).await?;
     /// assert_eq!(results.len(), 2);
     /// # Ok(())
     /// # }
     /// ```
     pub async fn execute_batch(
         &self,
-        ids: &IdAllocator,
         batches: &[&[serde_json::Value]],
     ) -> crate::Result<Vec<Rows>> {
         let mut out = Vec::with_capacity(batches.len());
         for params in batches {
-            out.push(self.execute_with(ids, params).await?);
+            out.push(self.execute_with(params).await?);
         }
         Ok(out)
     }
@@ -465,23 +453,20 @@ impl Query {
     ///     vec![serde_json::json!(1), serde_json::json!("a")],
     ///     vec![serde_json::json!(2), serde_json::json!("b")],
     /// ];
-    /// let rows = query
-    ///     .execute_sets(job.ids(), &sets, ExecuteOptions::default())
-    ///     .await?;
+    /// let rows = query.execute_sets(&sets, ExecuteOptions::default()).await?;
     /// drop(rows);
     /// # Ok(())
     /// # }
     /// ```
     pub async fn execute_sets(
         &self,
-        ids: &IdAllocator,
         sets: &[Vec<serde_json::Value>],
         opts: ExecuteOptions,
     ) -> crate::Result<Rows> {
         let parameters = owned_parameter_sets(sets)?;
         let page_size = opts.resolved_rows()?;
         let terse = opts.terse_on_wire();
-        let id = ids.next();
+        let id = self.ids.next();
         let request = Request::PrepareSqlExecute {
             id: id.clone(),
             sql: self.sql.clone(),

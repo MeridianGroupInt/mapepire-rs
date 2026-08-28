@@ -140,7 +140,7 @@ async fn test_query_execute_sets_one_shot() {
         .expect("prepare");
     let sets = vec![vec![json!(1), json!("a")], vec![json!(2), json!("b")]];
     let rows = query
-        .execute_sets(job.ids(), &sets, ExecuteOptions::default())
+        .execute_sets(&sets, ExecuteOptions::default())
         .await
         .expect("query execute_sets");
     assert_eq!(rows.update_count(), Some(2));

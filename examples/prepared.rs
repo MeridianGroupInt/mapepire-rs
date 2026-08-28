@@ -3,8 +3,8 @@
 //! Prepare once, execute many — the dispatcher reuses the same `cont_id`
 //! on every call so the daemon doesn't re-parse the SQL. `pool.acquire()`
 //! returns a [`mapepire::Reserved`] that derefs to `&Job`, giving us
-//! direct access to `Job::prepare` and `Job::ids` for the [`mapepire::Query`]
-//! handle.
+//! direct access to `Job::prepare`. The [`mapepire::Query`] stores the
+//! job's id allocator at prepare, so execute takes no `ids` argument.
 //!
 //! Run:
 //! ```text
@@ -45,9 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Execute many — same `cont_id` on every call.
     for name in ["alpha", "beta", "gamma"] {
-        let rows = query
-            .execute_with(conn.ids(), &[serde_json::json!(name)])
-            .await?;
+        let rows = query.execute_with(&[serde_json::json!(name)]).await?;
         let dynamic = rows.into_dynamic().await?;
         for row in dynamic {
             // VALUES yields a single column whose name is "00001" by

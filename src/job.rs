@@ -227,12 +227,11 @@ impl Job {
 
     /// Return the [`IdAllocator`] shared by this connection.
     ///
-    /// Consumers pass this to [`crate::Query::execute`] /
-    /// [`crate::Query::execute_with`] / [`crate::Query::execute_batch`] /
-    /// [`crate::Query::execute_sets`] so that correlation ids are unique
-    /// across all requests on the same `Job`.
+    /// [`crate::Query`] clones this `Arc` at [`Job::prepare`] so execute
+    /// paths do not take an `ids` argument. Crate-visible for tests and
+    /// pool internals; not part of the 1.0 public surface.
     #[must_use]
-    pub fn ids(&self) -> &IdAllocator {
+    pub(crate) fn ids(&self) -> &Arc<IdAllocator> {
         &self.inner.ids
     }
 
@@ -648,6 +647,7 @@ impl Job {
                     handle,
                     sql.to_owned(),
                     self.inner.handle.clone(),
+                    Arc::clone(self.ids()),
                 ))
             }
             // Dispatcher remaps PrepareSql + Pong to PreparedStatement with
@@ -657,6 +657,7 @@ impl Job {
                 None,
                 sql.to_owned(),
                 self.inner.handle.clone(),
+                Arc::clone(self.ids()),
             )),
             Response::Error(e) => Err(crate::job_helpers::server_error(e)),
             ref other => Err(crate::job_helpers::unexpected(other)),

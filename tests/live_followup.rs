@@ -109,14 +109,8 @@ async fn test_prepare_then_execute_twice() {
         .prepare("VALUES (CAST(? AS INTEGER))")
         .await
         .expect("prepare");
-    let first = query
-        .execute_with(job.ids(), &[json!(7)])
-        .await
-        .expect("execute 7");
-    let second = query
-        .execute_with(job.ids(), &[json!(11)])
-        .await
-        .expect("execute 11");
+    let first = query.execute_with(&[json!(7)]).await.expect("execute 7");
+    let second = query.execute_with(&[json!(11)]).await.expect("execute 11");
 
     let a = first.into_dynamic().await.expect("first");
     let b = second.into_dynamic().await.expect("second");
@@ -360,14 +354,8 @@ async fn test_prepare_without_cont_id_then_two_execute_with() {
         .prepare("VALUES (CAST(? AS INTEGER))")
         .await
         .expect("prepare ack without cont_id must succeed");
-    let first = query
-        .execute_with(job.ids(), &[json!(7)])
-        .await
-        .expect("execute 7");
-    let second = query
-        .execute_with(job.ids(), &[json!(11)])
-        .await
-        .expect("execute 11");
+    let first = query.execute_with(&[json!(7)]).await.expect("execute 7");
+    let second = query.execute_with(&[json!(11)]).await.expect("execute 11");
 
     let a = first.into_dynamic().await.expect("first");
     let b = second.into_dynamic().await.expect("second");
@@ -434,19 +422,15 @@ async fn test_prepare_without_cont_id_execute_opts_sends_rows() {
         .await
         .expect("prepare ack without cont_id must succeed");
     let rows = query
-        .execute_opts(
-            job.ids(),
-            ExecuteOptions {
-                rows: Some(10),
-                terse: false,
-            },
-        )
+        .execute_opts(ExecuteOptions {
+            rows: Some(10),
+            terse: false,
+        })
         .await
         .expect("Query::execute_opts");
     drop(rows.into_dynamic().await.expect("into_dynamic"));
     let bound_rows = query
         .execute_with_opts(
-            job.ids(),
             &[json!(11)],
             ExecuteOptions {
                 rows: Some(25),
