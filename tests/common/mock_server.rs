@@ -320,8 +320,9 @@ fn encode_query_result_maybe_terse(q: &QueryResult, terse: Option<bool>) -> Stri
 /// Success frames omit `"type"`. Live `cl` replies are untagged
 /// [`QueryResult`] job-log frames (see [`MockBehavior::ClThen`]). Live
 /// `gettracedata` is `{id, success, tracedata}` (not tagged `trace_data`).
-/// Tagged serde is kept for variants the live daemon has not been observed
-/// to send untagged (tagged `cl_result`, dove).
+/// Live dove is `{id, success, vedata, vemetadata?}`. Tagged serde is kept
+/// for variants the live daemon has not been observed to send untagged
+/// (tagged `cl_result`).
 fn encode_live_response(response: &Response) -> String {
     match response {
         Response::Connected { id, version, job } => {
@@ -375,6 +376,22 @@ fn encode_live_response(response: &Response) -> String {
             "tracedata": tracedata
         })
         .to_string(),
+        Response::DoveResult {
+            id,
+            success,
+            vedata,
+            vemetadata,
+        } => {
+            let mut v = serde_json::json!({
+                "id": id,
+                "success": success,
+                "vedata": vedata
+            });
+            if let Some(meta) = vemetadata {
+                v["vemetadata"] = meta.clone();
+            }
+            v.to_string()
+        }
         other => serde_json::to_string(other).expect("serialize tagged response"),
     }
 }
@@ -400,6 +417,12 @@ fn live_ack(req: &Request) -> Response {
             id: id.clone(),
             success: true,
             tracedata: "hello".into(),
+        },
+        Request::Dove { id, .. } => Response::DoveResult {
+            id: id.clone(),
+            success: true,
+            vedata: serde_json::json!([{"op": "TBSCAN"}]),
+            vemetadata: Some(serde_json::json!({"version": 1})),
         },
         other => Response::Pong {
             id: request_id(other),

@@ -813,13 +813,16 @@ impl Job {
     }
 
     /// Run a daemon-side `visual_explain` (the `dove` op) on a SQL statement.
-    /// Returns the raw plan tree as a [`serde_json::Value`] — typed parsing
-    /// of the explain plan is out of scope for v0.3.
+    ///
+    /// Sends `run: true` to match mapepire-js `SQLJob.explain()` /
+    /// `ExplainType.RUN`. Returns live `vedata` (the explain tree).
+    /// SQLSTATE **42505** (no Visual Explain authority) is
+    /// [`crate::Error::Server`], not a crate protocol failure.
     ///
     /// # Errors
     ///
     /// As [`Job::execute`], plus [`crate::Error::Server`] if the daemon's
-    /// response carries `success: false`.
+    /// response carries `success: false` (including 42505).
     ///
     /// # Example
     ///
@@ -852,6 +855,8 @@ impl Job {
             .send(Request::Dove {
                 id: id.clone(),
                 sql: sql.to_owned(),
+                run: Some(true),
+                rows: None,
                 terse: None,
             })
             .await?;
@@ -859,10 +864,11 @@ impl Job {
             Response::DoveResult {
                 id: got,
                 success,
-                result,
+                vedata,
+                ..
             } if got == id => {
                 if success {
-                    Ok(result)
+                    Ok(vedata)
                 } else {
                     Err(crate::job_helpers::server_failed("visual_explain"))
                 }

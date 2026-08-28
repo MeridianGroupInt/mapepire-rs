@@ -466,6 +466,8 @@ mod tests {
             Request::Dove {
                 id: id.clone(),
                 sql: "SELECT 1".into(),
+                run: Some(true),
+                rows: None,
                 terse: None,
             },
             Request::Ping { id: id.clone() },
@@ -560,7 +562,8 @@ mod tests {
             Response::DoveResult {
                 id: id.clone(),
                 success: true,
-                result: serde_json::json!({}),
+                vedata: serde_json::json!({}),
+                vemetadata: None,
             },
             Response::Error(err),
         ];
