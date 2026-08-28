@@ -18,9 +18,9 @@
 //! **No SQL parsing.** Both mocks dispatch on the *type* of the inbound
 //! request, not the SQL text. They return canned responses.
 //!
-//! **Live response dialect.** `Connected`, `QueryResult`, and `Error` are
-//! sent untagged (no `"type"` field), matching Mapepire-on-i. Other variants
-//! keep internally tagged serde so `Pong` remains `{"type":"pong",...}`.
+//! **Live response dialect.** Success frames omit `"type"`, matching
+//! Mapepire-on-i. `Pong` is `{id, success:true}`; prepare is
+//! `{id, success, cont_id, execution_time}`.
 //!
 //! **No `unsafe`.** Test-style `.unwrap()` / `.expect()` are used freely
 //! throughout since panics become test failures.
@@ -224,6 +224,16 @@ pub enum MockBehavior {
         signal_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     },
 
+    /// Accept connect with success. The first post-connect request is answered
+    /// with `{"type":"not_a_real_type","id":...}` (decode miss). Later
+    /// `Sql` / `PrepareSqlExecute` / `Execute` / `SqlMore` consume `pages`
+    /// like [`MockBehavior::Pages`]. Used to prove one bad object does not
+    /// kill the dispatcher.
+    UnknownTypeThenPages {
+        /// Pre-baked [`QueryResult`] pages drained after the unknown frame.
+        pages: Vec<QueryResult>,
+    },
+
     /// Accept connect with success, then respond to the protocol sequence for
     /// prepared statements:
     /// - The next [`Request::PrepareSql`] request: emit [`Response::PreparedStatement`] with
@@ -249,10 +259,8 @@ const MOCK_JOB: &str = "MOCK/QUSER/000001";
 
 /// Encode a [`Response`] as the live daemon would.
 ///
-/// `Connected` / `QueryResult` / `Error` omit `"type"`. Other variants use
-/// tagged `Serialize` so `Pong` stays `{"type":"pong",...}`. Local to the
-/// mock: integration tests cannot see `pub(crate)` helpers, and a public
-/// `encode_live` would expand the crate API for test-only JSON.
+/// Success frames omit `"type"`. Tagged serde is kept only for variants
+/// the live daemon has not been observed to send untagged (CL, dove, trace).
 fn encode_live_response(response: &Response) -> String {
     match response {
         Response::Connected { id, version, job } => {
@@ -269,7 +277,57 @@ fn encode_live_response(response: &Response) -> String {
         }
         Response::QueryResult(q) => serde_json::to_string(q).expect("serialize QueryResult"),
         Response::Error(e) => serde_json::to_string(e).expect("serialize ErrorResponse"),
+        Response::Pong { id } | Response::Exited { id } => {
+            serde_json::json!({"id": id, "success": true}).to_string()
+        }
+        Response::PreparedStatement {
+            id,
+            success,
+            cont_id,
+            execution_time,
+        } => serde_json::json!({
+            "id": id,
+            "success": success,
+            "cont_id": cont_id,
+            "execution_time": execution_time,
+            "is_done": true
+        })
+        .to_string(),
+        Response::DbJob { id, success, job } => {
+            serde_json::json!({"id": id, "success": success, "job": job}).to_string()
+        }
+        Response::Version {
+            id,
+            success,
+            version,
+        } => serde_json::json!({"id": id, "success": success, "version": version}).to_string(),
+        Response::SqlClosed { id, success } | Response::ConfigSet { id, success } => {
+            serde_json::json!({"id": id, "success": success}).to_string()
+        }
         other => serde_json::to_string(other).expect("serialize tagged response"),
+    }
+}
+
+/// Catch-all reply for non-SQL requests on happy-path mocks.
+fn live_ack(req: &Request) -> Response {
+    match req {
+        Request::GetDbJob { id } => Response::DbJob {
+            id: id.clone(),
+            success: true,
+            job: MOCK_JOB.into(),
+        },
+        Request::GetVersion { id } => Response::Version {
+            id: id.clone(),
+            success: true,
+            version: MOCK_VERSION.into(),
+        },
+        Request::SetConfig { id, .. } => Response::ConfigSet {
+            id: id.clone(),
+            success: true,
+        },
+        other => Response::Pong {
+            id: request_id(other),
+        },
     }
 }
 
@@ -567,7 +625,7 @@ where
                 version: MOCK_VERSION.into(),
                 job: MOCK_JOB.into(),
             });
-            // Request loop: Exit closes cleanly; anything else gets Pong.
+            // Request loop: Exit closes cleanly; metadata/ping get live acks.
             loop {
                 match recv_request!() {
                     None => break,
@@ -577,8 +635,7 @@ where
                         break;
                     }
                     Some(req) => {
-                        let id = request_id(&req);
-                        send_response!(Response::Pong { id });
+                        send_response!(live_ack(&req));
                     }
                 }
             }
@@ -630,10 +687,58 @@ where
                                 send_response!(Response::SqlClosed { id, success: true });
                             }
                             other => {
-                                let id = request_id(&other);
-                                send_response!(Response::Pong { id });
+                                send_response!(live_ack(&other));
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        MockBehavior::UnknownTypeThenPages {
+            pages: mut pages_vec,
+        } => {
+            send_response!(Response::Connected {
+                id: connect_id,
+                version: MOCK_VERSION.into(),
+                job: MOCK_JOB.into(),
+            });
+            let mut pages_iter = pages_vec.drain(..);
+            let mut unknown_sent = false;
+            loop {
+                match recv_request!() {
+                    None => break,
+                    Some(Request::Exit { id }) => {
+                        send_response!(Response::Exited { id });
+                        let _ = sink.send(Message::Close(None)).await;
+                        break;
+                    }
+                    Some(req) if !unknown_sent => {
+                        unknown_sent = true;
+                        let id = request_id(&req);
+                        let json =
+                            format!(r#"{{"type":"not_a_real_type","id":"{id}","success":true}}"#);
+                        sink.send(Message::Text(json.into()))
+                            .await
+                            .expect("send unknown type frame");
+                    }
+                    Some(
+                        Request::Sql { id, .. }
+                        | Request::PrepareSqlExecute { id, .. }
+                        | Request::Execute { id, .. }
+                        | Request::SqlMore { id, .. },
+                    ) => {
+                        let mut page = pages_iter
+                            .next()
+                            .expect("mock UnknownTypeThenPages ran out of pages");
+                        page.id = id;
+                        send_response!(Response::QueryResult(page));
+                    }
+                    Some(Request::SqlClose { id, .. }) => {
+                        send_response!(Response::SqlClosed { id, success: true });
+                    }
+                    Some(other) => {
+                        send_response!(live_ack(&other));
                     }
                 }
             }
@@ -1271,13 +1376,7 @@ async fn run_pool_connection<S>(
                         send_response!(Response::SqlClosed { id, success: true });
                     }
                     other => {
-                        // Catch-all for non-SQL request shapes (Cl,
-                        // GetVersion, GetDbJob, SetConfig, GetTraceData,
-                        // Dove, etc.). Pong is a safe echo — the
-                        // dispatcher routes by `id`, not by response
-                        // variant, so this completes the round-trip.
-                        let id = request_id(&other);
-                        send_response!(Response::Pong { id });
+                        send_response!(live_ack(&other));
                     }
                 }
             }
