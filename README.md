@@ -113,7 +113,7 @@ the common patterns:
 | [`examples/transaction.rs`](examples/transaction.rs) | `pool.acquire().rollback_on_drop()` + v0.4 typed `begin/commit` |
 | [`examples/streaming.rs`](examples/streaming.rs) | `Rows::stream_typed::<T>` with a `serde::Deserialize` row struct |
 | [`examples/with_tracing.rs`](examples/with_tracing.rs) | `tracing-subscriber` registration + per-execute span output |
-| [`examples/cl_command.rs`](examples/cl_command.rs) | `Job::cl(...)` + `ClMessage` walkthrough |
+| [`examples/cl_command.rs`](examples/cl_command.rs) | `Job::cl(...)` + `ClOutcome` job-log walkthrough |
 
 Each example reads `MAPEPIRE_HOST`, `MAPEPIRE_USER`, and `MAPEPIRE_PASSWORD`
 from the environment. [`examples/one_shot.rs`](examples/one_shot.rs) also

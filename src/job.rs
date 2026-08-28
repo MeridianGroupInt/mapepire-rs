@@ -27,7 +27,7 @@ use std::sync::atomic::AtomicU32;
 
 use crate::config::DaemonServer;
 use crate::error::Error;
-use crate::protocol::{IdAllocator, Request, Response};
+use crate::protocol::{ClMessage, IdAllocator, JobLogEntry, QueryResult, Request, Response};
 use crate::transport::{self, ConnectedDispatcher, Dispatcher, DispatcherHandle};
 
 /// Trace level for the daemon. Maps to the `setconfig.tracelevel` key.
@@ -638,15 +638,20 @@ impl Job {
 
     /// Run an IBM i CL command.
     ///
-    /// Returns the first [`crate::protocol::ClMessage`] from the daemon's
-    /// response. The full message list surfaces in a future v0.3+ typed
-    /// `CommandResult`; for v0.2 this is a best-effort single-message view.
+    /// Live daemons reply with an untagged [`QueryResult`] whose `data` is
+    /// the job log. Failed commands (`CPF0006`, `sql_rc = -443`) still
+    /// return [`Ok`] with [`ClOutcome::success`] = `false` and the log in
+    /// [`ClOutcome::entries`] — matching mapepire-js `SQLJob.clcommand`,
+    /// which does not throw.
+    ///
+    /// Tagged `cl_result` mock frames are still accepted and mapped onto
+    /// the same [`ClOutcome`].
     ///
     /// # Errors
     ///
-    /// As [`Job::execute`], plus [`Error::Server`] if the daemon returns
-    /// `success: false`, or [`Error::Internal`] if the daemon returns an
-    /// empty message list despite `success: true`.
+    /// As [`Job::execute`] for transport / protocol failures, plus
+    /// [`Error::Server`] for a bare `success: false` frame with no `data`
+    /// (not a job-log reply).
     ///
     /// # Example
     ///
@@ -661,10 +666,15 @@ impl Job {
     /// #     .build()
     /// #     .expect("missing required field");
     /// let job = Job::connect(&server).await?;
-    /// // DSPLIB emits a CPF2102 completion message — a single ClMessage.
-    /// let msg = job.cl("DSPLIB MYLIB").await?;
-    /// if let Some(text) = msg.text {
-    ///     println!("CL message: {text}");
+    /// let outcome = job.cl("DSPLIB MYLIB").await?;
+    /// if outcome.success {
+    ///     for entry in &outcome.entries {
+    ///         if let Some(text) = &entry.message_text {
+    ///             println!("CL message: {text}");
+    ///         }
+    ///     }
+    /// } else {
+    ///     println!("CL failed: {:?}", outcome.error);
     /// }
     /// # Ok(())
     /// # }
@@ -673,7 +683,7 @@ impl Job {
         feature = "tracing",
         tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, command = %command))
     )]
-    pub async fn cl(&self, command: &str) -> crate::Result<crate::protocol::ClMessage> {
+    pub async fn cl(&self, command: &str) -> crate::Result<ClOutcome> {
         let id = self.inner.ids.next();
         let resp = self
             .send(Request::Cl {
@@ -681,25 +691,94 @@ impl Job {
                 cmd: command.to_owned(),
             })
             .await?;
-        match resp {
-            Response::ClResult {
-                id: got,
-                success,
-                messages,
-                ..
-            } if got == id => {
-                if !success {
-                    return Err(crate::job_helpers::server_failed("cl"));
-                }
-                // Return the first message; the full message list surfaces
-                // in a future v0.3+ typed CommandResult (v0.2 limitation).
-                messages.into_iter().next().ok_or_else(|| {
-                    Error::Internal("daemon returned ClResult with no messages".to_string())
+        cl_outcome_from_response(&id, resp)
+    }
+}
+
+/// Outcome of [`Job::cl`].
+///
+/// Failed CL is `success: false` with the job log still in `entries`.
+/// That is not a [`crate::Error::Server`].
+///
+/// # Example
+///
+/// ```
+/// use mapepire::ClOutcome;
+///
+/// let failed = ClOutcome {
+///     success: false,
+///     error: Some("[CPF0006] Errors occurred in command.".into()),
+///     sqlcode: Some(-443),
+///     sqlstate: Some("38501".into()),
+///     entries: vec![],
+/// };
+/// assert!(!failed.success);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClOutcome {
+    /// `true` when the command completed without an escape message.
+    pub success: bool,
+    /// Daemon `error` text, when present (typically the CPF0006 line).
+    pub error: Option<String>,
+    /// Db2 SQL code (`sql_rc` on the wire). `-443` for a CL escape.
+    pub sqlcode: Option<i32>,
+    /// SQLSTATE (`sql_state` on the wire). `38501` for a CL escape.
+    pub sqlstate: Option<String>,
+    /// Full job log, one row per `QueryResult.data` object.
+    pub entries: Vec<JobLogEntry>,
+}
+
+impl ClOutcome {
+    fn from_query_result(q: QueryResult) -> Self {
+        Self {
+            success: q.success,
+            error: q.error,
+            sqlcode: q.sqlcode,
+            sqlstate: q.sqlstate,
+            entries: q
+                .data
+                .into_iter()
+                .map(|row| {
+                    serde_json::from_value(serde_json::Value::Object(row)).unwrap_or_default()
                 })
-            }
-            Response::Error(e) => Err(crate::job_helpers::server_error(e)),
-            ref other => Err(crate::job_helpers::unexpected(other)),
+                .collect(),
         }
+    }
+
+    fn from_cl_result(success: bool, messages: Vec<ClMessage>) -> Self {
+        let error = if success {
+            None
+        } else {
+            messages.iter().find_map(|m| m.text.clone())
+        };
+        Self {
+            success,
+            error,
+            sqlcode: None,
+            sqlstate: None,
+            entries: messages
+                .into_iter()
+                .map(|m| JobLogEntry {
+                    message_id: m.id,
+                    message_type: m.kind,
+                    message_text: m.text,
+                    ..JobLogEntry::default()
+                })
+                .collect(),
+        }
+    }
+}
+
+fn cl_outcome_from_response(expected_id: &str, resp: Response) -> Result<ClOutcome, Error> {
+    match resp {
+        Response::QueryResult(q) if q.id == expected_id => Ok(ClOutcome::from_query_result(q)),
+        Response::ClResult {
+            id: got,
+            success,
+            messages,
+        } if got == expected_id => Ok(ClOutcome::from_cl_result(success, messages)),
+        Response::Error(e) => Err(crate::job_helpers::server_error(e)),
+        ref other => Err(crate::job_helpers::unexpected(other)),
     }
 }
 
@@ -733,5 +812,108 @@ impl Drop for Job {
         crate::job_helpers::spawn_best_effort(async move {
             let _ = handle.send(Request::Exit { id }).await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+    use crate::protocol::ErrorResponse;
+
+    fn job_log_query_result(id: &str, success: bool) -> QueryResult {
+        let mut row = serde_json::Map::new();
+        row.insert("MESSAGE_ID".into(), serde_json::json!("CPF0006"));
+        row.insert("SEVERITY".into(), serde_json::json!(40));
+        row.insert(
+            "MESSAGE_TEXT".into(),
+            serde_json::json!("[CPF0006] Errors occurred in command."),
+        );
+        QueryResult {
+            id: id.into(),
+            success,
+            has_results: true,
+            update_count: -1,
+            cont_id: None,
+            is_done: true,
+            metadata: crate::protocol::QueryMetaData::default(),
+            data: vec![row],
+            execution_time: 1.0,
+            error: if success {
+                None
+            } else {
+                Some("[CPF0006] Errors occurred in command.".into())
+            },
+            sqlcode: if success { None } else { Some(-443) },
+            sqlstate: if success { None } else { Some("38501".into()) },
+        }
+    }
+
+    #[test]
+    fn test_cl_outcome_from_query_result_failure_keeps_job_log() {
+        let q = job_log_query_result("cl1", false);
+        let outcome = cl_outcome_from_response("cl1", Response::QueryResult(q)).unwrap();
+        assert!(!outcome.success);
+        assert_eq!(outcome.sqlcode, Some(-443));
+        assert_eq!(outcome.sqlstate.as_deref(), Some("38501"));
+        assert_eq!(outcome.entries.len(), 1);
+        assert_eq!(outcome.entries[0].message_id.as_deref(), Some("CPF0006"));
+        assert_eq!(outcome.entries[0].severity.as_deref(), Some("40"));
+    }
+
+    #[test]
+    fn test_cl_outcome_from_tagged_cl_result() {
+        let resp = Response::ClResult {
+            id: "cl1".into(),
+            success: true,
+            messages: vec![ClMessage {
+                id: Some("CPC2102".into()),
+                kind: Some("COMPLETION".into()),
+                text: Some("Library displayed.".into()),
+            }],
+        };
+        let outcome = cl_outcome_from_response("cl1", resp).unwrap();
+        assert!(outcome.success);
+        assert_eq!(outcome.entries.len(), 1);
+        assert_eq!(outcome.entries[0].message_id.as_deref(), Some("CPC2102"));
+        assert_eq!(
+            outcome.entries[0].message_text.as_deref(),
+            Some("Library displayed.")
+        );
+    }
+
+    #[test]
+    fn test_cl_outcome_from_tagged_cl_result_failure_is_ok() {
+        let resp = Response::ClResult {
+            id: "cl1".into(),
+            success: false,
+            messages: vec![ClMessage {
+                id: Some("CPF0006".into()),
+                kind: Some("ESCAPE".into()),
+                text: Some("[CPF0006] Errors occurred in command.".into()),
+            }],
+        };
+        let outcome = cl_outcome_from_response("cl1", resp).unwrap();
+        assert!(!outcome.success);
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("[CPF0006] Errors occurred in command.")
+        );
+        assert_eq!(outcome.entries[0].message_id.as_deref(), Some("CPF0006"));
+    }
+
+    #[test]
+    fn test_cl_outcome_bare_error_is_err() {
+        let resp = Response::Error(ErrorResponse {
+            id: "cl1".into(),
+            success: false,
+            sqlstate: Some("38501".into()),
+            sqlcode: Some(-443),
+            error: Some("nope".into()),
+            job: None,
+        });
+        let err = cl_outcome_from_response("cl1", resp).unwrap_err();
+        assert!(matches!(err, Error::Server(_)));
     }
 }

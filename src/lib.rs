@@ -87,11 +87,11 @@ pub use crate::error::{
 };
 pub use crate::executor::Executor;
 pub use crate::from_row::FromRow;
-pub use crate::job::{Job, TraceLevel};
+pub use crate::job::{ClOutcome, Job, TraceLevel};
 pub use crate::password::Password;
 pub use crate::pool::{ParameterLogging, Pool, PoolBuilder, PoolStatus, RecyclingMethod, Reserved};
 pub use crate::protocol::{
-    ClMessage, Column, ErrorResponse, IdAllocator, QueryMetaData, QueryResult, Request, RequestId,
-    Response,
+    ClMessage, Column, ErrorResponse, IdAllocator, JobLogEntry, QueryMetaData, QueryResult,
+    Request, RequestId, Response,
 };
 pub use crate::query::{Query, Row, Rows};

@@ -1,9 +1,10 @@
 //! Run an IBM i CL command via `Job::cl`.
 //!
-//! `Job::cl(command)` sends the command through the daemon and returns
-//! the first [`mapepire::ClMessage`] from the response (typically the
-//! CPF completion or escape message). Uses `Job::connect` directly —
-//! no pool needed for a one-shot command.
+//! `Job::cl(command)` sends the command through the daemon and returns a
+//! [`mapepire::ClOutcome`] with the full job log. Failed commands (for
+//! example CPF0006) are `Ok` with `success: false` — they do not become
+//! `Err`. Uses `Job::connect` directly — no pool needed for a one-shot
+//! command.
 //!
 //! Run:
 //! ```text
@@ -31,13 +32,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let job = Job::connect(&server).await?;
 
-    // DSPLIB QGPL is a benign read-only command available on every IBM i
-    // — it emits a CPF2102 completion message.
-    let msg = job.cl("DSPLIB QGPL").await?;
+    // DSPLIB QGPL is a benign read-only command available on every IBM i.
+    let outcome = job.cl("DSPLIB QGPL").await?;
 
-    println!("id   = {:?}", msg.id);
-    println!("kind = {:?}", msg.kind);
-    println!("text = {:?}", msg.text);
+    println!("success  = {}", outcome.success);
+    println!("error    = {:?}", outcome.error);
+    println!("sqlcode  = {:?}", outcome.sqlcode);
+    println!("sqlstate = {:?}", outcome.sqlstate);
+    for entry in &outcome.entries {
+        println!(
+            "{} [{}] {}",
+            entry.message_id.as_deref().unwrap_or("?"),
+            entry.severity.as_deref().unwrap_or("?"),
+            entry.message_text.as_deref().unwrap_or("")
+        );
+    }
 
     Ok(())
 }
