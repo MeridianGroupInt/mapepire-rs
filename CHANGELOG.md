@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-08-28
+
+Live leftovers after 0.7.1 paging: `gettracedata` and `dove` untagged
+replies, plus one-shot 2-D `prepare_sql_execute`. Patch versus 0.7.1
+(decode / additive API, not a breaking cut).
+
+### Fixed
+
+- **`Job::fetch_trace` keeps live `tracedata`.** Untagged
+  `{id, success, tracedata}` was classified as `Pong` and the buffer was
+  dropped (`unexpected variant: Pong`). Decode on `tracedata` /
+  `jtopentracedata` (including `""` / `null`). Omitted-key success remaps
+  to empty `TraceData`. Ping `{id, success}` without those keys stays
+  `Pong`. OSS-10 was the same bug (duplicate; canceled).
+- **`Job::visual_explain` keeps live `vedata`.** Untagged dove
+  `{vedata, vemetadata}` became `Pong` (no `data`) or `QueryResult`
+  (`run=true` has `data`). Classify on `vedata` / `vemetadata`. Sends
+  `run: true` (mapepire-js `ExplainType.RUN`). SQLSTATE 42505 without
+  `vedata` is `Error::Server` (profile authority), not a crate fail.
+
+### Added
+
+- **`Job::execute_sets` / `Query::execute_sets`** — one
+  `prepare_sql_execute` with 2-D `parameters` (`[[1,"a"],[2,"b"]]`).
+  Empty outer list is `ProtocolError::EmptyParameterSets` and is not
+  sent. `Query::execute_batch` stays sequential. Single-set
+  `execute_with` still flattens `[7]` (OSS-7).
+
 ## [0.7.1] — 2026-08-28
 
 Live paging: `Rows::stream` never issued `sqlmore` on stock Mapepire
@@ -743,7 +771,8 @@ harness used to validate them.
 - README badges (CI, Audit, deps.rs, MSRV from Cargo.toml, License).
 - PR template, issue templates, CODEOWNERS.
 
-[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.0...v0.6.1
