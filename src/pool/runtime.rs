@@ -58,6 +58,8 @@ pub struct Pool {
     // PRO-454 reads from it in `Pool::execute`'s §7.3 routing scan.
     pub(crate) registry: Arc<Registry>,
     pub(crate) acquire_timeout: Option<Duration>,
+    /// First-page size when [`crate::ExecuteOptions::rows`] is `None`.
+    pub(crate) default_page_size: u32,
     /// Per-pool parameter-logging policy for `tracing` span fields.
     /// Read by `Pool::execute_with` to gate `param_types` / `params` emission
     /// (Task 9 / PRO-587). Effective only when the `tracing` feature is
@@ -124,7 +126,24 @@ impl Pool {
         PoolBuilder::new(server.into())
     }
 
+    /// Fill [`crate::ExecuteOptions::rows`] `None` with this pool's
+    /// [`PoolBuilder::default_page_size`]. Explicit `Some(n)` is unchanged;
+    /// `Some(0)` still fails in [`crate::ExecuteOptions::resolved_rows`].
+    fn pool_opts(&self, opts: crate::ExecuteOptions) -> crate::ExecuteOptions {
+        if opts.rows.is_none() {
+            crate::ExecuteOptions {
+                rows: Some(self.default_page_size),
+                ..opts
+            }
+        } else {
+            opts
+        }
+    }
+
     /// Execute a SQL statement using the §7.3 three-tier routing scan.
+    ///
+    /// Sends [`PoolBuilder::default_page_size`] as `rows` (default 100).
+    /// Override with [`Pool::execute_opts`].
     ///
     /// Routing order (spec §7.3):
     /// 1. **Try idle**: a non-blocking `try_get` returns immediately if a pooled `Job` is idle
@@ -193,7 +212,8 @@ impl Pool {
                 "tier" => "try_idle",
             )
             .increment(1);
-            return Job::execute(&arc, sql).await;
+            return Job::execute_opts(&arc, sql, self.pool_opts(crate::ExecuteOptions::default()))
+                .await;
         }
 
         // §7.3 step 2: scan up to min(status().size, 8) checked-out jobs
@@ -211,7 +231,8 @@ impl Pool {
                 "tier" => "least_busy_scan",
             )
             .increment(1);
-            return Job::execute(&arc, sql).await;
+            return Job::execute_opts(&arc, sql, self.pool_opts(crate::ExecuteOptions::default()))
+                .await;
         }
 
         // §7.3 step 3: every candidate is at or above SATURATION_THRESHOLD
@@ -227,7 +248,7 @@ impl Pool {
         )
         .increment(1);
         let obj = self.get_or_timeout().await?;
-        Job::execute(&obj, sql).await
+        Job::execute_opts(&obj, sql, self.pool_opts(crate::ExecuteOptions::default())).await
     }
 
     /// Execute a parameterized SQL statement using the §7.3 three-tier
@@ -328,7 +349,13 @@ impl Pool {
                 "tier" => "try_idle",
             )
             .increment(1);
-            return Job::execute_with(&arc, sql, params).await;
+            return Job::execute_with_opts(
+                &arc,
+                sql,
+                params,
+                self.pool_opts(crate::ExecuteOptions::default()),
+            )
+            .await;
         }
 
         // §7.3 step 2: least-busy scan filtered by SATURATION_THRESHOLD
@@ -342,7 +369,13 @@ impl Pool {
                 "tier" => "least_busy_scan",
             )
             .increment(1);
-            return Job::execute_with(&arc, sql, params).await;
+            return Job::execute_with_opts(
+                &arc,
+                sql,
+                params,
+                self.pool_opts(crate::ExecuteOptions::default()),
+            )
+            .await;
         }
 
         // §7.3 step 3: fall back to fair queueing.
@@ -355,12 +388,20 @@ impl Pool {
         )
         .increment(1);
         let obj = self.get_or_timeout().await?;
-        Job::execute_with(&obj, sql, params).await
+        Job::execute_with_opts(
+            &obj,
+            sql,
+            params,
+            self.pool_opts(crate::ExecuteOptions::default()),
+        )
+        .await
     }
 
     /// Execute a SQL statement with explicit [`crate::ExecuteOptions`].
     ///
-    /// Routes identically to [`Pool::execute`].
+    /// Routes identically to [`Pool::execute`]. [`crate::ExecuteOptions::rows`]
+    /// `None` uses [`PoolBuilder::default_page_size`] instead of the Job
+    /// hardcoded 100.
     ///
     /// # Errors
     ///
@@ -392,7 +433,7 @@ impl Pool {
                 "tier" => "try_idle",
             )
             .increment(1);
-            return Job::execute_opts(&arc, sql, opts).await;
+            return Job::execute_opts(&arc, sql, self.pool_opts(opts)).await;
         }
 
         if let Some(arc) = self.pick_unsaturated() {
@@ -404,7 +445,7 @@ impl Pool {
                 "tier" => "least_busy_scan",
             )
             .increment(1);
-            return Job::execute_opts(&arc, sql, opts).await;
+            return Job::execute_opts(&arc, sql, self.pool_opts(opts)).await;
         }
 
         #[cfg(feature = "tracing")]
@@ -416,7 +457,7 @@ impl Pool {
         )
         .increment(1);
         let obj = self.get_or_timeout().await?;
-        Job::execute_opts(&obj, sql, opts).await
+        Job::execute_opts(&obj, sql, self.pool_opts(opts)).await
     }
 
     /// Parameterized variant of [`Pool::execute_opts`].
@@ -481,7 +522,7 @@ impl Pool {
                 "tier" => "try_idle",
             )
             .increment(1);
-            return Job::execute_with_opts(&arc, sql, params, opts).await;
+            return Job::execute_with_opts(&arc, sql, params, self.pool_opts(opts)).await;
         }
 
         if let Some(arc) = self.pick_unsaturated() {
@@ -493,7 +534,7 @@ impl Pool {
                 "tier" => "least_busy_scan",
             )
             .increment(1);
-            return Job::execute_with_opts(&arc, sql, params, opts).await;
+            return Job::execute_with_opts(&arc, sql, params, self.pool_opts(opts)).await;
         }
 
         #[cfg(feature = "tracing")]
@@ -505,7 +546,7 @@ impl Pool {
         )
         .increment(1);
         let obj = self.get_or_timeout().await?;
-        Job::execute_with_opts(&obj, sql, params, opts).await
+        Job::execute_with_opts(&obj, sql, params, self.pool_opts(opts)).await
     }
 
     /// Reserve a single connection. The returned [`crate::Reserved`] holds the

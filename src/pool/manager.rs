@@ -64,9 +64,9 @@ impl Manager for JobManager {
 
     async fn recycle(&self, job: &mut Arc<Job>, _: &Metrics) -> RecycleResult<Error> {
         use deadpool::managed::RecycleError;
-        // RecyclingMethod::Verified — round-trip a ping. IBM i firewalls
-        // silently kill idle TCP sessions; without this check, the next caller
-        // discovers the dead connection mid-execute. Spec §7.1.
+        // Always ping. IBM i firewalls silently kill idle TCP sessions;
+        // without this check, the next caller discovers the dead connection
+        // mid-execute. Spec §7.1. There is no skip-ping recycle path.
         match job.ping().await {
             Ok(_) => {
                 #[cfg(feature = "metrics")]

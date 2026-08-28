@@ -1,6 +1,9 @@
 //! [`PoolBuilder`] (spec §7.2). Fluent configuration with sibling-SDK-aligned
 //! field names — `max_size`, `starting_size`, `acquire_timeout`,
-//! `idle_timeout`, `recycle`, `default_page_size`, `parameter_logging`.
+//! `idle_timeout`, `default_page_size`, `parameter_logging`.
+//!
+//! Recycle on deadpool checkout always pings (`Job::ping`). There is no
+//! skip-ping Fast path: IBM i firewalls silently kill idle TCP.
 //!
 //! `PoolBuilder::build` (added in Task 10 / PRO-440) consumes the builder
 //! and returns a `Pool`.
@@ -9,17 +12,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::DaemonServer;
-
-/// Strategy for verifying a pooled connection on checkout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RecyclingMethod {
-    /// Round-trip a `ping` before handing the connection out.
-    /// Default — IBM i firewalls silently kill idle TCP sessions.
-    #[default]
-    Verified,
-    /// Trust the pool — return without checking. Fast but risky.
-    Fast,
-}
 
 /// How much parameter context to surface in `tracing` spans.
 ///
@@ -54,7 +46,6 @@ pub struct PoolBuilder {
     pub(crate) starting_size: usize,
     pub(crate) acquire_timeout: Option<Duration>,
     pub(crate) idle_timeout: Option<Duration>,
-    pub(crate) recycle: RecyclingMethod,
     pub(crate) default_page_size: u32,
     pub(crate) parameter_logging: ParameterLogging,
 }
@@ -67,7 +58,6 @@ impl PoolBuilder {
             starting_size: 0,
             acquire_timeout: Some(Duration::from_secs(5)),
             idle_timeout: Some(Duration::from_secs(300)),
-            recycle: RecyclingMethod::Verified,
             default_page_size: 100,
             parameter_logging: ParameterLogging::None,
         }
@@ -109,24 +99,21 @@ impl PoolBuilder {
     ///
     /// **Note on `last_used()` semantics.** deadpool's `Metrics::last_used()`
     /// returns "time since last successful recycle on acquire" (or creation
-    /// if never recycled). Each checkout updates it via `try_recycle`, so for
-    /// the [`crate::pool::RecyclingMethod::Verified`] default this matches
-    /// "time since last use" closely. With
-    /// [`crate::pool::RecyclingMethod::Fast`] (recycle skipped) the timestamp
-    /// only refreshes on creation; idle reaping still works but reflects
-    /// connection age more than activity.
+    /// if never recycled). Each checkout runs `Job::ping`, so the timestamp
+    /// matches "time since last use" closely for `acquire` / fair-queue
+    /// checkout. The registry idle fast path on [`crate::Pool::execute`]
+    /// does not recycle; idle reaping still uses the last checkout ping.
     pub fn idle_timeout(mut self, d: Option<Duration>) -> Self {
         self.idle_timeout = d;
         self
     }
 
-    /// Recycling strategy on checkout. Default [`RecyclingMethod::Verified`].
-    pub fn recycle(mut self, m: RecyclingMethod) -> Self {
-        self.recycle = m;
-        self
-    }
-
-    /// `sqlmore` page size for paged result sets. Default 100.
+    /// First-page size when [`crate::ExecuteOptions::rows`] is `None` on
+    /// pool `execute` / `execute_with` / `execute_opts` /
+    /// `execute_with_opts`. Default 100 (mapepire-js). Direct
+    /// [`crate::Job::execute`] stays 100 unless the caller passes
+    /// `execute_opts`. `Some(0)` on opts is still
+    /// [`crate::ProtocolError::ZeroPageSize`] and is not sent.
     pub fn default_page_size(mut self, n: u32) -> Self {
         self.default_page_size = n;
         self
@@ -231,6 +218,7 @@ impl PoolBuilder {
             inner,
             registry,
             acquire_timeout,
+            default_page_size: self.default_page_size,
             parameter_logging: self.parameter_logging,
             _reaper: reaper,
         })
@@ -261,7 +249,6 @@ mod tests {
         assert_eq!(b.starting_size, 0);
         assert_eq!(b.acquire_timeout, Some(Duration::from_secs(5)));
         assert_eq!(b.idle_timeout, Some(Duration::from_secs(300)));
-        assert_eq!(b.recycle, RecyclingMethod::Verified);
         assert_eq!(b.default_page_size, 100);
         assert_eq!(b.parameter_logging, ParameterLogging::None);
     }
@@ -273,14 +260,12 @@ mod tests {
             .starting_size(2)
             .acquire_timeout(None)
             .idle_timeout(Some(Duration::from_secs(60)))
-            .recycle(RecyclingMethod::Fast)
             .default_page_size(50)
             .parameter_logging(ParameterLogging::TypesAndCount);
         assert_eq!(b.max_size, 32);
         assert_eq!(b.starting_size, 2);
         assert_eq!(b.acquire_timeout, None);
         assert_eq!(b.idle_timeout, Some(Duration::from_secs(60)));
-        assert_eq!(b.recycle, RecyclingMethod::Fast);
         assert_eq!(b.default_page_size, 50);
         assert_eq!(b.parameter_logging, ParameterLogging::TypesAndCount);
     }

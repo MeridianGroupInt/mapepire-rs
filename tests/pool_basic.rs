@@ -7,8 +7,7 @@
 //! - `pool_create_then_drain` — multiple concurrent `execute()` calls succeed and
 //!   `Pool::status().size` stays bounded by `max_size`.
 //! - `pool_recycle_pings_on_checkout` — the second checkout observes a `ping` request, verifying
-//!   deadpool's `RecyclingMethod::Verified` path runs `Job::ping()` before handing the connection
-//!   back.
+//!   `JobManager::recycle` always runs `Job::ping()` before handing the connection back.
 //! - `pool_acquire_timeout_returns_pool_exhausted` — when the pool is saturated, `Pool::execute()`
 //!   surfaces [`mapepire::Error::PoolExhausted`] with the configured `acquire_timeout` carried in
 //!   the variant.

@@ -13,7 +13,7 @@ pub(crate) mod routing;
 // the re-export below; the inner module name is an implementation detail.
 pub(crate) mod runtime;
 
-pub use builder::{ParameterLogging, PoolBuilder, RecyclingMethod};
+pub use builder::{ParameterLogging, PoolBuilder};
 // `pub` (instead of `pub(crate)`) so integration tests in
 // `tests/manager_smoke.rs` can construct `JobManager` directly. The
 // `#[doc(hidden)]` attribute keeps the type out of the rendered rustdoc API

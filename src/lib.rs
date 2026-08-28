@@ -90,7 +90,7 @@ pub use crate::executor::Executor;
 pub use crate::from_row::FromRow;
 pub use crate::job::{ClOutcome, Job, TraceDest, TraceLevel};
 pub use crate::password::Password;
-pub use crate::pool::{ParameterLogging, Pool, PoolBuilder, PoolStatus, RecyclingMethod, Reserved};
+pub use crate::pool::{ParameterLogging, Pool, PoolBuilder, PoolStatus, Reserved};
 pub use crate::protocol::{
     ClMessage, Column, ErrorResponse, IdAllocator, JobLogEntry, ParameterDetail, ParameterResult,
     QueryMetaData, QueryResult, Request, RequestId, Response,
