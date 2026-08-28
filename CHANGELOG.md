@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.1] — 2026-08-28
+
+API freeze candidate versus [crates.io](https://crates.io/crates/mapepire)
+**0.7.2**. Breaking on purpose so 1.0.0 can stay SemVer-stable. **Not**
+the 1.0.0 crates.io cut — do not `cargo publish` from this tag. PRO-614
+is the later tag/publish of 1.0.0. IBM i CI is still out of scope.
+
+### Breaking
+
+- **`TlsConfig::Insecure` / `TlsConfigSpec::Insecure` require
+  `insecure-tls` at compile time** (OSS-14). 0.7.2 always declared the
+  variant and failed at connect (`Error::Internal`). Exhaustive matches
+  without the feature no longer see `Insecure`. First-use stderr warning
+  remains when the feature is on. CN-only IBM i certs stay
+  `TlsConfig::Ca`.
+- **`RecyclingMethod` and `PoolBuilder::recycle` are gone** (OSS-15).
+  Recycle **always pings**. `Fast` was stored on the builder and ignored.
+- **`Query::execute*` no longer takes `&IdAllocator`** (OSS-16). The
+  originating job's allocator is stored at `Job::prepare`.
+  `Job::ids()` is no longer public.
+- **`PoolStatus` is this crate's `Copy` struct** `{ size, available,
+  waiting }` (OSS-18). It is no longer `pub use deadpool::Status`.
+- **Module paths collapsed** (OSS-18). Use `mapepire::Job`,
+  `mapepire::Request`, `mapepire::protocol::Request`.
+  `mapepire::job::Job`, `mapepire::protocol::request::Request`, and
+  similar nested paths are gone. `JobManager` is crate-private
+  (`Pool::builder` only).
+- **`TransportError` / `ProtocolError` / `DecodeError` / `BuilderError` /
+  `SpecError` are `#[non_exhaustive]`** (OSS-17). `Error` already was.
+  Downstream exhaustive matches need a wildcard.
+
+### Changed
+
+- **`PoolBuilder::default_page_size` is honored** (OSS-15). When
+  `ExecuteOptions.rows` is `None`, pool `execute` / `execute_with` /
+  `execute_opts` / `execute_with_opts` send the builder value (default
+  100). `Some(0)` is still `ProtocolError::ZeroPageSize`. Direct
+  `Job::execute` stays 100 unless `execute_opts`.
+- **`Executor` is documented as the single-statement surface** (`execute`
+  / `execute_with` / `execute_opts` / `execute_with_opts`). `execute_sets`
+  stays inherent on `Job` / `Query` (not on the trait).
+
+### Security
+
+- `.cargo/audit.toml` `ignore = []`. Do not re-ignore
+  RUSTSEC-2026-0009 (`time`); MSRV 1.88 resolves a patched release.
+- Floor `metrics = "0.24.6"` (optional), `metrics-util = "0.20.4"`
+  (dev), `rcgen = "0.14.9"` (dev) so yanked `metrics` 0.24.5 and
+  vulnerable `time` 0.3.45 cannot re-lock. `yanked = "deny"`. No
+  `deny.toml` ignore, no `[patch]`.
+
 ## [0.7.2] — 2026-08-28
 
 Live leftovers after 0.7.1 paging: `gettracedata` and `dove` untagged
@@ -771,7 +822,8 @@ harness used to validate them.
 - README badges (CI, Audit, deps.rs, MSRV from Cargo.toml, License).
 - PR template, issue templates, CODEOWNERS.
 
-[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v1.0.0-rc.1...HEAD
+[1.0.0-rc.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.2...v1.0.0-rc.1
 [0.7.2]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.1...v0.7.0
