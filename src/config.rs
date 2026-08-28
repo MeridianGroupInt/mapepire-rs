@@ -359,6 +359,7 @@ impl DaemonServerBuilder {
 }
 
 /// Errors returned by [`DaemonServerBuilder::build`].
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum BuilderError {
     /// A required field was not set before calling `build()`.
@@ -649,6 +650,7 @@ impl DaemonServerSpec {
 /// Errors returned by [`DaemonServerSpec::try_into_server`].
 #[cfg(feature = "serde-config")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde-config")))]
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum SpecError {
     /// The base64-encoded CA bytes failed to decode.
