@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-08-28
+
+Live-daemon leftover after 0.6.1: CL commands.
+
+### Breaking
+
+- **`Job::cl` returns `ClOutcome`** instead of the first `ClMessage`.
+  Failed CL is `Ok` with `success: false` and the full job log; it is
+  no longer `Err(Error::Server)` that dropped `data`.
+
+### Fixed
+
+- **Untagged `success: false` with `data` / `has_results` decodes as
+  `QueryResult`.** Live `type: cl` replies are QueryResult-shaped job-log
+  rows (`MESSAGE_ID`, `SEVERITY`, …). Bare `success: false` without those
+  keys remains `Error`.
+- **`QueryResult` keeps `error` / `sqlcode` / `sqlstate`** (`sql_rc` /
+  `sql_state` aliases) so CPF0006 frames (`sql_rc=-443`,
+  `sql_state=38501`) are not stripped.
+
+### Added
+
+- `ClOutcome` and `JobLogEntry` (protocol column names; `SEVERITY`
+  accepts a JSON number or string).
+
 ## [0.6.1] — 2026-08-28
 
 Live-daemon leftover after 0.6.0: parameterized SQL, prepare, and ping.
@@ -638,7 +663,8 @@ harness used to validate them.
 - README badges (CI, Audit, deps.rs, MSRV from Cargo.toml, License).
 - PR template, issue templates, CODEOWNERS.
 
-[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.0...v0.5.1
