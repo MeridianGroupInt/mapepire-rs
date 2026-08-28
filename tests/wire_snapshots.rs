@@ -356,6 +356,29 @@ fn snapshot_decode_live_query_result() {
 }
 
 #[test]
+fn snapshot_decode_live_pong() {
+    let json = serde_json::json!({
+        "id": "p1",
+        "success": true
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_prepare() {
+    let json = serde_json::json!({
+        "id": "pr1",
+        "success": true,
+        "cont_id": "stmt-7",
+        "execution_time": 1.5,
+        "is_done": true
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
 fn snapshot_decode_live_error() {
     let json = serde_json::json!({
         "id": "x",
