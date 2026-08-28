@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-08-28
+
+Live-daemon leftover after 0.6.0: parameterized SQL, prepare, and ping.
+
+### Fixed
+
+- **`Job::execute_with` sends `prepare_sql_execute`.** Live daemons ignore
+  `?` on `type=sql` (SQL0313). Unbound `Job::execute` is still `type=sql`.
+- **Untagged `prepare_sql` replies decode as `PreparedStatement`.** Those
+  frames carry `cont_id` (and often `is_done`) without `has_results`.
+- **Untagged `{id, success}` decodes as `Pong`.** `getdbjob` `{id, success,
+  job}` remaps from `Connected` using the outstanding request kind.
+- **One unrecognized JSON object fails that request only.** Invalid JSON
+  / I/O / peer close still take the dispatcher down.
+
 ## [0.6.0] — 2026-08-27
 
 Wire-protocol and TLS handshake now match a live Mapepire daemon
@@ -623,7 +638,8 @@ harness used to validate them.
 - README badges (CI, Audit, deps.rs, MSRV from Cargo.toml, License).
 - PR template, issue templates, CODEOWNERS.
 
-[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.4.1...v0.5.0
