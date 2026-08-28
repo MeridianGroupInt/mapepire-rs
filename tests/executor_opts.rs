@@ -60,7 +60,7 @@ fn opts_ten() -> ExecuteOptions {
 
 /// Drive `execute_opts` through the trait (not `Job::execute_opts`).
 #[cfg(feature = "rustls-tls")]
-async fn trait_execute_opts<E: Executor>(exe: &E, sql: &str) -> mapepire::query::Rows {
+async fn trait_execute_opts<E: Executor>(exe: &E, sql: &str) -> mapepire::Rows {
     exe.execute_opts(sql, opts_ten())
         .await
         .expect("Executor::execute_opts")
@@ -72,7 +72,7 @@ async fn dyn_execute_with_opts(
     exe: &dyn Executor,
     sql: &str,
     params: &[serde_json::Value],
-) -> mapepire::query::Rows {
+) -> mapepire::Rows {
     exe.execute_with_opts(sql, params, opts_ten())
         .await
         .expect("dyn Executor::execute_with_opts")
@@ -154,4 +154,62 @@ async fn test_pool_and_reserved_execute_opts() {
     );
     drop(trait_execute_opts(&conn, sql).await);
     drop(dyn_execute_with_opts(&conn, bound, &params).await);
+    drop(Box::pin(conn.begin()).await.expect("Reserved::begin"));
+    drop(Box::pin(conn.commit()).await.expect("Reserved::commit"));
+    drop(Box::pin(conn.rollback()).await.expect("Reserved::rollback"));
+}
+
+/// Pool `default_page_size` is the wire `rows` when opts omit it;
+/// `execute_opts(rows: Some(10))` still sends 10.
+#[cfg(feature = "rustls-tls")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_pool_default_page_size_on_execute() {
+    use common::spawn_mock_pool_with_recorder;
+    use mapepire::protocol::Request;
+    use mapepire::{ExecuteOptions, Pool};
+
+    let (server, recorder) = spawn_mock_pool_with_recorder(vec![page(), page()]);
+    let pool = Box::pin(
+        Pool::builder(server)
+            .max_size(1)
+            .default_page_size(50)
+            .build(),
+    )
+    .await
+    .expect("pool builds");
+
+    drop(
+        Box::pin(pool.execute("SELECT 1 FROM SYSIBM.SYSDUMMY1"))
+            .await
+            .expect("pool.execute"),
+    );
+    drop(
+        Box::pin(pool.execute_opts(
+            "SELECT 1 FROM SYSIBM.SYSDUMMY1",
+            ExecuteOptions {
+                rows: Some(10),
+                terse: false,
+            },
+        ))
+        .await
+        .expect("pool.execute_opts"),
+    );
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    let sql: Vec<&Request> = observed
+        .iter()
+        .filter(|r| matches!(r, Request::Sql { .. }))
+        .collect();
+    assert_eq!(sql.len(), 2, "full trace: {observed:?}");
+    match sql[0] {
+        Request::Sql { rows, .. } => assert_eq!(*rows, Some(50), "builder default_page_size"),
+        other => panic!("expected Sql, got {other:?}"),
+    }
+    match sql[1] {
+        Request::Sql { rows, .. } => assert_eq!(*rows, Some(10), "explicit execute_opts rows"),
+        other => panic!("expected Sql, got {other:?}"),
+    }
+
+    let st = pool.status();
+    assert_eq!(st.waiting, 0);
 }

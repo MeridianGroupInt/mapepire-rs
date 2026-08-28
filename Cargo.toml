@@ -1,6 +1,6 @@
 [package]
 name = "mapepire"
-version = "0.7.2"
+version = "1.0.0-rc.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -59,7 +59,7 @@ async-trait = "0.1"
 deadpool = { version = "0.13", default-features = false, features = ["managed", "rt_tokio_1"] }
 bytes = "1.11.1"
 tracing = { version = "0.1", optional = true }
-metrics = { version = "0.24", optional = true }
+metrics = { version = "0.24.6", optional = true }
 # Optional TLS stacks — pulled by their respective feature flags above.
 # `ring` is on the *library* rustls dep so `ClientConfig::builder()` has a
 # process-level CryptoProvider. `std`+`tls12` alone panics at handshake;
@@ -97,7 +97,7 @@ tracing-subscriber = { version = "0.3.20", default-features = false, features = 
 # here (the harness only needs DER: `cert.der()` + `signing_key.serialize_der()`)
 # and which pulls `pem -> base64 0.22`, colliding with our own `base64 0.23`
 # under cargo-deny's `multiple-versions = "deny"`.
-rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+rcgen = { version = "0.14.9", default-features = false, features = ["crypto", "ring"] }
 tokio-rustls = { version = "0.26.4", default-features = false }
 # Library rustls now enables `ring` too. This matching dev-dep is kept so
 # tests still pin the provider if the lib feature set drifts. Redundant
@@ -109,7 +109,7 @@ rustls = { version = "0.23.43", default-features = false, features = ["ring", "s
 # dev-dep tree minimal — we only need the `debugging` shim. Version
 # 0.20 is API-aligned with the `metrics 0.24` dep so cargo-deny's
 # multiple-versions = "deny" stays clean.
-metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
+metrics-util = { version = "0.20.4", default-features = false, features = ["debugging"] }
 
 # Examples shipping under examples/ — declared explicitly when they
 # depend on a non-default Cargo feature so `cargo build --examples`

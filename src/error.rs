@@ -1,8 +1,9 @@
 //! Crate-wide error types.
 //!
 //! All fallible operations in the crate return [`Result<T>`], which is
-//! `std::result::Result<T, Error>`. The [`Error`] enum is `#[non_exhaustive]`
-//! so adding a new variant is a minor-version bump.
+//! `std::result::Result<T, Error>`. [`Error`] and the wrapper enums
+//! ([`TransportError`], [`ProtocolError`], [`DecodeError`]) are
+//! `#[non_exhaustive]` so adding a variant is a minor-version bump.
 
 use std::time::Duration;
 
@@ -58,6 +59,7 @@ pub enum Error {
 }
 
 /// Network / TLS / WebSocket transport failures.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
     /// The underlying socket reported a failure.
@@ -70,6 +72,7 @@ pub enum TransportError {
 }
 
 /// Errors that arise while parsing the Mapepire wire protocol.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
     /// The bytes were not valid JSON.
@@ -108,6 +111,7 @@ pub enum ProtocolError {
 }
 
 /// Failures while decoding a row into a Rust type.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
     /// `serde` rejected the column value.

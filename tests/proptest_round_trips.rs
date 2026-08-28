@@ -2,8 +2,7 @@
 //! for arbitrary request and response payloads. Catches edge cases manual
 //! fixtures miss (escaped strings, numeric extremes, unicode, deep nesting).
 
-use mapepire::protocol::request::Request;
-use mapepire::protocol::response::{QueryMetaData, QueryResult, Response};
+use mapepire::protocol::{QueryMetaData, QueryResult, Request, Response};
 use proptest::prelude::*;
 
 /// Generator for caller-supplied correlation ids — restrict to a charset

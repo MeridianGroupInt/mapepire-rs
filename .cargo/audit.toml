@@ -7,4 +7,4 @@
 # directly and does not read deny.toml.
 
 [advisories]
-ignore = ["RUSTSEC-2026-0009"]
+ignore = []

@@ -156,7 +156,7 @@ pub struct QueryResult {
     ///
     /// Live `sql` / `prepare_sql_execute` replies omit this field.
     /// PROTOCOL.md and mapepire-js use the opening request [`Self::id`] as
-    /// the cursor (`sqlmore.cont_id`); [`crate::query::Rows`] does the
+    /// the cursor (`sqlmore.cont_id`); [`crate::Rows`] does the
     /// same and does not require this field.
     #[serde(default)]
     pub cont_id: Option<String>,

@@ -7,10 +7,10 @@
 //! Variants are added in subsequent protocol tasks; this file lays the
 //! discriminated-union scaffolding (`Request`, `Response`, `IdAllocator`).
 
-pub mod codec;
+pub(crate) mod codec;
 mod decode;
-pub mod request;
-pub mod response;
+pub(crate) mod request;
+pub(crate) mod response;
 
 pub use crate::protocol::codec::{IdAllocator, RequestId};
 pub use crate::protocol::request::Request;

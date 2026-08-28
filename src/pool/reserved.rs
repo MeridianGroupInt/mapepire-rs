@@ -177,7 +177,7 @@ impl Reserved {
     /// `parameter_logging` policy — it dispatches via [`crate::Job::execute`]
     /// directly. The asymmetry vs. [`crate::Pool::execute_with`] is
     /// documented in Task 9 / PRO-587.
-    pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
+    pub async fn execute(&self, sql: &str) -> crate::Result<crate::Rows> {
         let job: &Job = &self.obj;
         let result = Job::execute(job, sql).await;
         if result.is_ok() {
@@ -208,7 +208,7 @@ impl Reserved {
         &self,
         sql: &str,
         params: &[serde_json::Value],
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         let job: &Job = &self.obj;
         let result = Job::execute_with(job, sql, params).await;
         if result.is_ok() {
@@ -228,7 +228,7 @@ impl Reserved {
         &self,
         sql: &str,
         opts: crate::ExecuteOptions,
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         let job: &Job = &self.obj;
         let result = Job::execute_opts(job, sql, opts).await;
         if result.is_ok() {
@@ -247,7 +247,7 @@ impl Reserved {
         sql: &str,
         params: &[serde_json::Value],
         opts: crate::ExecuteOptions,
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         let job: &Job = &self.obj;
         let result = Job::execute_with_opts(job, sql, params, opts).await;
         if result.is_ok() {
@@ -265,7 +265,7 @@ impl Reserved {
     /// # Errors
     ///
     /// As [`crate::Job::execute`].
-    pub async fn begin(&self) -> crate::Result<crate::query::Rows> {
+    pub async fn begin(&self) -> crate::Result<crate::Rows> {
         self.execute("BEGIN").await
     }
 
@@ -278,7 +278,7 @@ impl Reserved {
     /// # Errors
     ///
     /// As [`crate::Job::execute`].
-    pub async fn commit(&self) -> crate::Result<crate::query::Rows> {
+    pub async fn commit(&self) -> crate::Result<crate::Rows> {
         self.execute("COMMIT").await
     }
 
@@ -291,7 +291,7 @@ impl Reserved {
     /// # Errors
     ///
     /// As [`crate::Job::execute`].
-    pub async fn rollback(&self) -> crate::Result<crate::query::Rows> {
+    pub async fn rollback(&self) -> crate::Result<crate::Rows> {
         self.execute("ROLLBACK").await
     }
 

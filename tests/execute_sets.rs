@@ -140,7 +140,7 @@ async fn test_query_execute_sets_one_shot() {
         .expect("prepare");
     let sets = vec![vec![json!(1), json!("a")], vec![json!(2), json!("b")]];
     let rows = query
-        .execute_sets(job.ids(), &sets, ExecuteOptions::default())
+        .execute_sets(&sets, ExecuteOptions::default())
         .await
         .expect("query execute_sets");
     assert_eq!(rows.update_count(), Some(2));
@@ -150,5 +150,25 @@ async fn test_query_execute_sets_one_shot() {
     assert!(
         json.contains(r#""parameters":[[1,"a"],[2,"b"]]"#),
         "query execute_sets must send one nested batch, got {json}"
+    );
+}
+
+/// Live prepare ack has no `cont_id`; `execute_sets` then gets a `Pong`
+/// from [`common::MockBehavior::AcceptAndConnect`] (unexpected variant).
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_query_execute_sets_unexpected_is_protocol() {
+    let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;
+    let query = job
+        .prepare("INSERT INTO T VALUES(?)")
+        .await
+        .expect("prepare");
+    let err = query
+        .execute_sets(&[vec![json!(1)]], ExecuteOptions::default())
+        .await
+        .expect_err("pong is not QueryResult");
+    assert!(
+        matches!(err, Error::Protocol(_)),
+        "expected Protocol, got {err:?}"
     );
 }

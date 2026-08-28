@@ -1,9 +1,9 @@
 //! Phase 6 integration test: prepared statement happy path.
 //!
 //! Two tests against `MockBehavior::PrepareAndExecute`:
-//! - `Job::prepare(sql)` returns a `Query` with the mock's `cont_id`; `Query::execute_with(&ids,
-//!   &params)` returns `Rows` with the canned `update_count`.
-//! - `Query::execute_batch(&ids, &[&params...])` returns `Vec<Rows>` with one entry per batch.
+//! - `Job::prepare(sql)` returns a `Query` with the mock's `cont_id`;
+//!   `Query::execute_with(&params)` returns `Rows` with the canned `update_count`.
+//! - `Query::execute_batch(&[&params...])` returns `Vec<Rows>` with one entry per batch.
 //!
 //! Per-item `#[cfg(feature = "rustls-tls")]` gating; mock harness is rustls-only.
 
@@ -42,6 +42,26 @@ fn dml_qr(id: &str, count: i64) -> mapepire::QueryResult {
 }
 
 #[cfg(feature = "rustls-tls")]
+fn id_prefix(id: &str) -> &str {
+    id.split_once('-').map_or(id, |(p, _)| p)
+}
+
+#[cfg(feature = "rustls-tls")]
+fn recorded_sql_ids(observed: &[mapepire::protocol::Request]) -> Vec<String> {
+    use mapepire::protocol::Request;
+    observed
+        .iter()
+        .filter_map(|r| match r {
+            Request::PrepareSql { id, .. }
+            | Request::PrepareSqlExecute { id, .. }
+            | Request::Execute { id, .. }
+            | Request::Sql { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(feature = "rustls-tls")]
 #[tokio::test]
 async fn test_prepare_then_execute() {
     use serde_json::json;
@@ -57,7 +77,7 @@ async fn test_prepare_then_execute() {
         .await
         .expect("prepare");
     let rows = query
-        .execute_with(job.ids(), &[json!(1), json!("a")])
+        .execute_with(&[json!(1), json!("a")])
         .await
         .expect("execute_with");
 
@@ -81,10 +101,7 @@ async fn test_execute_batch() {
         .await
         .expect("prepare");
     let batches: &[&[serde_json::Value]] = &[&[json!(1), json!("a")], &[json!(2), json!("b")]];
-    let results = query
-        .execute_batch(job.ids(), batches)
-        .await
-        .expect("execute_batch");
+    let results = query.execute_batch(batches).await.expect("execute_batch");
 
     assert_eq!(
         results.len(),
@@ -122,13 +139,10 @@ async fn test_query_execute_opts_with_cont_id() {
         .expect("prepare");
 
     let err = query
-        .execute_opts(
-            job.ids(),
-            ExecuteOptions {
-                rows: Some(0),
-                terse: false,
-            },
-        )
+        .execute_opts(ExecuteOptions {
+            rows: Some(0),
+            terse: false,
+        })
         .await
         .expect_err("rows: 0 must not be sent");
     assert!(
@@ -136,24 +150,20 @@ async fn test_query_execute_opts_with_cont_id() {
         "unexpected error: {err}"
     );
 
-    let unbound = query.execute(job.ids()).await.expect("Query::execute");
+    let unbound = query.execute().await.expect("Query::execute");
     assert_eq!(unbound.update_count(), Some(1));
 
     let opts = query
-        .execute_opts(
-            job.ids(),
-            ExecuteOptions {
-                rows: Some(10),
-                terse: false,
-            },
-        )
+        .execute_opts(ExecuteOptions {
+            rows: Some(10),
+            terse: false,
+        })
         .await
         .expect("Query::execute_opts");
     assert_eq!(opts.update_count(), Some(2));
 
     let bound = query
         .execute_with_opts(
-            job.ids(),
             &[json!(1), json!("a")],
             ExecuteOptions {
                 rows: Some(25),
@@ -163,4 +173,70 @@ async fn test_query_execute_opts_with_cont_id() {
         .await
         .expect("Query::execute_with_opts");
     assert_eq!(bound.update_count(), Some(3));
+}
+
+/// A `Query` prepared on job A issues ids from A's allocator, not job B's.
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_query_uses_originating_job_allocator() {
+    use serde_json::json;
+
+    let (job_a, rec_a) =
+        common::connect_to_mock_with_recorder(vec![dml_qr("placeholder", 1)]).await;
+    let (job_b, rec_b) =
+        common::connect_to_mock_with_recorder(vec![dml_qr("placeholder", 1)]).await;
+
+    let query = job_a
+        .prepare("INSERT INTO T VALUES(?,?)")
+        .await
+        .expect("prepare on A");
+    drop(
+        query
+            .execute_with(&[json!(1), json!("a")])
+            .await
+            .expect("execute on Query from A"),
+    );
+    drop(
+        job_b
+            .execute("SELECT 1 FROM SYSIBM.SYSDUMMY1")
+            .await
+            .expect("execute on B"),
+    );
+
+    let a_ids = recorded_sql_ids(&rec_a.lock().expect("rec_a").clone());
+    let b_ids = recorded_sql_ids(&rec_b.lock().expect("rec_b").clone());
+    assert!(a_ids.len() >= 2, "prepare + execute on A, got {a_ids:?}");
+    assert!(!b_ids.is_empty(), "B must send sql, got {b_ids:?}");
+    let a_prefix = id_prefix(&a_ids[0]);
+    for id in &a_ids {
+        assert_eq!(
+            id_prefix(id),
+            a_prefix,
+            "Query from A must use A's allocator, got {a_ids:?}"
+        );
+    }
+    assert_ne!(
+        id_prefix(&b_ids[0]),
+        a_prefix,
+        "job B must have a distinct allocator prefix"
+    );
+}
+
+/// Prepare on `AcceptAndConnect` yields no cursor; `Query::execute` then
+/// sees a Pong and surfaces Protocol (covers `execute_inner` catch-all).
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_query_execute_unexpected_is_protocol() {
+    use mapepire::Error;
+
+    let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;
+    let query = job
+        .prepare("SELECT 1 FROM SYSIBM.SYSDUMMY1")
+        .await
+        .expect("prepare");
+    let err = query.execute().await.expect_err("pong is not QueryResult");
+    assert!(
+        matches!(err, Error::Protocol(_)),
+        "expected Protocol, got {err:?}"
+    );
 }

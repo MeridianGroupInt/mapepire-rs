@@ -12,11 +12,11 @@ Async Rust client SDK for [Mapepire](https://mapepire-ibmi.github.io/) —
 a cloud-friendly access layer for **Db2 for IBM i** that exposes the
 database over TLS-secured `WebSockets`.
 
-> **Status:** v0.7 speaks a live Mapepire daemon (mapepire-js 0.6.x
-> handshake, CL, bind, terse, CALL/OUT, trace dest, sqlmore paging,
-> gettracedata, dove, and one-shot parameter sets). On
-> [crates.io](https://crates.io/crates/mapepire). Real-IBM-i CI lands in
-> v1.0.
+> **Status:** **1.0.0-rc.1** freezes the public API versus crates.io
+> 0.7.2 (compile-gated `TlsConfig::Insecure`, pool recycle always pings,
+> `Query` owns its id allocator, owned `PoolStatus`, crate-root paths).
+> Not 1.0.0 final — do not `cargo publish` from this tag. IBM i CI is
+> still later.
 
 Sibling SDKs exist for [Node.js](https://github.com/Mapepire-IBMi/mapepire-js),
 [Python](https://github.com/Mapepire-IBMi/mapepire-python),
@@ -181,7 +181,7 @@ Enable `tracing` and/or `metrics` features for production observability:
 
 ```toml
 [dependencies]
-mapepire = { version = "0.7", features = ["rustls-tls", "tracing", "metrics"] }
+mapepire = { version = "1.0.0-rc.1", features = ["rustls-tls", "tracing", "metrics"] }
 tracing-subscriber = "0.3"
 metrics-exporter-prometheus = "0.15"
 ```
@@ -222,7 +222,8 @@ and is **SemVer-stable** — names won't be renamed without a major bump.
   array rows, CALL/OUT `output_parms`, `FILE`/`IN_MEM` trace dest,
   sqlmore paging, gettracedata, dove `vedata`, one-shot `execute_sets`
   (done).
-- **v1.0** — real-IBM-i CI.
+- **v1.0.0-rc.1** — public API freeze versus 0.7.2 (this crate).
+- **v1.0.0** — crates.io publish (PRO-614); real-IBM-i CI still later.
 
 ## Documentation
 

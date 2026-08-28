@@ -36,11 +36,17 @@ pub enum TlsConfig {
     /// and OpenSSL's CN fallback applies.
     Ca(Vec<u8>),
 
-    /// Skip server-cert verification entirely. Available only when the crate
-    /// is built with the `insecure-tls` feature (the runtime gate lands with
-    /// the transport layer in v0.2).
+    /// Skip server-cert verification entirely.
     ///
-    /// **Never** use this in production.
+    /// Present only when the crate is built with the `insecure-tls` feature.
+    /// Without that feature the variant does not exist (match exhaustiveness
+    /// and rust-analyzer will not show it). First use still emits a runtime
+    /// warning on stderr.
+    ///
+    /// **Never** use this in production. CN-only IBM i certs belong on
+    /// [`TlsConfig::Ca`] (leaf pin), not this variant.
+    #[cfg(feature = "insecure-tls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "insecure-tls")))]
     Insecure,
 }
 
@@ -133,8 +139,8 @@ impl DaemonServer {
     ///
     /// # Errors
     ///
-    /// - [`crate::error::Error::Transport`] for TCP / TLS failures.
-    /// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+    /// - [`crate::Error::Transport`] for TCP / TLS failures.
+    /// - [`crate::Error::Internal`] if the server presents no certificate or an empty chain.
     ///
     /// # Example
     ///
@@ -171,8 +177,8 @@ impl DaemonServer {
     ///
     /// # Errors
     ///
-    /// - [`crate::error::Error::Transport`] for TCP / TLS failures.
-    /// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+    /// - [`crate::Error::Transport`] for TCP / TLS failures.
+    /// - [`crate::Error::Internal`] if the server presents no certificate or an empty chain.
     ///
     /// # Example
     ///
@@ -353,6 +359,7 @@ impl DaemonServerBuilder {
 }
 
 /// Errors returned by [`DaemonServerBuilder::build`].
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum BuilderError {
     /// A required field was not set before calling `build()`.
@@ -387,8 +394,24 @@ mod tests {
         let cfg = TlsConfig::Ca(bytes.clone());
         match cfg {
             TlsConfig::Ca(b) => assert_eq!(b, bytes),
-            _ => panic!("expected Ca variant"),
+            TlsConfig::Verified => panic!("expected Ca variant"),
+            #[cfg(feature = "insecure-tls")]
+            TlsConfig::Insecure => panic!("expected Ca variant"),
         }
+    }
+
+    /// Exhaustive match without `Insecure` — compiles only when the feature
+    /// is off, which is the compile-time gate AGENTS.md §6 requires.
+    #[cfg(not(feature = "insecure-tls"))]
+    #[test]
+    fn insecure_variant_absent_without_feature() {
+        fn assert_no_insecure(cfg: TlsConfig) {
+            match cfg {
+                TlsConfig::Verified | TlsConfig::Ca(_) => {}
+            }
+        }
+        assert_no_insecure(TlsConfig::Verified);
+        assert_no_insecure(TlsConfig::Ca(vec![0x00]));
     }
 
     #[test]
@@ -517,10 +540,23 @@ mod tests {
             .user("u")
             .password("p".to_string())
             .port(9999)
-            .tls(TlsConfig::Insecure)
+            .tls(TlsConfig::Ca(vec![0xAA]))
             .build()
             .expect("DaemonServer builds with all required fields set");
         assert_eq!(s.port, 9999);
+        assert!(matches!(s.tls, TlsConfig::Ca(_)));
+    }
+
+    #[cfg(feature = "insecure-tls")]
+    #[test]
+    fn builder_tls_insecure_when_feature_on() {
+        let s = DaemonServer::builder()
+            .host("h")
+            .user("u")
+            .password(dummy_pass())
+            .tls(TlsConfig::Insecure)
+            .build()
+            .expect("DaemonServer builds with Insecure when feature is on");
         assert!(matches!(s.tls, TlsConfig::Insecure));
     }
 }
@@ -571,7 +607,10 @@ pub enum TlsConfigSpec {
     Verified,
     /// Pin a CA from the given DER bytes (base64-encoded in the config).
     Ca(String),
-    /// Skip verification.
+    /// Skip verification. Present only with the `insecure-tls` feature;
+    /// without it, `"tls": "insecure"` fails to deserialize.
+    #[cfg(feature = "insecure-tls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "insecure-tls")))]
     Insecure,
 }
 
@@ -586,6 +625,7 @@ impl DaemonServerSpec {
         use base64::Engine;
         let tls = match self.tls {
             TlsConfigSpec::Verified => TlsConfig::Verified,
+            #[cfg(feature = "insecure-tls")]
             TlsConfigSpec::Insecure => TlsConfig::Insecure,
             TlsConfigSpec::Ca(b64) => {
                 let bytes = base64::engine::general_purpose::STANDARD
@@ -610,6 +650,7 @@ impl DaemonServerSpec {
 /// Errors returned by [`DaemonServerSpec::try_into_server`].
 #[cfg(feature = "serde-config")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde-config")))]
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum SpecError {
     /// The base64-encoded CA bytes failed to decode.
@@ -707,6 +748,7 @@ mod spec_tests {
         assert!(matches!(err, SpecError::InvalidCaBase64(_)));
     }
 
+    #[cfg(feature = "insecure-tls")]
     #[test]
     fn parses_with_explicit_port_and_insecure_tls() {
         let json = r#"{
@@ -723,5 +765,24 @@ mod spec_tests {
             .expect("DaemonServerSpec converts to DaemonServer");
         assert_eq!(server.port, 9000);
         assert!(matches!(server.tls, TlsConfig::Insecure));
+    }
+
+    /// Without `insecure-tls` the spec variant is gone, so serde rejects
+    /// the `"insecure"` tag instead of constructing a runtime-gated config.
+    #[cfg(not(feature = "insecure-tls"))]
+    #[test]
+    fn insecure_tls_spec_tag_rejected_without_feature() {
+        let json = r#"{
+            "host": "h",
+            "user": "u",
+            "password": "p",
+            "tls": "insecure"
+        }"#;
+        let err = serde_json::from_str::<DaemonServerSpec>(json).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("insecure") || msg.contains("unknown variant"),
+            "expected unknown-variant error, got: {msg}"
+        );
     }
 }

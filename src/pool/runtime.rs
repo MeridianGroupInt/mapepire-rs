@@ -9,13 +9,22 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Snapshot of pool state — re-exported from `deadpool::Status`.
-///
-/// Exposes `size` (current pool size), `available` (idle connections), and
-/// `waiters` (futures blocked on `pool.get()`). Re-exported here so callers
-/// don't need to depend on `deadpool` directly.
-pub use deadpool::Status as PoolStatus;
 use deadpool::managed::Pool as DeadPool;
+
+/// Snapshot of pool occupancy.
+///
+/// Mapped from deadpool's `Status` so a deadpool major is not this crate's
+/// major. Fields match the 0.7 `deadpool::Status` names callers already
+/// used: `size`, `available`, `waiting`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolStatus {
+    /// Connections currently in the pool (idle + checked out).
+    pub size: usize,
+    /// Idle connections available for checkout.
+    pub available: usize,
+    /// Futures blocked on checkout.
+    pub waiting: usize,
+}
 
 use crate::config::DaemonServer;
 use crate::pool::builder::{ParameterLogging, PoolBuilder};
@@ -58,6 +67,8 @@ pub struct Pool {
     // PRO-454 reads from it in `Pool::execute`'s §7.3 routing scan.
     pub(crate) registry: Arc<Registry>,
     pub(crate) acquire_timeout: Option<Duration>,
+    /// First-page size when [`crate::ExecuteOptions::rows`] is `None`.
+    pub(crate) default_page_size: u32,
     /// Per-pool parameter-logging policy for `tracing` span fields.
     /// Read by `Pool::execute_with` to gate `param_types` / `params` emission
     /// (Task 9 / PRO-587). Effective only when the `tracing` feature is
@@ -124,7 +135,24 @@ impl Pool {
         PoolBuilder::new(server.into())
     }
 
+    /// Fill [`crate::ExecuteOptions::rows`] `None` with this pool's
+    /// [`PoolBuilder::default_page_size`]. Explicit `Some(n)` is unchanged;
+    /// `Some(0)` still fails in [`crate::ExecuteOptions::resolved_rows`].
+    fn pool_opts(&self, opts: crate::ExecuteOptions) -> crate::ExecuteOptions {
+        if opts.rows.is_none() {
+            crate::ExecuteOptions {
+                rows: Some(self.default_page_size),
+                ..opts
+            }
+        } else {
+            opts
+        }
+    }
+
     /// Execute a SQL statement using the §7.3 three-tier routing scan.
+    ///
+    /// Sends [`PoolBuilder::default_page_size`] as `rows` (default 100).
+    /// Override with [`Pool::execute_opts`].
     ///
     /// Routing order (spec §7.3):
     /// 1. **Try idle**: a non-blocking `try_get` returns immediately if a pooled `Job` is idle
@@ -168,7 +196,7 @@ impl Pool {
         feature = "tracing",
         tracing::instrument(skip(self), fields(sql = %sql, tier = tracing::field::Empty))
     )]
-    pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
+    pub async fn execute(&self, sql: &str) -> crate::Result<crate::Rows> {
         use crate::Job;
 
         // Pool status gauges — snapshot once per call. Pool size doesn't
@@ -193,7 +221,8 @@ impl Pool {
                 "tier" => "try_idle",
             )
             .increment(1);
-            return Job::execute(&arc, sql).await;
+            return Job::execute_opts(&arc, sql, self.pool_opts(crate::ExecuteOptions::default()))
+                .await;
         }
 
         // §7.3 step 2: scan up to min(status().size, 8) checked-out jobs
@@ -211,7 +240,8 @@ impl Pool {
                 "tier" => "least_busy_scan",
             )
             .increment(1);
-            return Job::execute(&arc, sql).await;
+            return Job::execute_opts(&arc, sql, self.pool_opts(crate::ExecuteOptions::default()))
+                .await;
         }
 
         // §7.3 step 3: every candidate is at or above SATURATION_THRESHOLD
@@ -227,7 +257,7 @@ impl Pool {
         )
         .increment(1);
         let obj = self.get_or_timeout().await?;
-        Job::execute(&obj, sql).await
+        Job::execute_opts(&obj, sql, self.pool_opts(crate::ExecuteOptions::default())).await
     }
 
     /// Execute a parameterized SQL statement using the §7.3 three-tier
@@ -281,7 +311,7 @@ impl Pool {
         &self,
         sql: &str,
         params: &[serde_json::Value],
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         use crate::Job;
 
         // Task 9 / PRO-587: honor the per-pool `ParameterLogging` policy by
@@ -328,7 +358,13 @@ impl Pool {
                 "tier" => "try_idle",
             )
             .increment(1);
-            return Job::execute_with(&arc, sql, params).await;
+            return Job::execute_with_opts(
+                &arc,
+                sql,
+                params,
+                self.pool_opts(crate::ExecuteOptions::default()),
+            )
+            .await;
         }
 
         // §7.3 step 2: least-busy scan filtered by SATURATION_THRESHOLD
@@ -342,7 +378,13 @@ impl Pool {
                 "tier" => "least_busy_scan",
             )
             .increment(1);
-            return Job::execute_with(&arc, sql, params).await;
+            return Job::execute_with_opts(
+                &arc,
+                sql,
+                params,
+                self.pool_opts(crate::ExecuteOptions::default()),
+            )
+            .await;
         }
 
         // §7.3 step 3: fall back to fair queueing.
@@ -355,12 +397,20 @@ impl Pool {
         )
         .increment(1);
         let obj = self.get_or_timeout().await?;
-        Job::execute_with(&obj, sql, params).await
+        Job::execute_with_opts(
+            &obj,
+            sql,
+            params,
+            self.pool_opts(crate::ExecuteOptions::default()),
+        )
+        .await
     }
 
     /// Execute a SQL statement with explicit [`crate::ExecuteOptions`].
     ///
-    /// Routes identically to [`Pool::execute`].
+    /// Routes identically to [`Pool::execute`]. [`crate::ExecuteOptions::rows`]
+    /// `None` uses [`PoolBuilder::default_page_size`] instead of the Job
+    /// hardcoded 100.
     ///
     /// # Errors
     ///
@@ -377,7 +427,7 @@ impl Pool {
         &self,
         sql: &str,
         opts: crate::ExecuteOptions,
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         use crate::Job;
 
         #[cfg(feature = "metrics")]
@@ -392,7 +442,7 @@ impl Pool {
                 "tier" => "try_idle",
             )
             .increment(1);
-            return Job::execute_opts(&arc, sql, opts).await;
+            return Job::execute_opts(&arc, sql, self.pool_opts(opts)).await;
         }
 
         if let Some(arc) = self.pick_unsaturated() {
@@ -404,7 +454,7 @@ impl Pool {
                 "tier" => "least_busy_scan",
             )
             .increment(1);
-            return Job::execute_opts(&arc, sql, opts).await;
+            return Job::execute_opts(&arc, sql, self.pool_opts(opts)).await;
         }
 
         #[cfg(feature = "tracing")]
@@ -416,7 +466,7 @@ impl Pool {
         )
         .increment(1);
         let obj = self.get_or_timeout().await?;
-        Job::execute_opts(&obj, sql, opts).await
+        Job::execute_opts(&obj, sql, self.pool_opts(opts)).await
     }
 
     /// Parameterized variant of [`Pool::execute_opts`].
@@ -444,7 +494,7 @@ impl Pool {
         sql: &str,
         params: &[serde_json::Value],
         opts: crate::ExecuteOptions,
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         use crate::Job;
 
         #[cfg(feature = "tracing")]
@@ -481,7 +531,7 @@ impl Pool {
                 "tier" => "try_idle",
             )
             .increment(1);
-            return Job::execute_with_opts(&arc, sql, params, opts).await;
+            return Job::execute_with_opts(&arc, sql, params, self.pool_opts(opts)).await;
         }
 
         if let Some(arc) = self.pick_unsaturated() {
@@ -493,7 +543,7 @@ impl Pool {
                 "tier" => "least_busy_scan",
             )
             .increment(1);
-            return Job::execute_with_opts(&arc, sql, params, opts).await;
+            return Job::execute_with_opts(&arc, sql, params, self.pool_opts(opts)).await;
         }
 
         #[cfg(feature = "tracing")]
@@ -505,7 +555,7 @@ impl Pool {
         )
         .increment(1);
         let obj = self.get_or_timeout().await?;
-        Job::execute_with_opts(&obj, sql, params, opts).await
+        Job::execute_with_opts(&obj, sql, params, self.pool_opts(opts)).await
     }
 
     /// Reserve a single connection. The returned [`crate::Reserved`] holds the
@@ -542,7 +592,7 @@ impl Pool {
         feature = "tracing",
         tracing::instrument(skip(self), fields(acquired_in_micros = tracing::field::Empty))
     )]
-    pub async fn acquire(&self) -> crate::Result<crate::pool::reserved::Reserved> {
+    pub async fn acquire(&self) -> crate::Result<crate::Reserved> {
         #[cfg(any(feature = "tracing", feature = "metrics"))]
         let start = std::time::Instant::now();
         let obj = self.get_or_timeout().await?;
@@ -593,7 +643,12 @@ impl Pool {
     /// ```
     #[must_use]
     pub fn status(&self) -> PoolStatus {
-        self.inner.status()
+        let s = self.inner.status();
+        PoolStatus {
+            size: s.size,
+            available: s.available,
+            waiting: s.waiting,
+        }
     }
 
     /// Check out an `Object<JobManager>` from the underlying deadpool, mapping
@@ -622,7 +677,7 @@ impl Pool {
 }
 
 /// Emit the three pool-status gauges (`size`, `available`, `waiting`) from a
-/// fresh deadpool [`PoolStatus`] snapshot. Called once per `Pool::execute*`
+/// fresh deadpool status snapshot. Called once per `Pool::execute*`
 /// invocation; downstream samplers see one data point per call (sufficient
 /// granularity for Prometheus-style scrape windows without overwhelming the
 /// recorder hot path).
@@ -632,7 +687,7 @@ impl Pool {
 /// essentially impossible (we'd run out of file descriptors first), so the
 /// allow is sound.
 #[cfg(feature = "metrics")]
-fn emit_pool_status_gauges(s: &PoolStatus) {
+fn emit_pool_status_gauges(s: &deadpool::managed::Status) {
     #[allow(clippy::cast_precision_loss)]
     {
         metrics::gauge!(crate::observability::POOL_SIZE).set(s.size as f64);

@@ -92,7 +92,7 @@ pub async fn spawn_mock_and_connect() -> Job {
 }
 
 /// Spawn a mock and build the [`Arc<DaemonServer>`] pointing at it. Used by
-/// pool tests that construct [`mapepire::pool::JobManager`] directly (where
+/// pool tests that construct the crate-private `JobManager` directly (where
 /// the manager — not the test — owns the `Job::connect` call).
 ///
 /// The mock handles exactly ONE TCP connection; tests that need multiple
@@ -208,7 +208,7 @@ pub async fn connect_to_mock_with_recorder(pages: Vec<QueryResult>) -> (Job, Req
 /// The mock is single-connection per spawn — the architectural guarantee that
 /// every statement issued through a [`mapepire::Reserved`] lands on one
 /// socket is implicit in the mock shape (one [`mapepire::Pool::acquire`]
-/// triggers one [`crate::pool::JobManager::create`] which opens one TCP
+/// triggers one `JobManager::create` which opens one TCP
 /// session). The recorder lets tests verify the dispatcher actually emitted
 /// the expected request sequence on that one socket.
 #[allow(dead_code)]
