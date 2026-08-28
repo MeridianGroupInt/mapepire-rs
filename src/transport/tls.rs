@@ -74,7 +74,7 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> crate::Result<T
             ClientConfig::builder()
                 .dangerous()
                 .with_custom_certificate_verifier(Arc::new(PinOrWebpki {
-                    pin: Some(der.clone()),
+                    pin: der.clone(),
                     inner,
                 }))
                 .with_no_client_auth()
@@ -117,7 +117,7 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> crate::Result<T
 #[cfg(feature = "rustls-tls")]
 #[derive(Debug)]
 struct PinOrWebpki {
-    pin: Option<Vec<u8>>,
+    pin: Vec<u8>,
     inner: Arc<rustls::client::WebPkiServerVerifier>,
 }
 
@@ -131,9 +131,7 @@ impl rustls::client::danger::ServerCertVerifier for PinOrWebpki {
         ocsp_response: &[u8],
         now: rustls_pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        if let Some(pin) = &self.pin
-            && end_entity.as_ref() == pin.as_slice()
-        {
+        if end_entity.as_ref() == self.pin.as_slice() {
             return Ok(rustls::client::danger::ServerCertVerified::assertion());
         }
         self.inner
@@ -506,13 +504,100 @@ pub async fn fetch_certificate_from(
 
 #[cfg(all(test, feature = "rustls-tls"))]
 mod tests {
+    use super::*;
+    use crate::config::{DaemonServer, TlsConfig};
+    use crate::error::Error;
+
+    fn dummy_pass() -> String {
+        String::from("test") + "-only"
+    }
+
     #[test]
     fn test_rustls_crypto_provider_is_installed() {
-        // Must not panic on ClientConfig::builder for the rustls-tls feature.
+        ensure_crypto_provider();
         let _ = rustls::ClientConfig::builder();
         assert!(
             rustls::crypto::CryptoProvider::get_default().is_some(),
             "rustls has no process-level CryptoProvider; enable the ring feature"
         );
+    }
+
+    #[tokio::test]
+    async fn test_connect_rejects_invalid_hostname() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("local_addr").port();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+        let server = DaemonServer::builder()
+            .host("[")
+            .connect_address("127.0.0.1")
+            .port(port)
+            .user("u")
+            .password(dummy_pass())
+            .tls(TlsConfig::Verified)
+            .build()
+            .expect("builder");
+        match connect(&server).await {
+            Err(Error::Internal(msg)) => {
+                assert!(
+                    msg.contains("invalid hostname"),
+                    "unexpected Internal: {msg}"
+                );
+            }
+            other => panic!("expected Internal invalid hostname, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_rejects_invalid_ca_der() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("local_addr").port();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+        let server = DaemonServer::builder()
+            .host("localhost")
+            .connect_address("127.0.0.1")
+            .port(port)
+            .user("u")
+            .password(dummy_pass())
+            .tls(TlsConfig::Ca(vec![0xff, 0x00, 0x01]))
+            .build()
+            .expect("builder");
+        match connect(&server).await {
+            Err(Error::Internal(msg)) => {
+                assert!(
+                    msg.contains("invalid Ca cert"),
+                    "unexpected Internal: {msg}"
+                );
+            }
+            other => panic!("expected Internal invalid Ca cert, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "insecure-tls")]
+    #[tokio::test]
+    async fn test_fetch_certificate_from_rejects_invalid_hostname() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("local_addr").port();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+        match fetch_certificate_from("[", "127.0.0.1", port).await {
+            Err(Error::Internal(msg)) => {
+                assert!(
+                    msg.contains("invalid hostname"),
+                    "unexpected Internal: {msg}"
+                );
+            }
+            other => panic!("expected Internal invalid hostname, got {other:?}"),
+        }
     }
 }

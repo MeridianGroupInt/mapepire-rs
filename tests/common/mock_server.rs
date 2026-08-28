@@ -162,6 +162,10 @@ pub enum MockBehavior {
     /// a post-upgrade `Error` response.
     HttpForbidden,
 
+    /// Accept the WebSocket upgrade and reply to `Connect` with `Pong`.
+    /// Exercises the handshake's unexpected-response path.
+    PongOnConnect,
+
     /// Accept connect with success, then respond to the first
     /// SQL-variant request (`Sql`, `PrepareSqlExecute`, or `Execute`) with
     /// the first entry in `pages`. Subsequent [`Request::SqlMore`] requests
@@ -541,10 +545,15 @@ where
                 success: false,
                 sqlstate: None,
                 sqlcode: None,
-                error: Some(msg),
+                error: if msg.is_empty() { None } else { Some(msg) },
                 job: None,
             }));
             // Close after auth failure.
+            let _ = sink.send(Message::Close(None)).await;
+        }
+
+        MockBehavior::PongOnConnect => {
+            send_response!(Response::Pong { id: connect_id });
             let _ = sink.send(Message::Close(None)).await;
         }
 

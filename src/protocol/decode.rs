@@ -389,4 +389,45 @@ mod tests {
             assert!(parsed.is_ok(), "tagged {json} failed: {parsed:?}");
         }
     }
+
+    #[test]
+    fn test_decode_tagged_payload_error() {
+        let json = r#"{"type":"connected","id":"1"}"#;
+        assert!(
+            serde_json::from_str::<Response>(json).is_err(),
+            "connected without job must fail"
+        );
+    }
+
+    #[test]
+    fn test_decode_untagged_error_missing_id() {
+        let json = r#"{"success":false,"error":"x"}"#;
+        assert!(
+            serde_json::from_str::<Response>(json).is_err(),
+            "error frame without id must fail"
+        );
+    }
+
+    #[test]
+    fn test_decode_untagged_result_malformed_data() {
+        let json = r#"{"has_results":true,"data":"not-an-array"}"#;
+        assert!(
+            serde_json::from_str::<Response>(json).is_err(),
+            "result with non-array data must fail"
+        );
+    }
+
+    #[test]
+    fn test_decode_live_connect_coerces_non_string_id_job() {
+        let json = r#"{"job":null,"id":null,"success":true}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        match r {
+            Response::Connected { id, job, version } => {
+                assert_eq!(id, "");
+                assert_eq!(job, "");
+                assert_eq!(version, "");
+            }
+            other => panic!("expected Connected, got {other:?}"),
+        }
+    }
 }

@@ -174,7 +174,7 @@ pub struct QueryMetaData {
     #[serde(default)]
     pub columns: Vec<Column>,
     /// IBM i job that produced the result set, when the daemon reports it.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
 }
 
@@ -390,6 +390,18 @@ mod tests {
         let e: ErrorResponse = serde_json::from_str(json).unwrap();
         assert_eq!(e.sqlcode, Some(-803));
         assert_eq!(e.sqlstate.as_deref(), Some("23505"));
+    }
+
+    #[test]
+    fn test_query_metadata_omits_absent_job_on_serialize() {
+        let m = QueryMetaData::default();
+        let json = serde_json::to_value(&m).unwrap();
+        assert!(
+            json.get("job").is_none(),
+            "absent job must be omitted: {json}"
+        );
+        let back: QueryMetaData = serde_json::from_value(json).unwrap();
+        assert!(back.job.is_none());
     }
 
     #[test]

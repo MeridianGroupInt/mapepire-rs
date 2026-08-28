@@ -29,7 +29,7 @@ async fn test_connect_with_bad_password_returns_auth_error() {
         .host(addr.ip().to_string())
         .port(addr.port())
         .user("USER")
-        .password("WRONGPASS".to_string())
+        .password(common::dummy_password_wrong())
         .tls(TlsConfig::Ca(cert_der))
         .build()
         .expect("DaemonServer builder fields all set");
@@ -59,7 +59,7 @@ async fn test_connect_without_reaching_json_auth_returns_http_403() {
         .host(addr.ip().to_string())
         .port(addr.port())
         .user("USER")
-        .password("WRONGPASS".to_string())
+        .password(common::dummy_password_wrong())
         .tls(TlsConfig::Ca(cert_der))
         .build()
         .expect("DaemonServer builder fields all set");

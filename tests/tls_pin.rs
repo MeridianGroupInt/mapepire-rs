@@ -13,8 +13,6 @@ mod common;
 
 #[cfg(feature = "rustls-tls")]
 use mapepire::{DaemonServer, Job, TlsConfig};
-#[cfg(feature = "rustls-tls")]
-use pretty_assertions::assert_ne;
 
 /// id-ce-subjectAltName (2.5.29.17) as a DER OID encoding.
 #[cfg(feature = "rustls-tls")]
@@ -31,7 +29,7 @@ fn server(port: u16, tls: TlsConfig) -> DaemonServer {
         .host("127.0.0.1")
         .port(port)
         .user("USER")
-        .password("s3cret".to_string())
+        .password(common::dummy_password())
         .tls(tls)
         .build()
         .expect("DaemonServer builder fields all set")
@@ -58,8 +56,8 @@ async fn test_ca_pin_accepts_cn_only_leaf() {
 async fn test_ca_pin_rejects_mismatched_leaf() {
     let (presented_der, presented_key) = common::mint_cn_only("127.0.0.1");
     let (wrong_pin, _) = common::mint_cn_only("127.0.0.1");
-    assert_ne!(
-        presented_der, wrong_pin,
+    assert!(
+        presented_der != wrong_pin,
         "two mint_cn_only calls must produce distinct leaves"
     );
     assert!(!der_has_san(&presented_der), "fixture must be CN-only");

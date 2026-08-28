@@ -13,7 +13,7 @@ mod common;
 #[cfg(feature = "rustls-tls")]
 use mapepire::{DaemonServer, Job, TlsConfig};
 #[cfg(feature = "rustls-tls")]
-use pretty_assertions::{assert_eq, assert_ne};
+use pretty_assertions::assert_eq;
 
 #[cfg(feature = "rustls-tls")]
 #[tokio::test]
@@ -29,7 +29,7 @@ async fn test_connect_address_splits_tcp_from_sni() {
         .connect_address("127.0.0.1")
         .port(addr.port())
         .user("USER")
-        .password("pass".to_string())
+        .password(common::dummy_password())
         .tls(TlsConfig::Ca(cert_der))
         .build()
         .expect("DaemonServer builder fields all set");
@@ -58,8 +58,8 @@ async fn test_host_ip_against_dns_cert_fails_without_matching_pin_name_fallback(
     let (addr, presented_der) =
         common::spawn_mock_named("ibmi.example", common::MockBehavior::AcceptAndConnect);
     let (wrong_pin, _) = common::mint_cn_only("ibmi.example");
-    assert_ne!(
-        presented_der, wrong_pin,
+    assert!(
+        presented_der != wrong_pin,
         "wrong pin must not byte-equal the presented leaf"
     );
 
@@ -67,7 +67,7 @@ async fn test_host_ip_against_dns_cert_fails_without_matching_pin_name_fallback(
         .host("127.0.0.1")
         .port(addr.port())
         .user("USER")
-        .password("pass".to_string())
+        .password(common::dummy_password())
         .tls(TlsConfig::Ca(wrong_pin))
         .build()
         .expect("DaemonServer builder fields all set");
