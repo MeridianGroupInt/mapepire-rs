@@ -139,6 +139,9 @@ pub struct QueryResult {
     /// `true` on success.
     pub success: bool,
     /// `true` when the statement produced a result set (SELECT).
+    ///
+    /// Live daemons omit this on some success frames; default `false`.
+    #[serde(default)]
     pub has_results: bool,
     /// Rows affected for INSERT/UPDATE/DELETE; `-1` (or absent) for SELECT.
     #[serde(default)]

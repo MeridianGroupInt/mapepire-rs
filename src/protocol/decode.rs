@@ -36,9 +36,23 @@ pub(crate) fn decode_value(value: Value) -> Result<Response, String> {
         return Ok(Response::Error(err));
     }
 
-    let looks_like_result = ["data", "has_results", "is_done", "metadata"]
-        .iter()
-        .any(|k| obj.contains_key(*k));
+    let has_data = obj.contains_key("data");
+    let has_results_key = obj.contains_key("has_results");
+    // Live `prepare_sql` success is untagged `{id, success, cont_id, execution_time}`
+    // and often `is_done`/`metadata` without `has_results` or `data`. Those keys
+    // used to take the QueryResult branch and fail serde.
+    if obj.contains_key("cont_id") && !has_data && !has_results_key {
+        let body: PreparedStatementBody =
+            serde_json::from_value(value).map_err(|e| e.to_string())?;
+        return Ok(Response::PreparedStatement {
+            id: body.id,
+            success: body.success,
+            cont_id: body.cont_id,
+            execution_time: body.execution_time,
+        });
+    }
+
+    let looks_like_result = has_data || has_results_key;
     if looks_like_result {
         let q: QueryResult = serde_json::from_value(value).map_err(|e| e.to_string())?;
         return Ok(Response::QueryResult(q));
@@ -81,6 +95,18 @@ pub(crate) fn decode_value(value: Value) -> Result<Response, String> {
             success,
             version,
         });
+    }
+
+    // Live ping (and other acks) is `{id, success:true}` with no discriminant.
+    // Dispatcher remaps this to SqlClosed/ConfigSet/Exited when the outstanding
+    // request is not ping.
+    if success == Some(true) {
+        let id = obj
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        return Ok(Response::Pong { id });
     }
 
     Err("unrecognized untagged response object".into())
@@ -218,6 +244,7 @@ struct PreparedStatementBody {
     id: String,
     success: bool,
     cont_id: String,
+    #[serde(default)]
     execution_time: f64,
 }
 
@@ -341,17 +368,7 @@ mod tests {
 
     #[test]
     fn test_decode_garbage_does_not_panic() {
-        for json in [
-            "",
-            "null",
-            "[]",
-            "\"x\"",
-            "1",
-            "{",
-            "{}",
-            r#"{"type":1}"#,
-            r#"{"id":"1","success":true}"#,
-        ] {
+        for json in ["", "null", "[]", "\"x\"", "1", "{", "{}", r#"{"type":1}"#] {
             let parsed = serde_json::from_str::<Response>(json);
             assert!(
                 parsed.is_err(),
@@ -408,6 +425,40 @@ mod tests {
             serde_json::from_str::<Response>(json).is_err(),
             "result with non-array data must fail"
         );
+    }
+
+    #[test]
+    fn test_decode_live_pong_id_success_only() {
+        let json = r#"{"id":"p1","success":true}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::Pong { id } if id == "p1"));
+    }
+
+    #[test]
+    fn test_decode_live_prepare_without_has_results() {
+        let json =
+            r#"{"id":"pr1","success":true,"cont_id":"stmt-7","execution_time":1.5,"is_done":true}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            r,
+            Response::PreparedStatement {
+                id,
+                cont_id,
+                success,
+                ..
+            } if id == "pr1" && cont_id == "stmt-7" && success
+        ));
+    }
+
+    #[test]
+    fn test_decode_query_result_without_has_results_when_data_present() {
+        let json = r#"{"id":"q","success":true,"data":[{"X":1}],"is_done":true}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::QueryResult(_)));
+        if let Response::QueryResult(q) = r {
+            assert!(!q.has_results);
+            assert_eq!(q.data[0]["X"], 1);
+        }
     }
 
     #[test]
