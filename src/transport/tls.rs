@@ -34,8 +34,12 @@ fn ensure_crypto_provider() {
 
 /// Establish a TCP connection then complete the TLS handshake to the
 /// daemon. The returned stream is ready for HTTP/1.1 Upgrade.
+///
+/// TCP uses `connect_address` when set, otherwise `host`. TLS SNI /
+/// native-tls hostname is always `host`.
 pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<TlsStream> {
-    let addr = format!("{}:{}", server.host, server.port);
+    let (tcp_host, port) = server.tcp_target();
+    let addr = format!("{tcp_host}:{port}");
     let tcp = TcpStream::connect(&addr)
         .await
         .map_err(|e| Error::from(TransportError::Io(e)))?;
@@ -288,11 +292,11 @@ fn tracing_warn_insecure_once() {
 /// use mapepire::{DaemonServer, TlsConfig};
 ///
 /// // Bootstrap: fetch the daemon's self-signed cert (UNVERIFIED).
-/// let der = DaemonServer::fetch_certificate("daemon.example.com", 8076).await?;
+/// let der = DaemonServer::fetch_certificate("ibmi.example", 8076).await?;
 ///
 /// // Pin it for subsequent verified connections.
 /// let server = DaemonServer::builder()
-///     .host("daemon.example.com")
+///     .host("ibmi.example")
 ///     .port(8076)
 ///     .user("USER")
 ///     .password("…".to_string())
@@ -303,13 +307,53 @@ fn tracing_warn_insecure_once() {
 /// ```
 #[cfg(all(feature = "insecure-tls", feature = "rustls-tls"))]
 pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> {
+    fetch_certificate_from(host, host, port).await
+}
+
+/// Open a TLS connection with verification **disabled**, capture the server's
+/// leaf certificate, and return its DER-encoded bytes.
+///
+/// TCP connects to `connect_address:port`; SNI uses `server_name`. See
+/// [`fetch_certificate`] for the security warning and the `host == TCP`
+/// shorthand.
+///
+/// # Errors
+///
+/// - [`crate::error::Error::Transport`] for TCP / TLS failures.
+/// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+///
+/// # Example
+///
+/// ```no_run
+/// # async fn example() -> mapepire::Result<()> {
+/// use mapepire::{DaemonServer, TlsConfig};
+///
+/// let der = DaemonServer::fetch_certificate_from("ibmi.example", "127.0.0.1", 8076).await?;
+///
+/// let server = DaemonServer::builder()
+///     .host("ibmi.example")
+///     .connect_address("127.0.0.1")
+///     .port(8076)
+///     .user("USER")
+///     .password("…".to_string())
+///     .tls(TlsConfig::Ca(der))
+///     .build()
+///     .expect("all fields set");
+/// # Ok(()) }
+/// ```
+#[cfg(all(feature = "insecure-tls", feature = "rustls-tls"))]
+pub async fn fetch_certificate_from(
+    server_name: &str,
+    connect_address: &str,
+    port: u16,
+) -> crate::Result<Vec<u8>> {
     use rustls::ClientConfig;
     use rustls_pki_types::ServerName;
     use tokio_rustls::TlsConnector;
 
     ensure_crypto_provider();
 
-    let addr = format!("{host}:{port}");
+    let addr = format!("{connect_address}:{port}");
     let tcp = TcpStream::connect(&addr)
         .await
         .map_err(|e| Error::from(TransportError::Io(e)))?;
@@ -323,8 +367,8 @@ pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> 
         .with_no_client_auth();
 
     let connector = TlsConnector::from(Arc::new(config));
-    let dns = ServerName::try_from(host.to_string())
-        .map_err(|_| Error::Internal(format!("invalid hostname: {host}")))?;
+    let dns = ServerName::try_from(server_name.to_string())
+        .map_err(|_| Error::Internal(format!("invalid hostname: {server_name}")))?;
     let stream = connector
         .connect(dns, tcp)
         .await
@@ -370,11 +414,11 @@ pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> 
 /// use mapepire::{DaemonServer, TlsConfig};
 ///
 /// // Bootstrap: fetch the daemon's self-signed cert (UNVERIFIED).
-/// let der = DaemonServer::fetch_certificate("daemon.example.com", 8076).await?;
+/// let der = DaemonServer::fetch_certificate("ibmi.example", 8076).await?;
 ///
 /// // Pin it for subsequent verified connections.
 /// let server = DaemonServer::builder()
-///     .host("daemon.example.com")
+///     .host("ibmi.example")
 ///     .port(8076)
 ///     .user("USER")
 ///     .password("…".to_string())
@@ -389,7 +433,50 @@ pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> 
     feature = "native-tls"
 ))]
 pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> {
-    let addr = format!("{host}:{port}");
+    fetch_certificate_from(host, host, port).await
+}
+
+/// Open a TLS connection with verification **disabled**, capture the server's
+/// leaf certificate, and return its DER-encoded bytes.
+///
+/// TCP connects to `connect_address:port`; the native-tls hostname is
+/// `server_name`. See [`fetch_certificate`] for the security warning.
+///
+/// # Errors
+///
+/// - [`crate::error::Error::Transport`] for TCP / TLS failures.
+/// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+///
+/// # Example
+///
+/// ```no_run
+/// # async fn example() -> mapepire::Result<()> {
+/// use mapepire::{DaemonServer, TlsConfig};
+///
+/// let der = DaemonServer::fetch_certificate_from("ibmi.example", "127.0.0.1", 8076).await?;
+///
+/// let server = DaemonServer::builder()
+///     .host("ibmi.example")
+///     .connect_address("127.0.0.1")
+///     .port(8076)
+///     .user("USER")
+///     .password("…".to_string())
+///     .tls(TlsConfig::Ca(der))
+///     .build()
+///     .expect("all fields set");
+/// # Ok(()) }
+/// ```
+#[cfg(all(
+    feature = "insecure-tls",
+    not(feature = "rustls-tls"),
+    feature = "native-tls"
+))]
+pub async fn fetch_certificate_from(
+    server_name: &str,
+    connect_address: &str,
+    port: u16,
+) -> crate::Result<Vec<u8>> {
+    let addr = format!("{connect_address}:{port}");
     let tcp = TcpStream::connect(&addr)
         .await
         .map_err(|e| Error::from(TransportError::Io(e)))?;
@@ -404,7 +491,7 @@ pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> 
         .map_err(|e| Error::Internal(format!("native-tls builder: {e}")))?;
     let connector = tokio_native_tls::TlsConnector::from(connector);
     let stream = connector
-        .connect(host, tcp)
+        .connect(server_name, tcp)
         .await
         .map_err(|e| Error::Internal(format!("native-tls handshake: {e}")))?;
 

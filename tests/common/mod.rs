@@ -37,6 +37,8 @@ pub use mock_server::{MockHandle, ResponsePauseGuard, spawn_pool_mock};
 pub use mock_server::{UpgradeProbe, spawn_mock_with_probe};
 #[allow(unused_imports)]
 pub use mock_server::{mint_cn_only, spawn_mock_cn_only, spawn_mock_with_cert};
+#[allow(unused_imports)]
+pub use mock_server::{spawn_mock_named, spawn_mock_named_with_probe};
 use tokio::sync::oneshot;
 
 /// Spawn a mock with [`MockBehavior::AcceptAndConnect`], build a

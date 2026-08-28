@@ -74,7 +74,8 @@ pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<ConnectedDis
     let tls_stream = tls::connect(server).await?;
 
     // 2. WebSocket Upgrade. Live Jetty Mapepire serves `/db/` and 403s without HTTP Basic. Password
-    //    is not placed on the query string or in the subsequent JSON `Connect` body.
+    //    is not placed on the query string or in the subsequent JSON `Connect` body. URI host and
+    //    HTTP Host are the TLS name (`server.host`), not `connect_address`.
     let url = format!("wss://{}:{}{WS_PATH}", server.host, server.port);
     let authorization = basic_authorization(&server.user, server.password.expose());
     let ws_request = WsRequest::builder()

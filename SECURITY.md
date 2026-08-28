@@ -41,6 +41,9 @@ regressions are treated as **P0**:
 - TLS is mandatory. There is no plaintext path to the daemon. The
   `TlsConfig::Insecure` variant must be opted into via the `insecure-tls`
   Cargo feature at compile time and emits a runtime warning when used.
+  `DaemonServer.host` is the TLS server name (SNI, HTTP Host, certificate
+  name). TCP uses `connect_address` when set. Using the tunnel IP as
+  `host` without a matching leaf pin fails closed.
 - Default TLS verification uses webpki roots (`TlsConfig::Verified`) and
   never skips name checks. On rustls, `TlsConfig::Ca` treats an exact
   leaf-DER match as a pin (SAN skipped); a non-matching leaf still uses

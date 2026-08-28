@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`DaemonServer.connect_address`.** TCP hop distinct from the TLS
+  server name. `host` remains SNI, HTTP `Host`, and the certificate name;
+  TCP uses `connect_address` when set, otherwise `host`. Builder
+  `.connect_address(...)`; `DaemonServerSpec` (`serde-config`) optional
+  field. Laptop SSH forwards use `host=ibmi.example` and
+  `connect_address=127.0.0.1`. `DaemonServer::fetch_certificate_from(server_name,
+  connect_address, port)` is the tunneled bootstrap; `fetch_certificate(host,
+  port)` delegates with both names equal.
+
 ### Fixed
 
 - **WebSocket upgrade targets `/db/` and sends `Authorization: Basic`.**

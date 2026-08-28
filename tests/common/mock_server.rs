@@ -50,10 +50,10 @@ use tokio_tungstenite::tungstenite::http::{Response as HttpResponse, StatusCode}
 /// best-effort `SqlClose` requests reached the wire.
 pub type RequestRecorder = Arc<Mutex<Vec<Request>>>;
 
-/// Observed WebSocket-upgrade request-target and `Authorization` header.
+/// Observed WebSocket-upgrade request-target, `Authorization`, and `Host`.
 ///
 /// Shared between the mock accept callback and the test thread. One probe
-/// covers both path and Basic assertions so tests do not need two spawn
+/// covers path, Basic, and Host assertions so tests do not need two spawn
 /// entry points. Cheap to clone (`Arc`).
 ///
 /// Each integration-test binary compiles `common` independently, so
@@ -63,6 +63,7 @@ pub type RequestRecorder = Arc<Mutex<Vec<Request>>>;
 pub struct UpgradeProbe {
     path: Arc<Mutex<Option<String>>>,
     authorization: Arc<Mutex<Option<String>>>,
+    host: Arc<Mutex<Option<String>>>,
 }
 
 #[allow(dead_code)]
@@ -91,6 +92,15 @@ impl UpgradeProbe {
             .clone()
     }
 
+    /// Raw `Host` header value, if the client sent one.
+    #[must_use]
+    pub fn host(&self) -> Option<String> {
+        self.host
+            .lock()
+            .expect("upgrade probe mutex not poisoned")
+            .clone()
+    }
+
     fn record(&self, req: &WsUpgradeRequest) {
         let path = req.uri().path().to_owned();
         let authorization = req
@@ -98,11 +108,17 @@ impl UpgradeProbe {
             .get("Authorization")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
+        let host = req
+            .headers()
+            .get("Host")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         *self.path.lock().expect("upgrade probe mutex not poisoned") = Some(path);
         *self
             .authorization
             .lock()
             .expect("upgrade probe mutex not poisoned") = authorization;
+        *self.host.lock().expect("upgrade probe mutex not poisoned") = host;
     }
 }
 
@@ -362,11 +378,37 @@ fn spawn_one_connection(
     addr
 }
 
+/// One-connection mock whose leaf SAN/CN is `name` (not the bind address).
+///
+/// Binds `127.0.0.1:0` like [`spawn_mock`]. Use with
+/// `DaemonServer::builder().host(name).connect_address("127.0.0.1")` so TCP
+/// hits loopback while SNI / HTTP Host / the cert name stay `name`.
+#[allow(dead_code)]
+pub fn spawn_mock_named(name: &str, behavior: MockBehavior) -> (SocketAddr, Vec<u8>) {
+    spawn_mock_named_with_probe(name, behavior, UpgradeProbe::default())
+}
+
+/// [`spawn_mock_named`] plus an [`UpgradeProbe`].
+#[allow(dead_code)]
+pub fn spawn_mock_named_with_probe(
+    name: &str,
+    behavior: MockBehavior,
+    probe: UpgradeProbe,
+) -> (SocketAddr, Vec<u8>) {
+    let (acceptor, cert_der) = mint_self_signed_tls(vec![name.to_string()]);
+    let addr = spawn_one_connection(behavior, probe, acceptor);
+    (addr, cert_der)
+}
+
 /// Mint a self-signed cert for `127.0.0.1` (with SAN) and a rustls acceptor.
 fn mint_localhost_tls() -> (TlsAcceptor, Vec<u8>) {
+    mint_self_signed_tls(vec!["127.0.0.1".to_string()])
+}
+
+/// Mint a self-signed cert whose SANs are `sans` ([`rcgen::generate_simple_self_signed`]).
+fn mint_self_signed_tls(sans: Vec<String>) -> (TlsAcceptor, Vec<u8>) {
     let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
-            .expect("rcgen self-signed cert");
+        rcgen::generate_simple_self_signed(sans).expect("rcgen self-signed cert");
     let cert_der: Vec<u8> = cert.der().as_ref().to_vec();
     let key_der = signing_key.serialize_der();
     (tls_acceptor_from_der(&cert_der, key_der), cert_der)
