@@ -7,53 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+## [0.6.0] — 2026-08-27
 
-- **`DaemonServer.connect_address`.** TCP hop distinct from the TLS
-  server name. `host` remains SNI, HTTP `Host`, and the certificate name;
-  TCP uses `connect_address` when set, otherwise `host`. Builder
-  `.connect_address(...)`; `DaemonServerSpec` (`serde-config`) optional
-  field. Laptop SSH forwards use `host=ibmi.example` and
-  `connect_address=127.0.0.1`. `DaemonServer::fetch_certificate_from(server_name,
-  connect_address, port)` is the tunneled bootstrap; `fetch_certificate(host,
-  port)` delegates with both names equal.
+Wire-protocol and TLS handshake now match a live Mapepire daemon
+(mapepire-js 0.6.x). 0.5.1 cannot complete a session against stock
+Jetty Mapepire. Breaking versus the 0.5.1 mock dialect.
+
+### Breaking
+
+- **WebSocket path `/db2` → `/db/`.** Live Jetty Mapepire 404s `/db2`
+  and 403s `/db/` without HTTP Basic.
+- **Connect JSON: `{user,password}` removed; `{technique,application,props?}`
+  added.** Handshake always sends `technique: "tcp"`; `application`
+  defaults to `"mapepire-rs"`; JDBC properties come from
+  `DaemonServer::jdbc_props`.
+- **Auth is HTTP Basic on the Upgrade.** HTTP 401/403 map to
+  `Error::Auth`. The password is not on the query string and is not in
+  `Request::Connect` JSON.
+- **`Response` decode accepts untagged `{success,...}` frames.** Live
+  daemons omit `"type"`; tagged mock frames still deserialize.
+- **`TlsConfig::Ca` is a leaf pin on rustls** (SAN skipped when the
+  presented leaf DER matches the pin). A non-matching leaf still uses
+  `WebPkiServerVerifier`. `TlsConfig::Verified` and the `native-tls`
+  backend are unchanged. Do not use `insecure-tls` for CN-only IBM i
+  certs.
+- **`DaemonServer` gains `connect_address`, `jdbc_props`, `application`.**
+  `base64` is now a required dependency (was `serde-config` only); the
+  handshake encodes HTTP Basic.
 
 ### Fixed
 
-- **WebSocket upgrade targets `/db/` and sends `Authorization: Basic`.**
-  Live Jetty Mapepire 404s `/db2` and 403s `/db/` without HTTP Basic
-  (`user:password` via `Password::expose()`). HTTP 401/403 map to
-  `Error::Auth`. The password is not on the query string and is not in
-  `Request::Connect` JSON.
-- **`TlsConfig::Ca` is a rustls leaf pin.** IBM i Mapepire certs are
-  often CN-only (no SAN). rustls 0.23/webpki refuses them even when the
-  leaf is a trust anchor. When the presented leaf DER equals the pin,
-  name checks are skipped; a non-matching leaf still uses
-  `WebPkiServerVerifier`. `TlsConfig::Verified` is unchanged. The
-  `native-tls` backend is unchanged. Do not use `insecure-tls` for this.
+- **rustls default feature panics without a CryptoProvider.** The
+  library `rustls` dep now enables `ring` and installs the provider at
+  handshake (ignoring `AlreadyInstalled`).
+- **CN-only IBM i certificates with `TlsConfig::Ca`.** rustls
+  0.23/webpki refuses CN-only leaves even when they are the trust
+  anchor; the leaf-pin path skips name checks on exact DER match.
+- **Tunneled deploys that need a TCP address distinct from the cert
+  name.** `host` remains SNI, HTTP `Host`, and the certificate name;
+  TCP uses `connect_address` when set.
 
-### Changed
+### Added
 
-- **`Request::Connect` matches the live mapepire-js wire body.** The
-  variant is now `{id, technique, application, props?}` — no `user` or
-  `password` fields. Live daemon authentication is HTTP Basic on the
-  WebSocket upgrade, not JSON credentials. Handshake always sends
-  `technique: "tcp"`; `application` defaults to `"mapepire-rs"`; JDBC
-  properties come from `DaemonServer::jdbc_props`.
-- **`DaemonServer` gains `application` (default `"mapepire-rs"`) and
-  `jdbc_props`.** Builder methods `.application(...)` and
-  `.jdbc_props(...)`; `DaemonServerSpec` (`serde-config`) accepts both
-  as optional fields.
-- **`base64` is a required dependency** (was `serde-config` only). The
-  handshake encodes HTTP Basic; `serde-config` still uses it to decode
-  pinned-CA DER.
+- `DaemonServerBuilder::connect_address` / `jdbc_props` / `application`
+  (and matching optional `DaemonServerSpec` fields under `serde-config`).
+- `DaemonServer::fetch_certificate_from(server_name, connect_address,
+  port)` for tunneled bootstrap; `fetch_certificate(host, port)`
+  delegates with both names equal.
 
 ### Security
 
-- `Request::Connect` no longer carries a password. `Password::expose`
-  builds `Authorization: Basic` on the WebSocket upgrade. The
-  `user:pass` concatenation is a `Zeroizing<String>` dropped after
-  encoding; the header value is not logged.
+- Password no longer appears in connect JSON. HTTP Basic is built from
+  `Password::expose()` into a Zeroizing buffer and is not logged.
 
 ## [0.5.1] — 2026-08-27
 
@@ -618,7 +623,8 @@ harness used to validate them.
 - README badges (CI, Audit, deps.rs, MSRV from Cargo.toml, License).
 - PR template, issue templates, CODEOWNERS.
 
-[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.4.0...v0.4.1

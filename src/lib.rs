@@ -51,6 +51,10 @@
 //! let json = serde_json::to_string(&r).expect("Request serializes to JSON");
 //! assert!(json.contains(r#""type":"sql""#));
 //! ```
+//!
+//! On a live daemon, [`crate::Job::version`] may be empty after connect
+//! (the connect frame often omits it). Call [`crate::Job::server_version`]
+//! (`getversion`) for the version string.
 
 #[cfg(not(any(feature = "rustls-tls", feature = "native-tls")))]
 compile_error!(
