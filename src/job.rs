@@ -249,6 +249,8 @@ impl Job {
     ///
     /// Sends `rows` on the `sql` request. [`ExecuteOptions::rows`] `None`
     /// uses 100 (mapepire-js). `Some(0)` is rejected before send.
+    /// [`ExecuteOptions::terse`] `true` sends `terse: true`; `false` omits
+    /// the field.
     ///
     /// # Errors
     ///
@@ -420,8 +422,7 @@ impl Job {
         opts: ExecuteOptions,
     ) -> crate::Result<crate::query::Rows> {
         let page_size = opts.resolved_rows()?;
-        // `terse` is reserved for array-shaped `data` decode; not on the wire yet.
-        let _ = opts.terse;
+        let terse = opts.terse_on_wire();
         let id = self.inner.ids.next();
         let request = match params {
             None => Request::Sql {
@@ -429,12 +430,14 @@ impl Job {
                 sql: sql.to_owned(),
                 rows: Some(page_size),
                 parameters: None,
+                terse,
             },
             Some(params) => Request::PrepareSqlExecute {
                 id: id.clone(),
                 sql: sql.to_owned(),
                 parameters: Some(vec![params]),
                 rows: Some(page_size),
+                terse,
             },
         };
         let resp = self.send(request).await?;
@@ -489,6 +492,7 @@ impl Job {
             .send(Request::PrepareSql {
                 id: id.clone(),
                 sql: sql.to_owned(),
+                terse: None,
             })
             .await?;
         match resp {
@@ -759,6 +763,7 @@ impl Job {
             .send(Request::Dove {
                 id: id.clone(),
                 sql: sql.to_owned(),
+                terse: None,
             })
             .await?;
         match resp {
@@ -831,6 +836,7 @@ impl Job {
             .send(Request::Cl {
                 id: id.clone(),
                 cmd: command.to_owned(),
+                terse: None,
             })
             .await?;
         cl_outcome_from_response(&id, resp)

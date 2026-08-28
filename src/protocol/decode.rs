@@ -520,4 +520,47 @@ mod tests {
             assert_eq!(version, "");
         }
     }
+
+    #[test]
+    fn test_decode_terse_array_rows_named_from_columns() {
+        let json = r#"{
+            "id":"q1","success":true,"has_results":true,"is_done":true,
+            "metadata":{"column_count":1,"columns":[{"name":"1","type":"INTEGER"}]},
+            "data":[[7]]
+        }"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        let Response::QueryResult(q) = r else {
+            panic!("expected QueryResult, got {r:?}");
+        };
+        assert_eq!(q.data.len(), 1);
+        assert_eq!(q.data[0]["1"], 7);
+        let row = crate::query::Row::from_map(q.data[0].clone());
+        let n: i64 = row.get("1").expect("column 1");
+        assert_eq!(n, 7);
+    }
+
+    #[test]
+    fn test_decode_object_rows_still_named() {
+        let json = r#"{
+            "id":"q1","success":true,"has_results":true,"is_done":true,
+            "metadata":{"column_count":1,"columns":[{"name":"READY"}]},
+            "data":[{"READY":1}]
+        }"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        let Response::QueryResult(q) = r else {
+            panic!("expected QueryResult, got {r:?}");
+        };
+        assert_eq!(q.data[0]["READY"], 1);
+    }
+
+    #[test]
+    fn test_decode_terse_without_columns_is_protocol_error() {
+        let json = r#"{"id":"q1","success":true,"has_results":true,"data":[[7]]}"#;
+        let err = serde_json::from_str::<Response>(json).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("terse row data requires metadata.columns"),
+            "unexpected error: {msg}"
+        );
+    }
 }

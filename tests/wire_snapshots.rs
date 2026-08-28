@@ -30,6 +30,7 @@ fn snapshot_request_sql_minimal() {
         sql: "SELECT 1 FROM SYSIBM.SYSDUMMY1".into(),
         rows: None,
         parameters: None,
+        terse: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -41,6 +42,19 @@ fn snapshot_request_sql_with_params_and_rows() {
         sql: "SELECT * FROM T WHERE ID=?".into(),
         rows: Some(50),
         parameters: Some(vec![serde_json::json!(42)]),
+        terse: None,
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_request_sql_terse() {
+    let r = Request::Sql {
+        id: "test".into(),
+        sql: "SELECT EMPNO, LASTNAME FROM EMPLOYEE".into(),
+        rows: Some(5),
+        parameters: None,
+        terse: Some(true),
     };
     insta::assert_json_snapshot!(r);
 }
@@ -50,6 +64,7 @@ fn snapshot_request_prepare_sql() {
     let r = Request::PrepareSql {
         id: "test".into(),
         sql: "SELECT * FROM T WHERE ID=?".into(),
+        terse: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -64,6 +79,7 @@ fn snapshot_request_prepare_sql_execute_batched() {
             vec![serde_json::json!(2), serde_json::json!("b")],
         ]),
         rows: None,
+        terse: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -75,6 +91,7 @@ fn snapshot_request_execute() {
         cont_id: "stmt-7".into(),
         parameters: Some(vec![serde_json::json!("hello")]),
         rows: None,
+        terse: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -86,6 +103,7 @@ fn snapshot_request_prepare_sql_execute_single() {
         sql: "VALUES (CAST(? AS INTEGER))".into(),
         parameters: Some(vec![vec![serde_json::json!(7)]]),
         rows: Some(100),
+        terse: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -114,6 +132,7 @@ fn snapshot_request_cl() {
     let r = Request::Cl {
         id: "test".into(),
         cmd: "WRKACTJOB".into(),
+        terse: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -138,6 +157,7 @@ fn snapshot_request_metadata_and_diagnostics() {
         Request::Dove {
             id: "test".into(),
             sql: "SELECT 1 FROM SYSIBM.SYSDUMMY1".into(),
+            terse: None,
         }
     );
 }
@@ -341,6 +361,32 @@ fn snapshot_decode_live_connect() {
         "job": "nnnnnn/QUSER/QZDASOINIT",
         "success": true,
         "execution_time": 1.0
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_terse_query_result() {
+    let json = serde_json::json!({
+        "id": "q1",
+        "has_results": true,
+        "update_count": -1,
+        "metadata": {
+            "column_count": 1,
+            "columns": [{
+                "name": "1",
+                "type": "INTEGER",
+                "display_size": 11,
+                "label": "1",
+                "precision": 10,
+                "scale": 0
+            }]
+        },
+        "data": [[7]],
+        "is_done": true,
+        "success": true,
+        "execution_time": 1
     });
     let r: Response = serde_json::from_value(json).unwrap();
     insta::assert_debug_snapshot!(r);

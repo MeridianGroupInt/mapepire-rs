@@ -94,6 +94,11 @@ pub enum ProtocolError {
     /// zero-row fetch; the crate fails locally so we never send `rows: 0`.
     #[error("rows must be greater than 0")]
     ZeroPageSize,
+
+    /// Terse (`data` as JSON arrays) reply had no `metadata.columns` to
+    /// name cells. Decoding must not panic; [`crate::Row::get`] needs names.
+    #[error("terse row data requires metadata.columns")]
+    TerseRowsWithoutColumns,
 }
 
 /// Failures while decoding a row into a Rust type.

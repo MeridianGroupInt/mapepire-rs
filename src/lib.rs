@@ -47,6 +47,7 @@
 //!     sql: "SELECT 1 FROM SYSIBM.SYSDUMMY1".into(),
 //!     rows: None,
 //!     parameters: None,
+//!     terse: None,
 //! };
 //! let json = serde_json::to_string(&r).expect("Request serializes to JSON");
 //! assert!(json.contains(r#""type":"sql""#));

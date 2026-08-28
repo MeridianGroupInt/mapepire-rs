@@ -141,6 +141,15 @@ impl Drop for Dispatcher {
     }
 }
 
+fn protocol_decode_error(err: serde_json::Error) -> ProtocolError {
+    let msg = err.to_string();
+    if msg.contains("terse row data requires metadata.columns") {
+        ProtocolError::TerseRowsWithoutColumns
+    } else {
+        ProtocolError::Json(err)
+    }
+}
+
 /// Pull the `id` field from any `Request` variant. Centralized here so
 /// the dispatcher doesn't need to match every variant.
 //
@@ -324,7 +333,7 @@ async fn run(
                                     && let Some(slot) = pending.remove(id)
                                 {
                                     in_flight.fetch_sub(1, Ordering::Relaxed);
-                                    let _ = slot.reply.send(Err(Error::from(ProtocolError::Json(e))));
+                                    let _ = slot.reply.send(Err(Error::from(protocol_decode_error(e))));
                                 }
                             }
                         }
@@ -400,22 +409,26 @@ mod tests {
                 sql: "SELECT 1".into(),
                 rows: None,
                 parameters: None,
+                terse: None,
             },
             Request::PrepareSql {
                 id: id.clone(),
                 sql: "SELECT 1".into(),
+                terse: None,
             },
             Request::PrepareSqlExecute {
                 id: id.clone(),
                 sql: "SELECT 1".into(),
                 parameters: None,
                 rows: None,
+                terse: None,
             },
             Request::Execute {
                 id: id.clone(),
                 cont_id: "c".into(),
                 parameters: None,
                 rows: None,
+                terse: None,
             },
             Request::SqlMore {
                 id: id.clone(),
@@ -429,6 +442,7 @@ mod tests {
             Request::Cl {
                 id: id.clone(),
                 cmd: "DSPLIB".into(),
+                terse: None,
             },
             Request::GetVersion { id: id.clone() },
             Request::GetDbJob { id: id.clone() },
@@ -441,6 +455,7 @@ mod tests {
             Request::Dove {
                 id: id.clone(),
                 sql: "SELECT 1".into(),
+                terse: None,
             },
             Request::Ping { id: id.clone() },
             Request::Exit { id: id.clone() },
@@ -622,6 +637,7 @@ mod tests {
                 sql: "SELECT 1".into(),
                 rows: None,
                 parameters: None,
+                terse: None,
             }),
             PendingKind::Other
         );

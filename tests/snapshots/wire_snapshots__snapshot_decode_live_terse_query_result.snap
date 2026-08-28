@@ -1,0 +1,47 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+QueryResult(
+    QueryResult {
+        id: "q1",
+        success: true,
+        has_results: true,
+        update_count: -1,
+        cont_id: None,
+        is_done: true,
+        metadata: QueryMetaData {
+            column_count: 1,
+            columns: [
+                Column {
+                    name: "1",
+                    label: Some(
+                        "1",
+                    ),
+                    type_name: Some(
+                        "INTEGER",
+                    ),
+                    display_size: Some(
+                        11,
+                    ),
+                    precision: Some(
+                        10,
+                    ),
+                    scale: Some(
+                        0,
+                    ),
+                },
+            ],
+            job: None,
+        },
+        data: [
+            {
+                "1": Number(7),
+            },
+        ],
+        execution_time: 1.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+    },
+)

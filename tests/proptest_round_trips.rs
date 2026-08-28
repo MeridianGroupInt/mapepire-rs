@@ -72,6 +72,7 @@ fn arb_sql_request() -> impl Strategy<Value = Request> {
             sql,
             rows,
             parameters,
+            terse: None,
         })
 }
 

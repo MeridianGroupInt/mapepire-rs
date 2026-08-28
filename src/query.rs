@@ -16,8 +16,9 @@ use crate::transport::DispatcherHandle;
 /// [`ExecuteOptions::DEFAULT_ROWS`] (100, matching mapepire-js). `Some(0)`
 /// is rejected before a request is sent.
 ///
-/// `terse` is reserved for array-shaped `data` decode; it is not written
-/// on the wire yet.
+/// `terse` is `false` by default (object rows). `true` sends `terse: true`
+/// so the daemon returns array-shaped rows; decode names cells from
+/// `metadata.columns`.
 ///
 /// # Example
 ///
@@ -42,8 +43,9 @@ use crate::transport::DispatcherHandle;
 pub struct ExecuteOptions {
     /// First-page size. `None` means the crate default of 100.
     pub rows: Option<u32>,
-    /// Request terse array-shaped rows. Unused until terse decode lands;
-    /// omitted on the wire while `false`.
+    /// Request terse array-shaped rows (`data` as JSON arrays).
+    ///
+    /// `false` (default) omits the field so the daemon returns object rows.
     pub terse: bool,
 }
 
@@ -65,6 +67,12 @@ impl ExecuteOptions {
             Some(n) => Ok(n),
             None => Ok(Self::DEFAULT_ROWS),
         }
+    }
+
+    /// `Some(true)` when [`Self::terse`] is set; `None` otherwise so the
+    /// wire field is omitted.
+    pub(crate) fn terse_on_wire(self) -> Option<bool> {
+        self.terse.then_some(true)
     }
 }
 
@@ -327,8 +335,7 @@ impl Query {
         opts: ExecuteOptions,
     ) -> crate::Result<Rows> {
         let page_size = opts.resolved_rows()?;
-        // `terse` is reserved for array-shaped `data` decode; not on the wire yet.
-        let _ = opts.terse;
+        let terse = opts.terse_on_wire();
         let id = ids.next();
         let request = match self.server_handle() {
             Some(cont_id) => Request::Execute {
@@ -336,12 +343,14 @@ impl Query {
                 cont_id: cont_id.to_owned(),
                 parameters: params,
                 rows: Some(page_size),
+                terse,
             },
             None => Request::PrepareSqlExecute {
                 id: id.clone(),
                 sql: self.sql.clone(),
                 parameters: params.map(|p| vec![p]),
                 rows: Some(page_size),
+                terse,
             },
         };
         let resp = self.handle.send(request).await?;
@@ -1056,5 +1065,18 @@ mod tests {
         .resolved_rows()
         .expect_err("zero page size");
         assert!(matches!(err, Error::Protocol(ProtocolError::ZeroPageSize)));
+    }
+
+    #[test]
+    fn test_execute_options_terse_on_wire_omits_false() {
+        assert_eq!(ExecuteOptions::default().terse_on_wire(), None);
+        assert_eq!(
+            ExecuteOptions {
+                rows: None,
+                terse: true
+            }
+            .terse_on_wire(),
+            Some(true)
+        );
     }
 }

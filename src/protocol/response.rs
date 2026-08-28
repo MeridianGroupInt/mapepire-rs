@@ -134,7 +134,7 @@ pub enum Response {
 // didn't pre-pin these tags and we don't want to guess wrong.
 
 /// Body of a `QueryResult` response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct QueryResult {
     /// Echoes request id.
     pub id: String,
@@ -159,6 +159,11 @@ pub struct QueryResult {
     pub metadata: QueryMetaData,
     /// Row data — each row is a map of column name to JSON value.
     ///
+    /// The wire may send object rows (`[{"EMPNO":"000010"}]`) or terse
+    /// array rows (`[["000010"]]`). Decode normalizes arrays using
+    /// `metadata.columns[i].name` so [`crate::Row::get`] still works.
+    /// Array rows with no column names are a protocol error.
+    ///
     /// For `type: cl` this is the job log (`MESSAGE_ID`, `SEVERITY`, …).
     #[serde(default)]
     pub data: Vec<serde_json::Map<String, serde_json::Value>>,
@@ -177,6 +182,102 @@ pub struct QueryResult {
     /// Five-character SQLSTATE. Live frames send `sql_state`.
     #[serde(default, alias = "sql_state", skip_serializing_if = "Option::is_none")]
     pub sqlstate: Option<String>,
+}
+
+/// Wire DTO: `data` is objects or arrays. Normalized in [`QueryResult`]'s
+/// [`Deserialize`] impl.
+#[derive(Deserialize)]
+struct QueryResultDe {
+    id: String,
+    success: bool,
+    #[serde(default)]
+    has_results: bool,
+    #[serde(default)]
+    update_count: i64,
+    #[serde(default)]
+    cont_id: Option<String>,
+    #[serde(default = "default_true")]
+    is_done: bool,
+    #[serde(default)]
+    metadata: QueryMetaData,
+    #[serde(default)]
+    data: Vec<Value>,
+    #[serde(default)]
+    execution_time: f64,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default, alias = "sql_rc")]
+    sqlcode: Option<i32>,
+    #[serde(default, alias = "sql_state")]
+    sqlstate: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for QueryResult {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = QueryResultDe::deserialize(deserializer)?;
+        let data = named_rows_from_wire(&raw.metadata, raw.data).map_err(D::Error::custom)?;
+        Ok(Self {
+            id: raw.id,
+            success: raw.success,
+            has_results: raw.has_results,
+            update_count: raw.update_count,
+            cont_id: raw.cont_id,
+            is_done: raw.is_done,
+            metadata: raw.metadata,
+            data,
+            execution_time: raw.execution_time,
+            error: raw.error,
+            sqlcode: raw.sqlcode,
+            sqlstate: raw.sqlstate,
+        })
+    }
+}
+
+/// Turn object rows or terse array rows into named maps.
+///
+/// Array rows use `metadata.columns[i].name`. Missing columns is a
+/// protocol error (never panic on a short `columns` vec).
+fn named_rows_from_wire(
+    metadata: &QueryMetaData,
+    data: Vec<Value>,
+) -> Result<Vec<serde_json::Map<String, Value>>, String> {
+    let mut out = Vec::with_capacity(data.len());
+    for (idx, row) in data.into_iter().enumerate() {
+        match row {
+            Value::Object(map) => out.push(map),
+            Value::Array(cells) => {
+                if metadata.columns.is_empty() {
+                    return Err(crate::error::ProtocolError::TerseRowsWithoutColumns.to_string());
+                }
+                if cells.len() > metadata.columns.len() {
+                    return Err(format!(
+                        "terse row {idx} has {} values but metadata.columns has {}",
+                        cells.len(),
+                        metadata.columns.len()
+                    ));
+                }
+                let mut map = serde_json::Map::with_capacity(cells.len());
+                for (i, cell) in cells.into_iter().enumerate() {
+                    let name =
+                        metadata
+                            .columns
+                            .get(i)
+                            .map(|c| c.name.clone())
+                            .ok_or_else(|| {
+                                format!("terse row {idx} is missing metadata.columns[{i}]")
+                            })?;
+                    map.insert(name, cell);
+                }
+                out.push(map);
+            }
+            other => {
+                return Err(format!(
+                    "query row {idx} must be a JSON object or array, got {other}"
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn default_true() -> bool {
@@ -564,5 +665,28 @@ mod tests {
         if let Response::Connected { version, .. } = r {
             assert_eq!(version, "");
         }
+    }
+
+    #[test]
+    fn test_query_result_decodes_terse_arrays_via_column_names() {
+        let json = r#"{
+            "id":"q1","success":true,"has_results":true,
+            "metadata":{"column_count":1,"columns":[{"name":"1"}]},
+            "data":[[7]]
+        }"#;
+        let q: QueryResult = serde_json::from_str(json).unwrap();
+        assert_eq!(q.data.len(), 1);
+        assert_eq!(q.data[0]["1"], 7);
+    }
+
+    #[test]
+    fn test_query_result_terse_without_columns_errors() {
+        let json = r#"{"id":"q1","success":true,"data":[[7]]}"#;
+        let err = serde_json::from_str::<QueryResult>(json).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("terse row data requires metadata.columns"),
+            "unexpected error: {err}"
+        );
     }
 }

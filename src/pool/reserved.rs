@@ -348,6 +348,7 @@ impl Drop for Reserved {
                     sql: "ROLLBACK".into(),
                     rows: None,
                     parameters: None,
+                    terse: None,
                 };
                 let _ = handle.send(req).await;
             });

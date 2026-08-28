@@ -266,6 +266,33 @@ const MOCK_VERSION: &str = "0.0.0-mock";
 /// Mock Db2 job name echoed in [`Response::Connected`].
 const MOCK_JOB: &str = "MOCK/QUSER/000001";
 
+/// Serialize a [`QueryResult`]. When `terse` is `Some(true)`, rewrite
+/// object rows as arrays in `metadata.columns` order so the client
+/// exercises array-row decode (live daemon `terse: true`).
+fn encode_query_result_maybe_terse(q: &QueryResult, terse: Option<bool>) -> String {
+    if terse != Some(true) {
+        return serde_json::to_string(q).expect("serialize QueryResult");
+    }
+    let mut v = serde_json::to_value(q).expect("serialize QueryResult");
+    let names: Vec<String> = q.metadata.columns.iter().map(|c| c.name.clone()).collect();
+    if let Some(data) = v.get("data").and_then(serde_json::Value::as_array) {
+        let arrays: Vec<serde_json::Value> = data
+            .iter()
+            .map(|row| match row {
+                serde_json::Value::Object(map) => serde_json::Value::Array(
+                    names
+                        .iter()
+                        .map(|n| map.get(n).cloned().unwrap_or(serde_json::Value::Null))
+                        .collect(),
+                ),
+                other => other.clone(),
+            })
+            .collect();
+        v["data"] = serde_json::Value::Array(arrays);
+    }
+    v.to_string()
+}
+
 /// Encode a [`Response`] as the live daemon would.
 ///
 /// Success frames omit `"type"`. Live `cl` replies are untagged
@@ -286,7 +313,7 @@ fn encode_live_response(response: &Response) -> String {
             }
             v.to_string()
         }
-        Response::QueryResult(q) => serde_json::to_string(q).expect("serialize QueryResult"),
+        Response::QueryResult(q) => encode_query_result_maybe_terse(q, None),
         Response::Error(e) => serde_json::to_string(e).expect("serialize ErrorResponse"),
         Response::Pong { id } | Response::Exited { id } => {
             serde_json::json!({"id": id, "success": true}).to_string()
@@ -681,10 +708,19 @@ where
                                 let _ = sink.send(Message::Close(None)).await;
                                 break;
                             }
-                            Request::Sql { id, .. }
-                            | Request::PrepareSqlExecute { id, .. }
-                            | Request::Execute { id, .. }
-                            | Request::SqlMore { id, .. } => {
+                            Request::Sql { id, terse, .. }
+                            | Request::PrepareSqlExecute { id, terse, .. }
+                            | Request::Execute { id, terse, .. } => {
+                                let mut page = pages_iter
+                                    .next()
+                                    .expect("mock Pages ran out of pre-baked pages");
+                                page.id = id;
+                                let json = encode_query_result_maybe_terse(&page, terse);
+                                sink.send(Message::Text(json.into()))
+                                    .await
+                                    .expect("send response frame");
+                            }
+                            Request::SqlMore { id, .. } => {
                                 let mut page = pages_iter
                                     .next()
                                     .expect("mock Pages ran out of pre-baked pages");

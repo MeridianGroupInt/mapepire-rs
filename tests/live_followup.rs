@@ -195,9 +195,104 @@ async fn test_execute_sends_rows_100() {
         .collect();
     assert_eq!(sql.len(), 1, "full trace: {observed:?}");
     match sql[0] {
-        Request::Sql { rows, .. } => assert_eq!(*rows, Some(100)),
+        Request::Sql { rows, terse, .. } => {
+            assert_eq!(*rows, Some(100));
+            assert_eq!(*terse, None, "default path must omit terse");
+        }
         other => panic!("expected Sql, got {other:?}"),
     }
+    let json = serde_json::to_string(sql[0]).expect("serialize sql request");
+    assert!(
+        !json.contains(r#""terse""#),
+        "default execute must omit terse, got {json}"
+    );
+}
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_execute_opts_terse_decodes_array_rows() {
+    use mapepire::ExecuteOptions;
+    use mapepire::protocol::Request;
+
+    let (job, recorder) =
+        common::connect_to_mock_with_recorder(vec![int_row("placeholder", 7)]).await;
+
+    let rows = job
+        .execute_opts(
+            "SELECT 1 FROM SYSIBM.SYSDUMMY1",
+            ExecuteOptions {
+                rows: None,
+                terse: true,
+            },
+        )
+        .await
+        .expect("execute_opts terse");
+    let dyn_rows = rows.into_dynamic().await.expect("into_dynamic");
+    assert_eq!(dyn_rows.len(), 1);
+    let got: i64 = dyn_rows[0].get("1").expect("column 1");
+    assert_eq!(got, 7);
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    let sql: Vec<&Request> = observed
+        .iter()
+        .filter(|r| matches!(r, Request::Sql { .. }))
+        .collect();
+    assert_eq!(sql.len(), 1, "full trace: {observed:?}");
+    match sql[0] {
+        Request::Sql { terse, rows, .. } => {
+            assert_eq!(*terse, Some(true));
+            assert_eq!(*rows, Some(100));
+        }
+        other => panic!("expected Sql, got {other:?}"),
+    }
+    let json = serde_json::to_string(sql[0]).expect("serialize sql request");
+    assert!(
+        json.contains(r#""terse":true"#),
+        "missing terse:true in {json}"
+    );
+}
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_execute_opts_terse_missing_columns_is_protocol_error() {
+    use mapepire::{Error, ExecuteOptions, ProtocolError, QueryMetaData, QueryResult};
+
+    let mut row: Map<String, Value> = Map::new();
+    row.insert("1".into(), json!(7));
+    let page = QueryResult {
+        id: "placeholder".into(),
+        success: true,
+        has_results: true,
+        update_count: -1,
+        metadata: QueryMetaData::default(),
+        data: vec![row],
+        cont_id: None,
+        is_done: true,
+        execution_time: 1.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+    };
+    let job = common::connect_to_mock(common::MockBehavior::Pages {
+        pages: vec![page],
+        recorder: None,
+    })
+    .await;
+
+    let err = job
+        .execute_opts(
+            "SELECT 1 FROM SYSIBM.SYSDUMMY1",
+            ExecuteOptions {
+                rows: None,
+                terse: true,
+            },
+        )
+        .await
+        .expect_err("array rows without columns must fail");
+    assert!(
+        matches!(err, Error::Protocol(ProtocolError::TerseRowsWithoutColumns)),
+        "unexpected error: {err}"
+    );
 }
 
 #[cfg(feature = "rustls-tls")]

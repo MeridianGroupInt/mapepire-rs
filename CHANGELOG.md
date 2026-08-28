@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Page size and live leftover after 0.6.1 `execute_with` / `prepare`.
+Page size, terse rows, and live leftover after 0.6.1 `execute_with` / `prepare`.
 
 ### Changed
 
@@ -24,10 +24,15 @@ Page size and live leftover after 0.6.1 `execute_with` / `prepare`.
 
 ### Added
 
-- **`ExecuteOptions`** (`rows: Option<u32>`, `terse: bool` unused until
-  terse decode). `Job` / `Query` / `Pool` / `Reserved` /
+- **`ExecuteOptions`** (`rows: Option<u32>`, `terse: bool`). `Job` /
+  `Query` / `Pool` / `Reserved` /
   `Executor::{execute_opts, execute_with_opts}`. `rows: 0` is
   `Error::Protocol(ProtocolError::ZeroPageSize)` and is not sent.
+  `terse: true` sends `terse: true` on `sql` / `prepare_sql_execute` /
+  `execute`; default `false` omits the field (object rows).
+- **`terse: Option<bool>`** on `Request::{Sql, PrepareSql,
+  PrepareSqlExecute, Execute, Cl, Dove}` (`skip_serializing_if` none).
+  `Job::cl` always omits it so job-log rows stay named objects.
 
 ### Fixed
 
@@ -36,6 +41,11 @@ Page size and live leftover after 0.6.1 `execute_with` / `prepare`.
   was already done or had no handle.
 - **`prepare` decoded as `Pong`.** Outstanding `PrepareSql` remaps the
   untagged success ack to a prepared statement with no server handle.
+- **Terse array-shaped `QueryResult.data` decodes.** Live `[[7]]` plus
+  `metadata.columns[0].name == "1"` becomes a named map so
+  `Row::get("1")` works. Array rows with no `metadata.columns` are
+  `ProtocolError::TerseRowsWithoutColumns` (no panic). Object rows still
+  decode.
 
 ## [0.6.2] — 2026-08-28
 
