@@ -250,7 +250,7 @@ fn tracing_warn_insecure_once() {
 /// leaf certificate, and return its DER-encoded bytes.
 ///
 /// This is the canonical bootstrap helper for self-signed Mapepire daemons.
-/// Pin the returned bytes via [`crate::config::TlsConfig::Ca`] for all
+/// Pin the returned bytes via [`crate::TlsConfig::Ca`] for all
 /// subsequent verified connections.
 ///
 /// **Security warning:** The connection that returns the bytes is itself
@@ -266,8 +266,8 @@ fn tracing_warn_insecure_once() {
 ///
 /// # Errors
 ///
-/// - [`crate::error::Error::Transport`] for TCP / TLS failures.
-/// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+/// - [`crate::Error::Transport`] for TCP / TLS failures.
+/// - [`crate::Error::Internal`] if the server presents no certificate or an empty chain.
 ///
 /// # Example
 ///
@@ -303,8 +303,8 @@ pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> 
 ///
 /// # Errors
 ///
-/// - [`crate::error::Error::Transport`] for TCP / TLS failures.
-/// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+/// - [`crate::Error::Transport`] for TCP / TLS failures.
+/// - [`crate::Error::Internal`] if the server presents no certificate or an empty chain.
 ///
 /// # Example
 ///
@@ -372,7 +372,7 @@ pub async fn fetch_certificate_from(
 /// leaf certificate, and return its DER-encoded bytes.
 ///
 /// This is the canonical bootstrap helper for self-signed Mapepire daemons.
-/// Pin the returned bytes via [`crate::config::TlsConfig::Ca`] for all
+/// Pin the returned bytes via [`crate::TlsConfig::Ca`] for all
 /// subsequent verified connections.
 ///
 /// **Security warning:** The connection that returns the bytes is itself
@@ -388,8 +388,8 @@ pub async fn fetch_certificate_from(
 ///
 /// # Errors
 ///
-/// - [`crate::error::Error::Transport`] for TCP / TLS failures.
-/// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+/// - [`crate::Error::Transport`] for TCP / TLS failures.
+/// - [`crate::Error::Internal`] if the server presents no certificate or an empty chain.
 ///
 /// # Example
 ///
@@ -428,8 +428,8 @@ pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> 
 ///
 /// # Errors
 ///
-/// - [`crate::error::Error::Transport`] for TCP / TLS failures.
-/// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+/// - [`crate::Error::Transport`] for TCP / TLS failures.
+/// - [`crate::Error::Internal`] if the server presents no certificate or an empty chain.
 ///
 /// # Example
 ///

@@ -28,7 +28,7 @@ pub enum Request {
     /// # Example
     ///
     /// ```
-    /// use mapepire::protocol::request::Request;
+    /// use mapepire::protocol::Request;
     ///
     /// let r = Request::Connect {
     ///     id: "1".into(),

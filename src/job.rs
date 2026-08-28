@@ -253,7 +253,7 @@ impl Job {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Execute a SQL statement and return the [`crate::query::Rows`] handle.
+    /// Execute a SQL statement and return the [`crate::Rows`] handle.
     ///
     /// For DML (INSERT/UPDATE/DELETE), `rows.update_count()` returns
     /// `Some(n)` (Task 16). For SELECT, iterate via `rows.stream()` or
@@ -287,7 +287,7 @@ impl Job {
         feature = "tracing",
         tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, sql = %sql))
     )]
-    pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
+    pub async fn execute(&self, sql: &str) -> crate::Result<crate::Rows> {
         self.execute_opts(sql, ExecuteOptions::default()).await
     }
 
@@ -340,7 +340,7 @@ impl Job {
         &self,
         sql: &str,
         opts: ExecuteOptions,
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         #[cfg(feature = "metrics")]
         let start = std::time::Instant::now();
         let result = self.execute_inner(sql, None, opts).await;
@@ -352,7 +352,7 @@ impl Job {
     /// Execute a parameterized SQL statement.
     ///
     /// Stored-procedure `CALL` uses this path (no separate opcode). OUT /
-    /// INOUT values are on [`crate::query::Rows::output_parms`].
+    /// INOUT values are on [`crate::Rows::output_parms`].
     ///
     /// # Errors
     ///
@@ -396,7 +396,7 @@ impl Job {
         &self,
         sql: &str,
         params: &[serde_json::Value],
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         self.execute_with_opts(sql, params, ExecuteOptions::default())
             .await
     }
@@ -455,7 +455,7 @@ impl Job {
         sql: &str,
         params: &[serde_json::Value],
         opts: ExecuteOptions,
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         #[cfg(feature = "metrics")]
         let start = std::time::Instant::now();
         let result = self.execute_inner(sql, Some(params.to_vec()), opts).await;
@@ -469,7 +469,7 @@ impl Job {
         sql: &str,
         params: Option<Vec<serde_json::Value>>,
         opts: ExecuteOptions,
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         let page_size = opts.resolved_rows()?;
         let terse = opts.terse_on_wire();
         let id = self.inner.ids.next();
@@ -562,7 +562,7 @@ impl Job {
         sql: &str,
         sets: &[Vec<serde_json::Value>],
         opts: ExecuteOptions,
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         let parameters = crate::query::owned_parameter_sets(sets)?;
         #[cfg(feature = "metrics")]
         let start = std::time::Instant::now();
@@ -594,8 +594,8 @@ impl Job {
     /// Prepare a SQL statement for repeated execution.
     ///
     /// Live daemons often reply `{id, success:true}` with no `cont_id`.
-    /// That is not a failure: the returned [`crate::query::Query`] caches
-    /// `sql` on the client and [`crate::query::Query::execute_with`] sends
+    /// That is not a failure: the returned [`crate::Query`] caches
+    /// `sql` on the client and [`crate::Query::execute_with`] sends
     /// `prepare_sql_execute`. When the daemon does return a `cont_id`,
     /// execute uses that handle.
     ///
@@ -625,7 +625,7 @@ impl Job {
         feature = "tracing",
         tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, sql = %sql))
     )]
-    pub async fn prepare(&self, sql: &str) -> crate::Result<crate::query::Query> {
+    pub async fn prepare(&self, sql: &str) -> crate::Result<crate::Query> {
         let id = self.inner.ids.next();
         let resp = self
             .send(Request::PrepareSql {

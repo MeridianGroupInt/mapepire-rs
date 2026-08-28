@@ -139,8 +139,8 @@ impl DaemonServer {
     ///
     /// # Errors
     ///
-    /// - [`crate::error::Error::Transport`] for TCP / TLS failures.
-    /// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+    /// - [`crate::Error::Transport`] for TCP / TLS failures.
+    /// - [`crate::Error::Internal`] if the server presents no certificate or an empty chain.
     ///
     /// # Example
     ///
@@ -177,8 +177,8 @@ impl DaemonServer {
     ///
     /// # Errors
     ///
-    /// - [`crate::error::Error::Transport`] for TCP / TLS failures.
-    /// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+    /// - [`crate::Error::Transport`] for TCP / TLS failures.
+    /// - [`crate::Error::Internal`] if the server presents no certificate or an empty chain.
     ///
     /// # Example
     ///

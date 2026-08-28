@@ -8,6 +8,10 @@
 //! call sites, prefer the concrete types' inherent methods — they incur no
 //! boxing overhead.
 //!
+//! Single-statement surface only: `execute` / `execute_with` /
+//! `execute_opts` / `execute_with_opts`. 2-D `execute_sets` is inherent on
+//! [`crate::Job`] / [`crate::Query`], not this trait.
+//!
 //! ## Example — write a helper once, pass any executor
 //!
 //! ```no_run
@@ -39,19 +43,24 @@ use std::pin::Pin;
 
 use crate::job::Job;
 use crate::pool::{Pool, Reserved};
-use crate::query::{ExecuteOptions, Rows};
+use crate::{ExecuteOptions, Rows};
 
 /// Anything that can run a SQL statement against a Db2 daemon.
 ///
 /// Three concrete impls are provided in this crate:
 ///
-/// - `&Job` — single-connection direct dispatch (added in v0.2).
-/// - `&Pool` — least-busy-job pool routing (added in v0.3).
-/// - `&Reserved` — exclusive single-connection handle for transactions (added in v0.3).
+/// - [`Job`] — single-connection direct dispatch (added in v0.2).
+/// - [`Pool`] — least-busy-job pool routing (added in v0.3).
+/// - [`Reserved`] — exclusive single-connection handle for transactions (added in v0.3).
 ///
-/// The trait returns boxed futures so it can be used as a trait object
-/// (`&dyn Executor`). For monomorphic call sites, prefer the concrete
-/// types' inherent methods.
+/// Single-statement methods only: [`Self::execute`], [`Self::execute_with`],
+/// [`Self::execute_opts`], [`Self::execute_with_opts`]. 2-D
+/// [`crate::Job::execute_sets`] is inherent on [`Job`] / [`crate::Query`],
+/// not this trait, so the trait stays object-safe as `&dyn Executor`
+/// without a seal.
+///
+/// The trait returns boxed futures so it can be used as a trait object.
+/// For monomorphic call sites, prefer the concrete types' inherent methods.
 pub trait Executor {
     /// Execute a SQL statement with no parameters.
     ///

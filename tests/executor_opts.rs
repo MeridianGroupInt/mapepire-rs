@@ -60,7 +60,7 @@ fn opts_ten() -> ExecuteOptions {
 
 /// Drive `execute_opts` through the trait (not `Job::execute_opts`).
 #[cfg(feature = "rustls-tls")]
-async fn trait_execute_opts<E: Executor>(exe: &E, sql: &str) -> mapepire::query::Rows {
+async fn trait_execute_opts<E: Executor>(exe: &E, sql: &str) -> mapepire::Rows {
     exe.execute_opts(sql, opts_ten())
         .await
         .expect("Executor::execute_opts")
@@ -72,7 +72,7 @@ async fn dyn_execute_with_opts(
     exe: &dyn Executor,
     sql: &str,
     params: &[serde_json::Value],
-) -> mapepire::query::Rows {
+) -> mapepire::Rows {
     exe.execute_with_opts(sql, params, opts_ten())
         .await
         .expect("dyn Executor::execute_with_opts")

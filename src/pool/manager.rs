@@ -16,13 +16,9 @@ use crate::job::Job;
 /// pool runtime. `Type = Arc<Job>` so the routing registry (Task 23) can
 /// store `Weak<Job>` references — see plan §7.3.
 ///
-/// **Visibility note:** `pub` so the integration test in
-/// `tests/manager_smoke.rs` (Task 8) can construct it directly, but the
-/// re-export at `mapepire::pool::JobManager` carries `#[doc(hidden)]` so the
-/// type stays out of the rendered rustdoc API surface. External users
-/// construct `Pool` via `Pool::builder` (Task 10) — they never need to touch
-/// `JobManager`.
-pub struct JobManager {
+/// Crate-private. External users construct [`crate::Pool`] via
+/// [`crate::Pool::builder`].
+pub(crate) struct JobManager {
     server: Arc<DaemonServer>,
     registry: Arc<crate::pool::routing::Registry>,
 }
@@ -33,19 +29,11 @@ impl JobManager {
     /// [`Manager::create`] call, and registers the freshly-spawned `Arc<Job>`
     /// with the shared registry so the §7.3 routing scan can later peek
     /// `in_flight` without taking ownership.
-    ///
-    /// `pub` for the same reason as the struct itself — see the type-level
-    /// doc comment.
-    ///
-    /// `Registry` is `pub(crate)` (it's a routing-internal type — external
-    /// callers have no use for it), but `JobManager::new` is `pub` so that
-    /// the `#[doc(hidden)]` re-export stays useful for the `manager_smoke`
-    /// integration test. The `private_interfaces` allow narrows the
-    /// suppression to this one signature; the `Registry` type stays out of
-    /// the rendered API surface.
-    #[allow(private_interfaces)]
     #[must_use]
-    pub fn new(server: Arc<DaemonServer>, registry: Arc<crate::pool::routing::Registry>) -> Self {
+    pub(crate) fn new(
+        server: Arc<DaemonServer>,
+        registry: Arc<crate::pool::routing::Registry>,
+    ) -> Self {
         Self { server, registry }
     }
 }

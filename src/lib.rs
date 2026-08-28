@@ -40,7 +40,7 @@
 //! ## Encoding a request
 //!
 //! ```
-//! use mapepire::protocol::request::Request;
+//! use mapepire::protocol::Request;
 //!
 //! let r = Request::Sql {
 //!     id: "1".into(),
@@ -63,20 +63,20 @@ compile_error!(
      Disable default features only when explicitly enabling another TLS backend."
 );
 
-pub mod config;
-pub mod error;
-pub mod password;
+pub(crate) mod config;
+pub(crate) mod error;
+pub(crate) mod password;
 pub mod protocol;
 
-pub mod executor;
-pub mod from_row;
-pub mod job;
+pub(crate) mod executor;
+pub(crate) mod from_row;
+pub(crate) mod job;
 pub(crate) mod job_helpers;
 #[cfg(feature = "metrics")]
 #[cfg_attr(docsrs, doc(cfg(feature = "metrics")))]
 pub mod observability;
-pub mod pool;
-pub mod query;
+pub(crate) mod pool;
+pub(crate) mod query;
 pub(crate) mod transport;
 
 pub use crate::config::{BuilderError, DaemonServer, DaemonServerBuilder, TlsConfig};

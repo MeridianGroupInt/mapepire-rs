@@ -100,12 +100,10 @@ pub const POOL_ACQUIRE_LATENCY_MICROS: &str = "mapepire_pool_acquire_latency_mic
 /// **Cardinality:** 0 labels.
 pub const JOB_EXECUTE_LATENCY_MICROS: &str = "mapepire_job_execute_latency_micros";
 
-/// Gauge — current pool size (deadpool's [`Status::size`] passed through
+/// Gauge — current pool size ([`crate::PoolStatus::size`] from
 /// [`crate::Pool::status`]).
 ///
 /// **Cardinality:** 0 labels.
-///
-/// [`Status::size`]: https://docs.rs/deadpool/0.13/deadpool/managed/struct.Status.html#structfield.size
 pub const POOL_SIZE: &str = "mapepire_pool_size";
 
 /// Gauge — number of currently-idle (available) connections in the pool.

@@ -9,13 +9,22 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Snapshot of pool state — re-exported from `deadpool::Status`.
-///
-/// Exposes `size` (current pool size), `available` (idle connections), and
-/// `waiters` (futures blocked on `pool.get()`). Re-exported here so callers
-/// don't need to depend on `deadpool` directly.
-pub use deadpool::Status as PoolStatus;
 use deadpool::managed::Pool as DeadPool;
+
+/// Snapshot of pool occupancy.
+///
+/// Mapped from deadpool's `Status` so a deadpool major is not this crate's
+/// major. Fields match the 0.7 `deadpool::Status` names callers already
+/// used: `size`, `available`, `waiting`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolStatus {
+    /// Connections currently in the pool (idle + checked out).
+    pub size: usize,
+    /// Idle connections available for checkout.
+    pub available: usize,
+    /// Futures blocked on checkout.
+    pub waiting: usize,
+}
 
 use crate::config::DaemonServer;
 use crate::pool::builder::{ParameterLogging, PoolBuilder};
@@ -187,7 +196,7 @@ impl Pool {
         feature = "tracing",
         tracing::instrument(skip(self), fields(sql = %sql, tier = tracing::field::Empty))
     )]
-    pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
+    pub async fn execute(&self, sql: &str) -> crate::Result<crate::Rows> {
         use crate::Job;
 
         // Pool status gauges — snapshot once per call. Pool size doesn't
@@ -302,7 +311,7 @@ impl Pool {
         &self,
         sql: &str,
         params: &[serde_json::Value],
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         use crate::Job;
 
         // Task 9 / PRO-587: honor the per-pool `ParameterLogging` policy by
@@ -418,7 +427,7 @@ impl Pool {
         &self,
         sql: &str,
         opts: crate::ExecuteOptions,
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         use crate::Job;
 
         #[cfg(feature = "metrics")]
@@ -485,7 +494,7 @@ impl Pool {
         sql: &str,
         params: &[serde_json::Value],
         opts: crate::ExecuteOptions,
-    ) -> crate::Result<crate::query::Rows> {
+    ) -> crate::Result<crate::Rows> {
         use crate::Job;
 
         #[cfg(feature = "tracing")]
@@ -583,7 +592,7 @@ impl Pool {
         feature = "tracing",
         tracing::instrument(skip(self), fields(acquired_in_micros = tracing::field::Empty))
     )]
-    pub async fn acquire(&self) -> crate::Result<crate::pool::reserved::Reserved> {
+    pub async fn acquire(&self) -> crate::Result<crate::Reserved> {
         #[cfg(any(feature = "tracing", feature = "metrics"))]
         let start = std::time::Instant::now();
         let obj = self.get_or_timeout().await?;
@@ -634,7 +643,12 @@ impl Pool {
     /// ```
     #[must_use]
     pub fn status(&self) -> PoolStatus {
-        self.inner.status()
+        let s = self.inner.status();
+        PoolStatus {
+            size: s.size,
+            available: s.available,
+            waiting: s.waiting,
+        }
     }
 
     /// Check out an `Object<JobManager>` from the underlying deadpool, mapping
@@ -663,7 +677,7 @@ impl Pool {
 }
 
 /// Emit the three pool-status gauges (`size`, `available`, `waiting`) from a
-/// fresh deadpool [`PoolStatus`] snapshot. Called once per `Pool::execute*`
+/// fresh deadpool status snapshot. Called once per `Pool::execute*`
 /// invocation; downstream samplers see one data point per call (sufficient
 /// granularity for Prometheus-style scrape windows without overwhelming the
 /// recorder hot path).
@@ -673,7 +687,7 @@ impl Pool {
 /// essentially impossible (we'd run out of file descriptors first), so the
 /// allow is sound.
 #[cfg(feature = "metrics")]
-fn emit_pool_status_gauges(s: &PoolStatus) {
+fn emit_pool_status_gauges(s: &deadpool::managed::Status) {
     #[allow(clippy::cast_precision_loss)]
     {
         metrics::gauge!(crate::observability::POOL_SIZE).set(s.size as f64);

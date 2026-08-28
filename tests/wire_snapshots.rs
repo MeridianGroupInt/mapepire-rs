@@ -7,10 +7,9 @@
 //! `{id, success, ...}` objects; those shapes are pinned by the
 //! `snapshot_decode_live_*` tests.
 
-use mapepire::protocol::request::Request;
-use mapepire::protocol::response::{
+use mapepire::protocol::{
     ClMessage, Column, ErrorResponse, ParameterDetail, ParameterResult, QueryMetaData, QueryResult,
-    Response,
+    Request, Response,
 };
 
 #[test]
