@@ -46,10 +46,16 @@ fn page(start: i64, count: i64, cont_id: Option<&str>, is_done: bool) -> mapepir
                 precision: Some(10),
             }],
             job: None,
+            parameters: vec![],
         },
         data,
         cont_id: cont_id.map(str::to_string),
         is_done,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     }
 }
 
@@ -105,4 +111,79 @@ async fn test_paging_across_two_pages() {
     );
     let expected: Vec<i64> = (0..100).collect();
     assert_eq!(collected, expected, "rows should be in order 0..100");
+}
+
+/// Opening `execute_opts(rows: 10)` must be reused on the follow-up `sqlmore`.
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_sqlmore_uses_opening_page_size() {
+    use mapepire::ExecuteOptions;
+    use mapepire::protocol::Request;
+
+    let pages = vec![page(0, 10, Some("cur-1"), false), page(10, 10, None, true)];
+    let (job, recorder) = common::connect_to_mock_with_recorder(pages).await;
+
+    let rows = job
+        .execute_opts(
+            "SELECT n FROM SCHEMA.NUMBERS",
+            ExecuteOptions {
+                rows: Some(10),
+                terse: false,
+            },
+        )
+        .await
+        .expect("execute_opts");
+    let all = rows.into_dynamic().await.expect("into_dynamic");
+    assert_eq!(all.len(), 20);
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    let sql: Vec<&Request> = observed
+        .iter()
+        .filter(|r| matches!(r, Request::Sql { .. }))
+        .collect();
+    assert_eq!(sql.len(), 1, "full trace: {observed:?}");
+    match sql[0] {
+        Request::Sql { rows, .. } => assert_eq!(*rows, Some(10)),
+        other => panic!("expected Sql, got {other:?}"),
+    }
+    let more: Vec<&Request> = observed
+        .iter()
+        .filter(|r| matches!(r, Request::SqlMore { .. }))
+        .collect();
+    assert_eq!(more.len(), 1, "expected one sqlmore, got {observed:?}");
+    match more[0] {
+        Request::SqlMore { rows, .. } => assert_eq!(*rows, 10),
+        other => panic!("expected SqlMore, got {other:?}"),
+    }
+}
+
+/// `is_done = false` with no cursor must not issue `sqlmore` (or `sqlclose`).
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_stream_skips_sqlmore_without_cursor() {
+    use mapepire::protocol::Request;
+
+    let pages = vec![page(0, 5, None, false)];
+    let (job, recorder) = common::connect_to_mock_with_recorder(pages).await;
+
+    let rows = job
+        .execute("SELECT n FROM SCHEMA.NUMBERS")
+        .await
+        .expect("execute");
+    let all = rows.into_dynamic().await.expect("into_dynamic");
+    assert_eq!(all.len(), 5);
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    assert!(
+        !observed
+            .iter()
+            .any(|r| matches!(r, Request::SqlMore { .. })),
+        "no cursor: sqlmore must be skipped, got {observed:?}"
+    );
+    assert!(
+        !observed
+            .iter()
+            .any(|r| matches!(r, Request::SqlClose { .. })),
+        "no cursor: sqlclose must be skipped, got {observed:?}"
+    );
 }

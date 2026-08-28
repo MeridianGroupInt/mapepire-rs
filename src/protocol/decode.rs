@@ -31,13 +31,19 @@ pub(crate) fn decode_value(value: Value) -> Result<Response, String> {
     }
 
     let success = obj.get("success").and_then(Value::as_bool);
+    let has_data = obj.contains_key("data");
+    let has_results_key = obj.contains_key("has_results");
     if success == Some(false) {
+        // Live `cl` (and any result-shaped failure) still carries `data`
+        // or `has_results`. Classifying those as `Error` dropped the job
+        // log. Bare `{success:false}` without those keys stays `Error`.
+        if has_data || has_results_key {
+            let q: QueryResult = serde_json::from_value(value).map_err(|e| e.to_string())?;
+            return Ok(Response::QueryResult(q));
+        }
         let err: ErrorResponse = serde_json::from_value(value).map_err(|e| e.to_string())?;
         return Ok(Response::Error(err));
     }
-
-    let has_data = obj.contains_key("data");
-    let has_results_key = obj.contains_key("has_results");
     // Live `prepare_sql` success is untagged `{id, success, cont_id, execution_time}`
     // and often `is_done`/`metadata` without `has_results` or `data`. Those keys
     // used to take the QueryResult branch and fail serde.
@@ -332,11 +338,63 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_live_failed_cl_with_data_is_query_result() {
+        let json = r#"{
+            "id":"cl1","success":false,"sql_rc":-443,"sql_state":"38501",
+            "error":"[CPF0006] Errors occurred in command.",
+            "data":[{"MESSAGE_ID":"CPF0006","SEVERITY":40,"MESSAGE_TEXT":"Errors occurred in command."}],
+            "is_done":true
+        }"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::QueryResult(_)));
+        if let Response::QueryResult(q) = r {
+            assert!(!q.success);
+            assert_eq!(q.sqlcode, Some(-443));
+            assert_eq!(q.sqlstate.as_deref(), Some("38501"));
+            assert_eq!(
+                q.error.as_deref(),
+                Some("[CPF0006] Errors occurred in command.")
+            );
+            assert_eq!(q.data.len(), 1);
+            assert_eq!(q.data[0]["MESSAGE_ID"], "CPF0006");
+        }
+    }
+
+    #[test]
+    fn test_decode_live_failed_with_has_results_is_query_result() {
+        let json = r#"{"id":"cl2","success":false,"has_results":true,"data":[]}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::QueryResult(_)));
+        if let Response::QueryResult(q) = r {
+            assert!(!q.success);
+            assert!(q.has_results);
+            assert!(q.data.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_decode_live_failed_without_data_stays_error() {
+        let json = r#"{"id":"x","success":false,"error":"nope","sql_rc":-803,"sql_state":"23505"}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::Error(_)));
+    }
+
+    #[test]
     fn test_decode_tagged_connected_still_works() {
         let json =
             r#"{"type":"connected","id":"2","version":"2.3.5","job":"QZDASOINIT/QUSER/123456"}"#;
         let r: Response = serde_json::from_str(json).unwrap();
         assert!(matches!(r, Response::Connected { version, .. } if version == "2.3.5"));
+    }
+
+    #[test]
+    fn test_decode_live_setconfig_with_dest_is_pong() {
+        // PROTOCOL.md §13 success: `{id, success, tracedest, tracelevel, …}`.
+        // Extra dest/level keys still land on Pong; dispatcher remaps
+        // outstanding SetConfig → ConfigSet (OSS-1).
+        let json = r#"{"id":"t1","success":true,"tracedest":"IN_MEM","tracelevel":"OFF","execution_time":1}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::Pong { id } if id == "t1"));
     }
 
     #[test]
@@ -471,5 +529,83 @@ mod tests {
             assert_eq!(job, "");
             assert_eq!(version, "");
         }
+    }
+
+    #[test]
+    fn test_decode_terse_array_rows_named_from_columns() {
+        let json = r#"{
+            "id":"q1","success":true,"has_results":true,"is_done":true,
+            "metadata":{"column_count":1,"columns":[{"name":"1","type":"INTEGER"}]},
+            "data":[[7]]
+        }"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        let Response::QueryResult(q) = r else {
+            panic!("expected QueryResult, got {r:?}");
+        };
+        assert_eq!(q.data.len(), 1);
+        assert_eq!(q.data[0]["1"], 7);
+        let row = crate::query::Row::from_map(q.data[0].clone());
+        let n: i64 = row.get("1").expect("column 1");
+        assert_eq!(n, 7);
+    }
+
+    #[test]
+    fn test_decode_object_rows_still_named() {
+        let json = r#"{
+            "id":"q1","success":true,"has_results":true,"is_done":true,
+            "metadata":{"column_count":1,"columns":[{"name":"READY"}]},
+            "data":[{"READY":1}]
+        }"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        let Response::QueryResult(q) = r else {
+            panic!("expected QueryResult, got {r:?}");
+        };
+        assert_eq!(q.data[0]["READY"], 1);
+    }
+
+    #[test]
+    fn test_decode_terse_without_columns_is_protocol_error() {
+        let json = r#"{"id":"q1","success":true,"has_results":true,"data":[[7]]}"#;
+        let err = serde_json::from_str::<Response>(json).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("terse row data requires metadata.columns"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_decode_live_version_missing_success_defaults_true() {
+        let json = r#"{"id":"v1","version":"2.3.5"}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            r,
+            Response::Version {
+                id,
+                success: true,
+                version,
+            } if id == "v1" && version == "2.3.5"
+        ));
+    }
+
+    #[test]
+    fn test_decode_live_pong_missing_id_is_empty() {
+        let json = r#"{"success":true}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::Pong { id } if id.is_empty()));
+    }
+
+    #[test]
+    fn test_decode_live_version_non_string_fields_coerce_empty() {
+        let json = r#"{"id":1,"version":2}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            r,
+            Response::Version {
+                id,
+                success: true,
+                version,
+            } if id.is_empty() && version.is_empty()
+        ));
     }
 }

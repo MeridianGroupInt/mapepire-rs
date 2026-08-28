@@ -89,6 +89,16 @@ pub enum ProtocolError {
     /// The response `type` field was not one of the known variants.
     #[error("unknown response type: {0}")]
     UnknownResponseType(String),
+
+    /// Page size (`rows`) was `0`. mapepire-js and the daemon reject a
+    /// zero-row fetch; the crate fails locally so we never send `rows: 0`.
+    #[error("rows must be greater than 0")]
+    ZeroPageSize,
+
+    /// Terse (`data` as JSON arrays) reply had no `metadata.columns` to
+    /// name cells. Decoding must not panic; [`crate::Row::get`] needs names.
+    #[error("terse row data requires metadata.columns")]
+    TerseRowsWithoutColumns,
 }
 
 /// Failures while decoding a row into a Rust type.

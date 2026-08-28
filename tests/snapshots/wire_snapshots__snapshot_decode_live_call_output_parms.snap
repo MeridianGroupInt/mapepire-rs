@@ -1,0 +1,95 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+QueryResult(
+    QueryResult {
+        id: "call1",
+        success: true,
+        has_results: false,
+        update_count: 0,
+        cont_id: None,
+        is_done: true,
+        metadata: QueryMetaData {
+            column_count: 0,
+            columns: [],
+            job: None,
+            parameters: [
+                ParameterDetail {
+                    type_name: "INTEGER",
+                    mode: "IN",
+                    precision: 10,
+                    scale: Some(
+                        0,
+                    ),
+                    name: "P1",
+                },
+                ParameterDetail {
+                    type_name: "INTEGER",
+                    mode: "INOUT",
+                    precision: 10,
+                    scale: Some(
+                        0,
+                    ),
+                    name: "P2",
+                },
+                ParameterDetail {
+                    type_name: "INTEGER",
+                    mode: "OUT",
+                    precision: 10,
+                    scale: Some(
+                        0,
+                    ),
+                    name: "P3",
+                },
+            ],
+        },
+        data: [],
+        execution_time: 5.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+        parameter_count: Some(
+            3,
+        ),
+        output_parms: [
+            ParameterResult {
+                index: 1,
+                type_name: "INTEGER",
+                precision: 10,
+                scale: Some(
+                    0,
+                ),
+                name: "P1",
+                ccsid: None,
+                value: None,
+            },
+            ParameterResult {
+                index: 2,
+                type_name: "INTEGER",
+                precision: 10,
+                scale: Some(
+                    0,
+                ),
+                name: "P2",
+                ccsid: None,
+                value: Some(
+                    Number(0),
+                ),
+            },
+            ParameterResult {
+                index: 3,
+                type_name: "INTEGER",
+                precision: 10,
+                scale: Some(
+                    0,
+                ),
+                name: "P3",
+                ccsid: None,
+                value: Some(
+                    Number(10),
+                ),
+            },
+        ],
+    },
+)

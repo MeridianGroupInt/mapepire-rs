@@ -15,5 +15,6 @@ pub mod response;
 pub use crate::protocol::codec::{IdAllocator, RequestId};
 pub use crate::protocol::request::Request;
 pub use crate::protocol::response::{
-    ClMessage, Column, ErrorResponse, QueryMetaData, QueryResult, Response,
+    ClMessage, Column, ErrorResponse, JobLogEntry, ParameterDetail, ParameterResult, QueryMetaData,
+    QueryResult, Response,
 };

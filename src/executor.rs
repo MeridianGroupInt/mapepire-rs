@@ -39,7 +39,7 @@ use std::pin::Pin;
 
 use crate::job::Job;
 use crate::pool::{Pool, Reserved};
-use crate::query::Rows;
+use crate::query::{ExecuteOptions, Rows};
 
 /// Anything that can run a SQL statement against a Db2 daemon.
 ///
@@ -74,6 +74,29 @@ pub trait Executor {
         sql: &'a str,
         params: &'a [serde_json::Value],
     ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>>;
+
+    /// Execute a SQL statement with explicit [`ExecuteOptions`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::execute`], plus a protocol error when `rows` is 0.
+    fn execute_opts<'a>(
+        &'a self,
+        sql: &'a str,
+        opts: ExecuteOptions,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>>;
+
+    /// Execute a parameterized SQL statement with explicit [`ExecuteOptions`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::execute_with`], plus a protocol error when `rows` is 0.
+    fn execute_with_opts<'a>(
+        &'a self,
+        sql: &'a str,
+        params: &'a [serde_json::Value],
+        opts: ExecuteOptions,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>>;
 }
 
 impl Executor for Job {
@@ -90,6 +113,23 @@ impl Executor for Job {
         params: &'a [serde_json::Value],
     ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
         Box::pin(async move { Job::execute_with(self, sql, params).await })
+    }
+
+    fn execute_opts<'a>(
+        &'a self,
+        sql: &'a str,
+        opts: ExecuteOptions,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        Box::pin(async move { Job::execute_opts(self, sql, opts).await })
+    }
+
+    fn execute_with_opts<'a>(
+        &'a self,
+        sql: &'a str,
+        params: &'a [serde_json::Value],
+        opts: ExecuteOptions,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        Box::pin(async move { Job::execute_with_opts(self, sql, params, opts).await })
     }
 }
 
@@ -114,6 +154,23 @@ impl Executor for Pool {
         // satisfy clippy::large_futures.
         Box::pin(Pool::execute_with(self, sql, params))
     }
+
+    fn execute_opts<'a>(
+        &'a self,
+        sql: &'a str,
+        opts: ExecuteOptions,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        Box::pin(Pool::execute_opts(self, sql, opts))
+    }
+
+    fn execute_with_opts<'a>(
+        &'a self,
+        sql: &'a str,
+        params: &'a [serde_json::Value],
+        opts: ExecuteOptions,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        Box::pin(Pool::execute_with_opts(self, sql, params, opts))
+    }
 }
 
 impl Executor for Reserved {
@@ -135,5 +192,22 @@ impl Executor for Reserved {
     ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
         let job: &Job = self;
         Box::pin(async move { Job::execute_with(job, sql, params).await })
+    }
+
+    fn execute_opts<'a>(
+        &'a self,
+        sql: &'a str,
+        opts: ExecuteOptions,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        Box::pin(async move { Reserved::execute_opts(self, sql, opts).await })
+    }
+
+    fn execute_with_opts<'a>(
+        &'a self,
+        sql: &'a str,
+        params: &'a [serde_json::Value],
+        opts: ExecuteOptions,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
+        Box::pin(async move { Reserved::execute_with_opts(self, sql, params, opts).await })
     }
 }

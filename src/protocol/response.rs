@@ -1,6 +1,8 @@
 //! Response messages — incoming wire types.
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 /// Discriminated union of all response types the server may send.
 #[non_exhaustive]
@@ -132,7 +134,7 @@ pub enum Response {
 // didn't pre-pin these tags and we don't want to guess wrong.
 
 /// Body of a `QueryResult` response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct QueryResult {
     /// Echoes request id.
     pub id: String,
@@ -156,11 +158,145 @@ pub struct QueryResult {
     #[serde(default)]
     pub metadata: QueryMetaData,
     /// Row data — each row is a map of column name to JSON value.
+    ///
+    /// The wire may send object rows (`[{"EMPNO":"000010"}]`) or terse
+    /// array rows (`[["000010"]]`). Decode normalizes arrays using
+    /// `metadata.columns[i].name` so [`crate::Row::get`] still works.
+    /// Array rows with no column names are a protocol error.
+    ///
+    /// For `type: cl` this is the job log (`MESSAGE_ID`, `SEVERITY`, …).
     #[serde(default)]
     pub data: Vec<serde_json::Map<String, serde_json::Value>>,
     /// Wall-clock execution time on the server, in milliseconds.
     #[serde(default)]
     pub execution_time: f64,
+    /// Human-readable error when `success` is false (CL / SQL failures).
+    ///
+    /// Live failed-CL frames keep this alongside `data` rather than as a
+    /// bare [`ErrorResponse`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Db2-native SQL code. Live frames send `sql_rc`.
+    #[serde(default, alias = "sql_rc", skip_serializing_if = "Option::is_none")]
+    pub sqlcode: Option<i32>,
+    /// Five-character SQLSTATE. Live frames send `sql_state`.
+    #[serde(default, alias = "sql_state", skip_serializing_if = "Option::is_none")]
+    pub sqlstate: Option<String>,
+    /// Number of parameter markers, when the daemon reports it.
+    ///
+    /// Present on `prepare_sql` / `prepare_sql_execute` / CALL responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter_count: Option<u32>,
+    /// OUT / INOUT values from a stored-procedure `CALL`.
+    ///
+    /// Empty when the statement is not a procedure or the daemon omitted
+    /// the field. `IN` entries typically have [`ParameterResult::value`]
+    /// `None`. There is no separate CALL opcode — use
+    /// [`crate::Job::execute_with`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_parms: Vec<ParameterResult>,
+}
+
+/// Wire DTO: `data` is objects or arrays. Normalized in [`QueryResult`]'s
+/// [`Deserialize`] impl.
+#[derive(Deserialize)]
+struct QueryResultDe {
+    id: String,
+    success: bool,
+    #[serde(default)]
+    has_results: bool,
+    #[serde(default)]
+    update_count: i64,
+    #[serde(default)]
+    cont_id: Option<String>,
+    #[serde(default = "default_true")]
+    is_done: bool,
+    #[serde(default)]
+    metadata: QueryMetaData,
+    #[serde(default)]
+    data: Vec<Value>,
+    #[serde(default)]
+    execution_time: f64,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default, alias = "sql_rc")]
+    sqlcode: Option<i32>,
+    #[serde(default, alias = "sql_state")]
+    sqlstate: Option<String>,
+    #[serde(default)]
+    parameter_count: Option<u32>,
+    #[serde(default)]
+    output_parms: Vec<ParameterResult>,
+}
+
+impl<'de> Deserialize<'de> for QueryResult {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = QueryResultDe::deserialize(deserializer)?;
+        let data = named_rows_from_wire(&raw.metadata, raw.data).map_err(D::Error::custom)?;
+        Ok(Self {
+            id: raw.id,
+            success: raw.success,
+            has_results: raw.has_results,
+            update_count: raw.update_count,
+            cont_id: raw.cont_id,
+            is_done: raw.is_done,
+            metadata: raw.metadata,
+            data,
+            execution_time: raw.execution_time,
+            error: raw.error,
+            sqlcode: raw.sqlcode,
+            sqlstate: raw.sqlstate,
+            parameter_count: raw.parameter_count,
+            output_parms: raw.output_parms,
+        })
+    }
+}
+
+/// Turn object rows or terse array rows into named maps.
+///
+/// Array rows use `metadata.columns[i].name`. Missing columns is a
+/// protocol error (never panic on a short `columns` vec).
+fn named_rows_from_wire(
+    metadata: &QueryMetaData,
+    data: Vec<Value>,
+) -> Result<Vec<serde_json::Map<String, Value>>, String> {
+    let mut out = Vec::with_capacity(data.len());
+    for (idx, row) in data.into_iter().enumerate() {
+        match row {
+            Value::Object(map) => out.push(map),
+            Value::Array(cells) => {
+                if metadata.columns.is_empty() {
+                    return Err(crate::error::ProtocolError::TerseRowsWithoutColumns.to_string());
+                }
+                if cells.len() > metadata.columns.len() {
+                    return Err(format!(
+                        "terse row {idx} has {} values but metadata.columns has {}",
+                        cells.len(),
+                        metadata.columns.len()
+                    ));
+                }
+                let mut map = serde_json::Map::with_capacity(cells.len());
+                for (i, cell) in cells.into_iter().enumerate() {
+                    let name =
+                        metadata
+                            .columns
+                            .get(i)
+                            .map(|c| c.name.clone())
+                            .ok_or_else(|| {
+                                format!("terse row {idx} is missing metadata.columns[{i}]")
+                            })?;
+                    map.insert(name, cell);
+                }
+                out.push(map);
+            }
+            other => {
+                return Err(format!(
+                    "query row {idx} must be a JSON object or array, got {other}"
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn default_true() -> bool {
@@ -179,6 +315,11 @@ pub struct QueryMetaData {
     /// IBM i job that produced the result set, when the daemon reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
+    /// Parameter-marker metadata (`IN` / `OUT` / `INOUT`).
+    ///
+    /// Empty on ordinary SELECT/DML. Present on `prepare_sql` and CALL.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<ParameterDetail>,
 }
 
 /// Metadata for one result-set column.
@@ -203,7 +344,88 @@ pub struct Column {
     pub scale: Option<u32>,
 }
 
-/// One CPF / Db2 message returned by a `cl` request.
+/// Describes a parameter marker in a prepared statement or `CALL`.
+///
+/// Wire names follow PROTOCOL.md `ParameterDetail`. `mode` is `IN`, `OUT`,
+/// `INOUT`, or `UNKNOWN`.
+///
+/// # Example
+///
+/// ```
+/// use mapepire::ParameterDetail;
+///
+/// let json = r#"{"type":"INTEGER","mode":"IN","precision":10,"scale":0,"name":"P1"}"#;
+/// let p: ParameterDetail = serde_json::from_str(json).expect("parameter");
+/// assert_eq!(p.name, "P1");
+/// assert_eq!(p.mode, "IN");
+/// assert_eq!(p.type_name, "INTEGER");
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParameterDetail {
+    /// Db2 type name. JSON field `type`.
+    #[serde(rename = "type", default)]
+    pub type_name: String,
+    /// Direction: `IN`, `OUT`, `INOUT`, or `UNKNOWN`.
+    #[serde(default)]
+    pub mode: String,
+    /// Numeric precision or character length.
+    #[serde(default)]
+    pub precision: u32,
+    /// Digits after the decimal point, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<u32>,
+    /// Parameter name (may be empty).
+    #[serde(default)]
+    pub name: String,
+}
+
+/// Output parameter value from a stored-procedure `CALL`.
+///
+/// `index` is 1-based. `value` is `None` for `IN` parameters (the daemon
+/// omits it or sends `null`) and `Some` for `OUT` / `INOUT`.
+///
+/// # Example
+///
+/// ```
+/// use mapepire::ParameterResult;
+/// use serde_json::json;
+///
+/// let json = r#"{"index":3,"type":"INTEGER","precision":10,"scale":0,"name":"P3","value":10}"#;
+/// let p: ParameterResult = serde_json::from_str(json).expect("parm result");
+/// assert_eq!(p.index, 3);
+/// assert_eq!(p.name, "P3");
+/// assert_eq!(p.value, Some(json!(10)));
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParameterResult {
+    /// 1-based parameter index.
+    #[serde(default)]
+    pub index: u32,
+    /// Db2 type name. JSON field `type`.
+    #[serde(rename = "type", default)]
+    pub type_name: String,
+    /// Numeric precision or character length.
+    #[serde(default)]
+    pub precision: u32,
+    /// Digits after the decimal point, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<u32>,
+    /// Parameter name.
+    #[serde(default)]
+    pub name: String,
+    /// Character set ID, when reported for character types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ccsid: Option<u32>,
+    /// Output value. `None` for `IN` (omitted or JSON `null`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+}
+
+/// One CPF / Db2 message returned by a tagged `cl_result` frame.
+///
+/// Live daemons emit job-log rows as [`JobLogEntry`] objects in
+/// [`QueryResult::data`], not this shape. [`ClMessage`] is kept so tagged
+/// mock frames still deserialize.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClMessage {
     /// e.g., `CPF1234`.
@@ -215,6 +437,107 @@ pub struct ClMessage {
     /// Message text.
     #[serde(default)]
     pub text: Option<String>,
+}
+
+/// One job-log row from a live `cl` reply ([`QueryResult::data`]).
+///
+/// Wire names are the IBM i column names. `SEVERITY` may be a JSON number
+/// or a string (JS types it as string; the protocol describes an integer).
+///
+/// # Example
+///
+/// ```
+/// use mapepire::JobLogEntry;
+///
+/// let json = r#"{"MESSAGE_ID":"CPF0006","SEVERITY":40}"#;
+/// let e: JobLogEntry = serde_json::from_str(json).expect("job-log row");
+/// assert_eq!(e.message_id.as_deref(), Some("CPF0006"));
+/// assert_eq!(e.severity.as_deref(), Some("40"));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobLogEntry {
+    /// CPF / SQL message identifier (e.g. `CPF0006`).
+    #[serde(
+        default,
+        rename = "MESSAGE_ID",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub message_id: Option<String>,
+    /// Severity. Protocol may send an integer or a string.
+    #[serde(
+        default,
+        rename = "SEVERITY",
+        deserialize_with = "deserialize_optional_string_or_number",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub severity: Option<String>,
+    /// Timestamp when the message was generated.
+    #[serde(
+        default,
+        rename = "MESSAGE_TIMESTAMP",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub message_timestamp: Option<String>,
+    /// Library from which the message originated.
+    #[serde(
+        default,
+        rename = "FROM_LIBRARY",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub from_library: Option<String>,
+    /// Program from which the message originated.
+    #[serde(
+        default,
+        rename = "FROM_PROGRAM",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub from_program: Option<String>,
+    /// Message type (e.g. `ESCAPE`, `COMPLETION`).
+    #[serde(
+        default,
+        rename = "MESSAGE_TYPE",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub message_type: Option<String>,
+    /// First-level message text.
+    #[serde(
+        default,
+        rename = "MESSAGE_TEXT",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub message_text: Option<String>,
+    /// Second-level message text, when present.
+    #[serde(
+        default,
+        rename = "MESSAGE_SECOND_LEVEL_TEXT",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub message_second_level_text: Option<String>,
+}
+
+/// Accept `SEVERITY` as a JSON string, number, or null.
+fn deserialize_optional_string_or_number<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<Value>::deserialize(deserializer)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Some(i.to_string()))
+            } else if let Some(u) = n.as_u64() {
+                Ok(Some(u.to_string()))
+            } else {
+                Ok(Some(n.to_string()))
+            }
+        }
+        Some(other) => Err(D::Error::custom(format!(
+            "SEVERITY must be a string or number, got {other}"
+        ))),
+    }
 }
 
 /// Error response body.
@@ -293,6 +616,7 @@ mod tests {
                     scale: Some(0),
                 }],
                 job: None,
+                parameters: vec![],
             },
             data: vec![{
                 let mut m = serde_json::Map::new();
@@ -300,6 +624,11 @@ mod tests {
                 m
             }],
             execution_time: 1.23,
+            error: None,
+            sqlcode: None,
+            sqlstate: None,
+            parameter_count: None,
+            output_parms: vec![],
         };
         let r = Response::QueryResult(q);
         let json = serde_json::to_string(&r).unwrap();
@@ -326,6 +655,11 @@ mod tests {
             metadata: QueryMetaData::default(),
             data: vec![],
             execution_time: 0.5,
+            error: None,
+            sqlcode: None,
+            sqlstate: None,
+            parameter_count: None,
+            output_parms: vec![],
         };
         let r = Response::QueryResult(q);
         let json = serde_json::to_string(&r).unwrap();
@@ -403,8 +737,35 @@ mod tests {
             json.get("job").is_none(),
             "absent job must be omitted: {json}"
         );
+        assert!(
+            json.get("parameters").is_none(),
+            "empty parameters must be omitted: {json}"
+        );
         let back: QueryMetaData = serde_json::from_value(json).unwrap();
         assert!(back.job.is_none());
+        assert!(back.parameters.is_empty());
+    }
+
+    #[test]
+    fn test_query_result_sql_rc_and_sql_state_aliases() {
+        let json = r#"{"id":"cl1","success":false,"data":[],"sql_rc":-443,"sql_state":"38501","error":"CPF0006"}"#;
+        let q: QueryResult = serde_json::from_str(json).unwrap();
+        assert!(!q.success);
+        assert_eq!(q.sqlcode, Some(-443));
+        assert_eq!(q.sqlstate.as_deref(), Some("38501"));
+        assert_eq!(q.error.as_deref(), Some("CPF0006"));
+    }
+
+    #[test]
+    fn test_job_log_entry_severity_number_or_string() {
+        let as_number: JobLogEntry =
+            serde_json::from_str(r#"{"MESSAGE_ID":"CPF0006","SEVERITY":40}"#).unwrap();
+        assert_eq!(as_number.message_id.as_deref(), Some("CPF0006"));
+        assert_eq!(as_number.severity.as_deref(), Some("40"));
+
+        let as_string: JobLogEntry =
+            serde_json::from_str(r#"{"MESSAGE_ID":"CPC2102","SEVERITY":"0"}"#).unwrap();
+        assert_eq!(as_string.severity.as_deref(), Some("0"));
     }
 
     #[test]
@@ -415,5 +776,211 @@ mod tests {
         if let Response::Connected { version, .. } = r {
             assert_eq!(version, "");
         }
+    }
+
+    #[test]
+    fn test_query_result_decodes_terse_arrays_via_column_names() {
+        let json = r#"{
+            "id":"q1","success":true,"has_results":true,
+            "metadata":{"column_count":1,"columns":[{"name":"1"}]},
+            "data":[[7]]
+        }"#;
+        let q: QueryResult = serde_json::from_str(json).unwrap();
+        assert_eq!(q.data.len(), 1);
+        assert_eq!(q.data[0]["1"], 7);
+    }
+
+    #[test]
+    fn test_query_result_terse_without_columns_errors() {
+        let json = r#"{"id":"q1","success":true,"data":[[7]]}"#;
+        let err = serde_json::from_str::<QueryResult>(json).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("terse row data requires metadata.columns"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// JS `procedures.test.ts` integer IN/INOUT/OUT: CALL with `[6, 4, 0]`
+    /// returns `output_parms` values `[undefined, 0, 10]`.
+    const CALL_OUT_JSON: &str = r#"{
+        "id":"call1","success":true,"has_results":false,"update_count":0,
+        "is_done":true,"parameter_count":3,
+        "metadata":{
+            "column_count":0,"columns":[],
+            "parameters":[
+                {"type":"INTEGER","mode":"IN","precision":10,"scale":0,"name":"P1"},
+                {"type":"INTEGER","mode":"INOUT","precision":10,"scale":0,"name":"P2"},
+                {"type":"INTEGER","mode":"OUT","precision":10,"scale":0,"name":"P3"}
+            ]
+        },
+        "data":[],
+        "output_parms":[
+            {"index":1,"type":"INTEGER","precision":10,"scale":0,"name":"P1"},
+            {"index":2,"type":"INTEGER","precision":10,"scale":0,"name":"P2","value":0},
+            {"index":3,"type":"INTEGER","precision":10,"scale":0,"name":"P3","value":10}
+        ],
+        "execution_time":5
+    }"#;
+
+    #[test]
+    fn test_query_result_decodes_call_output_parms() {
+        let q: QueryResult = serde_json::from_str(CALL_OUT_JSON).unwrap();
+        assert!(!q.has_results);
+        assert_eq!(q.update_count, 0);
+        assert!(q.data.is_empty());
+        assert_eq!(q.parameter_count, Some(3));
+        assert_eq!(
+            q.metadata
+                .parameters
+                .iter()
+                .map(|p| (p.name.as_str(), p.mode.as_str(), p.type_name.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("P1", "IN", "INTEGER"),
+                ("P2", "INOUT", "INTEGER"),
+                ("P3", "OUT", "INTEGER")
+            ]
+        );
+        assert_eq!(q.output_parms.len(), 3);
+        assert_eq!(q.output_parms[0].value, None);
+        assert_eq!(q.output_parms[1].value, Some(serde_json::json!(0)));
+        assert_eq!(q.output_parms[2].value, Some(serde_json::json!(10)));
+        assert_eq!(q.output_parms[0].index, 1);
+        assert_eq!(q.output_parms[2].name, "P3");
+    }
+
+    #[test]
+    fn test_response_decodes_untagged_call_as_query_result() {
+        let r: Response = serde_json::from_str(CALL_OUT_JSON).unwrap();
+        match r {
+            Response::QueryResult(q) => {
+                assert_eq!(q.parameter_count, Some(3));
+                assert_eq!(q.output_parms[0].value, None);
+                assert_eq!(q.output_parms[1].value, Some(serde_json::json!(0)));
+                assert_eq!(q.output_parms[2].value, Some(serde_json::json!(10)));
+            }
+            other => panic!("expected QueryResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_query_result_omits_empty_output_parms_on_serialize() {
+        let q = QueryResult {
+            id: "q1".into(),
+            success: true,
+            has_results: false,
+            update_count: 0,
+            cont_id: None,
+            is_done: true,
+            metadata: QueryMetaData::default(),
+            data: vec![],
+            execution_time: 0.0,
+            error: None,
+            sqlcode: None,
+            sqlstate: None,
+            parameter_count: None,
+            output_parms: vec![],
+        };
+        let json = serde_json::to_value(&q).unwrap();
+        assert!(
+            json.get("output_parms").is_none(),
+            "empty output_parms must be omitted: {json}"
+        );
+        assert!(
+            json.get("parameter_count").is_none(),
+            "absent parameter_count must be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn test_query_result_terse_row_longer_than_columns_errors() {
+        let json = r#"{
+            "id":"q1","success":true,
+            "metadata":{"columns":[{"name":"A"}]},
+            "data":[[1,2]]
+        }"#;
+        let err = serde_json::from_str::<QueryResult>(json).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("terse row 0 has 2 values but metadata.columns has 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_query_result_rejects_non_object_or_array_row() {
+        let json = r#"{"id":"q1","success":true,"data":["not-a-row"]}"#;
+        let err = serde_json::from_str::<QueryResult>(json).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("query row 0 must be a JSON object or array"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_query_result_terse_partial_row_uses_leading_names() {
+        let json = r#"{
+            "id":"q1","success":true,
+            "metadata":{"column_count":2,"columns":[{"name":"A"},{"name":"B"}]},
+            "data":[[7]]
+        }"#;
+        let q: QueryResult = serde_json::from_str(json).unwrap();
+        assert_eq!(q.data.len(), 1);
+        assert_eq!(q.data[0]["A"], 7);
+        assert!(!q.data[0].contains_key("B"));
+    }
+
+    #[test]
+    fn test_job_log_entry_severity_null_float_u64_and_invalid() {
+        let null: JobLogEntry = serde_json::from_str(r#"{"SEVERITY":null}"#).unwrap();
+        assert_eq!(null.severity, None);
+
+        let omitted: JobLogEntry = serde_json::from_str("{}").unwrap();
+        assert_eq!(omitted.severity, None);
+
+        let float: JobLogEntry = serde_json::from_str(r#"{"SEVERITY":40.5}"#).unwrap();
+        assert_eq!(float.severity.as_deref(), Some("40.5"));
+
+        let big: JobLogEntry = serde_json::from_str(r#"{"SEVERITY":9223372036854775808}"#).unwrap();
+        assert_eq!(big.severity.as_deref(), Some("9223372036854775808"));
+
+        let err = serde_json::from_str::<JobLogEntry>(r#"{"SEVERITY":true}"#).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("SEVERITY must be a string or number"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parameter_result_defaults_null_value_and_ccsid() {
+        let missing: ParameterResult = serde_json::from_str(r#"{"name":"P1"}"#).unwrap();
+        assert_eq!(missing.index, 0);
+        assert_eq!(missing.type_name, "");
+        assert_eq!(missing.precision, 0);
+        assert_eq!(missing.scale, None);
+        assert_eq!(missing.ccsid, None);
+        assert_eq!(missing.value, None);
+
+        let null_value: ParameterResult =
+            serde_json::from_str(r#"{"index":1,"name":"P1","value":null}"#).unwrap();
+        assert_eq!(null_value.value, None);
+
+        let with_ccsid: ParameterResult =
+            serde_json::from_str(r#"{"name":"P1","ccsid":37,"value":"x"}"#).unwrap();
+        assert_eq!(with_ccsid.ccsid, Some(37));
+        assert_eq!(with_ccsid.value, Some(serde_json::json!("x")));
+    }
+
+    #[test]
+    fn test_parameter_detail_defaults() {
+        let p: ParameterDetail = serde_json::from_str("{}").unwrap();
+        assert_eq!(p.type_name, "");
+        assert_eq!(p.mode, "");
+        assert_eq!(p.precision, 0);
+        assert_eq!(p.scale, None);
+        assert_eq!(p.name, "");
     }
 }

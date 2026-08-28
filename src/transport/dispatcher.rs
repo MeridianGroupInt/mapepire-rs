@@ -141,6 +141,15 @@ impl Drop for Dispatcher {
     }
 }
 
+fn protocol_decode_error(err: serde_json::Error) -> ProtocolError {
+    let msg = err.to_string();
+    if msg.contains("terse row data requires metadata.columns") {
+        ProtocolError::TerseRowsWithoutColumns
+    } else {
+        ProtocolError::Json(err)
+    }
+}
+
 /// Pull the `id` field from any `Request` variant. Centralized here so
 /// the dispatcher doesn't need to match every variant.
 //
@@ -195,7 +204,8 @@ fn pending_kind(request: &Request) -> PendingKind {
 
 /// Live untagged `{id, success, job}` is `Connected`. After handshake the
 /// same shape is `getdbjob`. Untagged `{id, success}` is `Pong`; remap
-/// when the outstanding request is sqlclose/setconfig/exit.
+/// when the outstanding request is sqlclose/setconfig/exit/`prepare_sql`.
+/// Ping stays `Pong`.
 fn remap_response(kind: PendingKind, response: Response) -> Response {
     match (kind, response) {
         (PendingKind::GetDbJob, Response::Connected { id, job, .. }) => Response::DbJob {
@@ -208,6 +218,16 @@ fn remap_response(kind: PendingKind, response: Response) -> Response {
         }
         (PendingKind::SqlClose, Response::Pong { id }) => Response::SqlClosed { id, success: true },
         (PendingKind::Exit, Response::Pong { id }) => Response::Exited { id },
+        // Live `prepare_sql` success is `{id, success:true}` with no `cont_id`
+        // (PROTOCOL.md: the request id *is* the handle). Decode lands on
+        // Pong; remap to a prepared ack with an empty handle so `Job::prepare`
+        // can keep a client-side SQL cache and send `prepare_sql_execute`.
+        (PendingKind::PrepareSql, Response::Pong { id }) => Response::PreparedStatement {
+            id,
+            success: true,
+            cont_id: String::new(),
+            execution_time: 0.0,
+        },
         (_, other) => other,
     }
 }
@@ -313,7 +333,7 @@ async fn run(
                                     && let Some(slot) = pending.remove(id)
                                 {
                                     in_flight.fetch_sub(1, Ordering::Relaxed);
-                                    let _ = slot.reply.send(Err(Error::from(ProtocolError::Json(e))));
+                                    let _ = slot.reply.send(Err(Error::from(protocol_decode_error(e))));
                                 }
                             }
                         }
@@ -389,21 +409,26 @@ mod tests {
                 sql: "SELECT 1".into(),
                 rows: None,
                 parameters: None,
+                terse: None,
             },
             Request::PrepareSql {
                 id: id.clone(),
                 sql: "SELECT 1".into(),
+                terse: None,
             },
             Request::PrepareSqlExecute {
                 id: id.clone(),
                 sql: "SELECT 1".into(),
                 parameters: None,
                 rows: None,
+                terse: None,
             },
             Request::Execute {
                 id: id.clone(),
                 cont_id: "c".into(),
                 parameters: None,
+                rows: None,
+                terse: None,
             },
             Request::SqlMore {
                 id: id.clone(),
@@ -417,6 +442,7 @@ mod tests {
             Request::Cl {
                 id: id.clone(),
                 cmd: "DSPLIB".into(),
+                terse: None,
             },
             Request::GetVersion { id: id.clone() },
             Request::GetDbJob { id: id.clone() },
@@ -429,6 +455,7 @@ mod tests {
             Request::Dove {
                 id: id.clone(),
                 sql: "SELECT 1".into(),
+                terse: None,
             },
             Request::Ping { id: id.clone() },
             Request::Exit { id: id.clone() },
@@ -454,9 +481,15 @@ mod tests {
                 column_count: 0,
                 columns: vec![],
                 job: None,
+                parameters: vec![],
             },
             data: vec![],
             execution_time: 0.0,
+            error: None,
+            sqlcode: None,
+            sqlstate: None,
+            parameter_count: None,
+            output_parms: vec![],
         };
         let err = ErrorResponse {
             id: id.clone(),
@@ -571,8 +604,13 @@ mod tests {
             Response::Exited { id } if id == "x"
         ));
         assert!(matches!(
-            remap_response(PendingKind::Ping, pong),
+            remap_response(PendingKind::Ping, pong.clone()),
             Response::Pong { id } if id == "x"
+        ));
+        assert!(matches!(
+            remap_response(PendingKind::PrepareSql, pong),
+            Response::PreparedStatement { id, success, cont_id, .. }
+                if id == "x" && success && cont_id.is_empty()
         ));
     }
 
@@ -602,6 +640,7 @@ mod tests {
                 sql: "SELECT 1".into(),
                 rows: None,
                 parameters: None,
+                terse: None,
             }),
             PendingKind::Other
         );

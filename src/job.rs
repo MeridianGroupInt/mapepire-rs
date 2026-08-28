@@ -13,7 +13,8 @@
 //! - `sql` — SQL text for SQL-bearing methods.
 //! - `param_count` — number of parameters for parameterized variants.
 //! - `command` — CL command text for [`Job::cl`].
-//! - `level` — trace level for [`Job::set_trace`].
+//! - `level` — trace level for [`Job::set_trace`] / [`Job::set_trace_config`].
+//! - `dest` — trace destination for [`Job::set_trace_config`].
 //!
 //! Per-parameter values are governed by per-Pool [`crate::ParameterLogging`]
 //! policy (added in Task 9 / PRO-587). Direct-Job users get the equivalent
@@ -27,32 +28,78 @@ use std::sync::atomic::AtomicU32;
 
 use crate::config::DaemonServer;
 use crate::error::Error;
-use crate::protocol::{IdAllocator, Request, Response};
+use crate::protocol::{ClMessage, IdAllocator, JobLogEntry, QueryResult, Request, Response};
+use crate::query::ExecuteOptions;
 use crate::transport::{self, ConnectedDispatcher, Dispatcher, DispatcherHandle};
 
-/// Trace level for the daemon. Maps to the `setconfig.tracelevel` key.
+/// Trace level for `setconfig.tracelevel`.
 ///
-/// The daemon accepts opaque strings; this enum pins the documented set
-/// from the v0.2 wire-protocol notes. Use [`Job::set_trace`] to apply.
+/// mapepire-js `ServerTraceLevel` is `OFF | ON | ERRORS | DATASTREAM`.
+/// [`TraceLevel::All`] is the `"ON"` wire value — the daemon has no
+/// `ALL` constant. Use [`Job::set_trace`] or [`Job::set_trace_config`].
+///
+/// ```
+/// use mapepire::TraceLevel;
+///
+/// assert_eq!(TraceLevel::Off.as_str(), "OFF");
+/// assert_eq!(TraceLevel::All.as_str(), "ON");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceLevel {
-    /// No tracing.
+    /// No tracing (`"OFF"`).
     Off,
-    /// Errors only.
+    /// Errors only (`"ERRORS"`).
     Errors,
-    /// Errors + statement boundaries.
+    /// Errors + statement boundaries (`"DATASTREAM"`).
     Datastream,
-    /// Full diagnostic (high overhead — use sparingly).
+    /// Full diagnostic (`"ON"` on the wire). High overhead.
     All,
 }
 
 impl TraceLevel {
-    fn as_str(self) -> &'static str {
+    /// Wire token: `OFF`, `ON`, `ERRORS`, or `DATASTREAM`.
+    ///
+    /// [`TraceLevel::All`] returns `"ON"` (mapepire-js). Never `"ALL"`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             TraceLevel::Off => "OFF",
             TraceLevel::Errors => "ERRORS",
             TraceLevel::Datastream => "DATASTREAM",
-            TraceLevel::All => "ALL",
+            TraceLevel::All => "ON",
+        }
+    }
+}
+
+/// Trace destination for `setconfig.tracedest`.
+///
+/// Jetty `Tracer.Dest` is `FILE` or `IN_MEM`. Empty string is not a dest
+/// (`No enum constant Tracer.Dest`). [`Job::set_trace`] defaults to
+/// [`TraceDest::InMem`] so [`Job::fetch_trace`] can read the buffer.
+///
+/// ```
+/// use mapepire::TraceDest;
+///
+/// assert_eq!(TraceDest::File.as_str(), "FILE");
+/// assert_eq!(TraceDest::InMem.as_str(), "IN_MEM");
+/// assert_eq!(TraceDest::default(), TraceDest::InMem);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TraceDest {
+    /// Write trace records to a server-side file.
+    File,
+    /// Buffer in memory so [`Job::fetch_trace`] (`gettracedata`) can return them.
+    #[default]
+    InMem,
+}
+
+impl TraceDest {
+    /// Wire token: `"FILE"` or `"IN_MEM"`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TraceDest::File => "FILE",
+            TraceDest::InMem => "IN_MEM",
         }
     }
 }
@@ -241,15 +288,71 @@ impl Job {
         tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, sql = %sql))
     )]
     pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
+        self.execute_opts(sql, ExecuteOptions::default()).await
+    }
+
+    /// Execute a SQL statement with explicit [`ExecuteOptions`].
+    ///
+    /// Sends `rows` on the `sql` request. [`ExecuteOptions::rows`] `None`
+    /// uses 100 (mapepire-js). `Some(0)` is rejected before send.
+    /// [`ExecuteOptions::terse`] `true` sends `terse: true`; `false` omits
+    /// the field.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::execute`], plus [`Error::Protocol`] when
+    /// [`ExecuteOptions::rows`] is `Some(0)`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, ExecuteOptions, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job
+    ///     .execute_opts(
+    ///         "SELECT * FROM CORPDATA.EMPLOYEE",
+    ///         ExecuteOptions {
+    ///             rows: Some(50),
+    ///             terse: false,
+    ///         },
+    ///     )
+    ///     .await?;
+    /// drop(rows);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip(self, opts),
+            fields(job_id = %self.inner.initial_job, sql = %sql, rows = ?opts.rows)
+        )
+    )]
+    pub async fn execute_opts(
+        &self,
+        sql: &str,
+        opts: ExecuteOptions,
+    ) -> crate::Result<crate::query::Rows> {
         #[cfg(feature = "metrics")]
         let start = std::time::Instant::now();
-        let result = self.execute_inner(sql, None).await;
+        let result = self.execute_inner(sql, None, opts).await;
         #[cfg(feature = "metrics")]
         record_execute_latency(start);
         result
     }
 
     /// Execute a parameterized SQL statement.
+    ///
+    /// Stored-procedure `CALL` uses this path (no separate opcode). OUT /
+    /// INOUT values are on [`crate::query::Rows::output_parms`].
     ///
     /// # Errors
     ///
@@ -294,9 +397,68 @@ impl Job {
         sql: &str,
         params: &[serde_json::Value],
     ) -> crate::Result<crate::query::Rows> {
+        self.execute_with_opts(sql, params, ExecuteOptions::default())
+            .await
+    }
+
+    /// Execute a parameterized SQL statement with explicit [`ExecuteOptions`].
+    ///
+    /// Always sends `rows` on `prepare_sql_execute` so the default path
+    /// does not hit SQLSTATE 24000 from an omitted page size.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::execute_with`], plus [`Error::Protocol`] when
+    /// [`ExecuteOptions::rows`] is `Some(0)`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, ExecuteOptions, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job
+    ///     .execute_with_opts(
+    ///         "SELECT * FROM ORDERS WHERE CUSTNO = ?",
+    ///         &[serde_json::json!(42)],
+    ///         ExecuteOptions {
+    ///             rows: Some(50),
+    ///             terse: false,
+    ///         },
+    ///     )
+    ///     .await?;
+    /// drop(rows);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip(self, params, opts),
+            fields(
+                job_id = %self.inner.initial_job,
+                sql = %sql,
+                param_count = params.len(),
+                rows = ?opts.rows,
+            )
+        )
+    )]
+    pub async fn execute_with_opts(
+        &self,
+        sql: &str,
+        params: &[serde_json::Value],
+        opts: ExecuteOptions,
+    ) -> crate::Result<crate::query::Rows> {
         #[cfg(feature = "metrics")]
         let start = std::time::Instant::now();
-        let result = self.execute_inner(sql, Some(params.to_vec())).await;
+        let result = self.execute_inner(sql, Some(params.to_vec()), opts).await;
         #[cfg(feature = "metrics")]
         record_execute_latency(start);
         result
@@ -306,33 +468,46 @@ impl Job {
         &self,
         sql: &str,
         params: Option<Vec<serde_json::Value>>,
+        opts: ExecuteOptions,
     ) -> crate::Result<crate::query::Rows> {
+        let page_size = opts.resolved_rows()?;
+        let terse = opts.terse_on_wire();
         let id = self.inner.ids.next();
         let request = match params {
             None => Request::Sql {
                 id: id.clone(),
                 sql: sql.to_owned(),
-                rows: None,
+                rows: Some(page_size),
                 parameters: None,
+                terse,
             },
             Some(params) => Request::PrepareSqlExecute {
                 id: id.clone(),
                 sql: sql.to_owned(),
                 parameters: Some(vec![params]),
-                rows: None,
+                rows: Some(page_size),
+                terse,
             },
         };
         let resp = self.send(request).await?;
         match resp {
-            Response::QueryResult(q) if q.id == id => {
-                Ok(crate::query::Rows::new(q, self.inner.handle.clone()))
-            }
+            Response::QueryResult(q) if q.id == id => Ok(crate::query::Rows::new(
+                q,
+                self.inner.handle.clone(),
+                page_size,
+            )),
             Response::Error(e) => Err(crate::job_helpers::server_error(e)),
             ref other => Err(crate::job_helpers::unexpected(other)),
         }
     }
 
     /// Prepare a SQL statement for repeated execution.
+    ///
+    /// Live daemons often reply `{id, success:true}` with no `cont_id`.
+    /// That is not a failure: the returned [`crate::query::Query`] caches
+    /// `sql` on the client and [`crate::query::Query::execute_with`] sends
+    /// `prepare_sql_execute`. When the daemon does return a `cont_id`,
+    /// execute uses that handle.
     ///
     /// # Errors
     ///
@@ -366,12 +541,32 @@ impl Job {
             .send(Request::PrepareSql {
                 id: id.clone(),
                 sql: sql.to_owned(),
+                terse: None,
             })
             .await?;
         match resp {
             Response::PreparedStatement {
                 id: got, cont_id, ..
-            } if got == id => Ok(crate::query::Query::new(cont_id, self.inner.handle.clone())),
+            } if got == id => {
+                let handle = if cont_id.is_empty() {
+                    None
+                } else {
+                    Some(cont_id)
+                };
+                Ok(crate::query::Query::new(
+                    handle,
+                    sql.to_owned(),
+                    self.inner.handle.clone(),
+                ))
+            }
+            // Dispatcher remaps PrepareSql + Pong to PreparedStatement with
+            // an empty handle; keep Pong as a fallback so a missed remap
+            // still succeeds as a client-side Query.
+            Response::Pong { id: got } if got == id => Ok(crate::query::Query::new(
+                None,
+                sql.to_owned(),
+                self.inner.handle.clone(),
+            )),
             Response::Error(e) => Err(crate::job_helpers::server_error(e)),
             ref other => Err(crate::job_helpers::unexpected(other)),
         }
@@ -469,8 +664,9 @@ impl Job {
 
     /// Configure the daemon's trace level via `setconfig`.
     ///
-    /// Sets `tracelevel` to the enum's string representation; `tracedest`
-    /// is left empty (server uses its default destination).
+    /// Destination is [`TraceDest::InMem`] so [`Job::fetch_trace`] can
+    /// read the buffer. Use [`Job::set_trace_config`] to write a
+    /// server-side [`TraceDest::File`]. Never sends `tracedest: ""`.
     ///
     /// # Errors
     ///
@@ -496,17 +692,56 @@ impl Job {
     /// ```
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, level = ?level))
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, dest = "IN_MEM", level = ?level))
     )]
     pub async fn set_trace(&self, level: TraceLevel) -> crate::Result<()> {
+        self.apply_trace(TraceDest::InMem, level).await
+    }
+
+    /// Configure daemon tracing with an explicit destination (JS
+    /// `setTraceConfig`).
+    ///
+    /// [`TraceDest::InMem`] buffers for [`Job::fetch_trace`];
+    /// [`TraceDest::File`] writes a server-side path. Never sends
+    /// `tracedest: ""`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::set_trace`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig, TraceDest, TraceLevel};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// job.set_trace_config(TraceDest::File, TraceLevel::Datastream)
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, dest = ?dest, level = ?level))
+    )]
+    pub async fn set_trace_config(&self, dest: TraceDest, level: TraceLevel) -> crate::Result<()> {
+        self.apply_trace(dest, level).await
+    }
+
+    async fn apply_trace(&self, dest: TraceDest, level: TraceLevel) -> crate::Result<()> {
         let id = self.inner.ids.next();
-        // `tracedest: String::new()` — empty string asks the daemon to use
-        // its default trace destination (no override).
         let resp = self
             .send(Request::SetConfig {
                 id: id.clone(),
                 tracelevel: level.as_str().to_owned(),
-                tracedest: String::new(),
+                tracedest: dest.as_str().to_owned(),
             })
             .await?;
         match resp {
@@ -526,8 +761,8 @@ impl Job {
     /// Fetch the daemon's accumulated trace data as raw text.
     ///
     /// Returns whatever the daemon has buffered since the last
-    /// [`Job::set_trace`] call — typically driver-side trace records, format
-    /// is daemon-defined.
+    /// [`Job::set_trace`] / [`Job::set_trace_config`] call. Only populated
+    /// when dest is [`TraceDest::InMem`] (the [`Job::set_trace`] default).
     ///
     /// # Errors
     ///
@@ -617,6 +852,7 @@ impl Job {
             .send(Request::Dove {
                 id: id.clone(),
                 sql: sql.to_owned(),
+                terse: None,
             })
             .await?;
         match resp {
@@ -638,15 +874,20 @@ impl Job {
 
     /// Run an IBM i CL command.
     ///
-    /// Returns the first [`crate::protocol::ClMessage`] from the daemon's
-    /// response. The full message list surfaces in a future v0.3+ typed
-    /// `CommandResult`; for v0.2 this is a best-effort single-message view.
+    /// Live daemons reply with an untagged [`QueryResult`] whose `data` is
+    /// the job log. Failed commands (`CPF0006`, `sql_rc = -443`) still
+    /// return [`Ok`] with [`ClOutcome::success`] = `false` and the log in
+    /// [`ClOutcome::entries`] — matching mapepire-js `SQLJob.clcommand`,
+    /// which does not throw.
+    ///
+    /// Tagged `cl_result` mock frames are still accepted and mapped onto
+    /// the same [`ClOutcome`].
     ///
     /// # Errors
     ///
-    /// As [`Job::execute`], plus [`Error::Server`] if the daemon returns
-    /// `success: false`, or [`Error::Internal`] if the daemon returns an
-    /// empty message list despite `success: true`.
+    /// As [`Job::execute`] for transport / protocol failures, plus
+    /// [`Error::Server`] for a bare `success: false` frame with no `data`
+    /// (not a job-log reply).
     ///
     /// # Example
     ///
@@ -661,10 +902,15 @@ impl Job {
     /// #     .build()
     /// #     .expect("missing required field");
     /// let job = Job::connect(&server).await?;
-    /// // DSPLIB emits a CPF2102 completion message — a single ClMessage.
-    /// let msg = job.cl("DSPLIB MYLIB").await?;
-    /// if let Some(text) = msg.text {
-    ///     println!("CL message: {text}");
+    /// let outcome = job.cl("DSPLIB MYLIB").await?;
+    /// if outcome.success {
+    ///     for entry in &outcome.entries {
+    ///         if let Some(text) = &entry.message_text {
+    ///             println!("CL message: {text}");
+    ///         }
+    ///     }
+    /// } else {
+    ///     println!("CL failed: {:?}", outcome.error);
     /// }
     /// # Ok(())
     /// # }
@@ -673,33 +919,103 @@ impl Job {
         feature = "tracing",
         tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, command = %command))
     )]
-    pub async fn cl(&self, command: &str) -> crate::Result<crate::protocol::ClMessage> {
+    pub async fn cl(&self, command: &str) -> crate::Result<ClOutcome> {
         let id = self.inner.ids.next();
         let resp = self
             .send(Request::Cl {
                 id: id.clone(),
                 cmd: command.to_owned(),
+                terse: None,
             })
             .await?;
-        match resp {
-            Response::ClResult {
-                id: got,
-                success,
-                messages,
-                ..
-            } if got == id => {
-                if !success {
-                    return Err(crate::job_helpers::server_failed("cl"));
-                }
-                // Return the first message; the full message list surfaces
-                // in a future v0.3+ typed CommandResult (v0.2 limitation).
-                messages.into_iter().next().ok_or_else(|| {
-                    Error::Internal("daemon returned ClResult with no messages".to_string())
+        cl_outcome_from_response(&id, resp)
+    }
+}
+
+/// Outcome of [`Job::cl`].
+///
+/// Failed CL is `success: false` with the job log still in `entries`.
+/// That is not a [`crate::Error::Server`].
+///
+/// # Example
+///
+/// ```
+/// use mapepire::ClOutcome;
+///
+/// let failed = ClOutcome {
+///     success: false,
+///     error: Some("[CPF0006] Errors occurred in command.".into()),
+///     sqlcode: Some(-443),
+///     sqlstate: Some("38501".into()),
+///     entries: vec![],
+/// };
+/// assert!(!failed.success);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClOutcome {
+    /// `true` when the command completed without an escape message.
+    pub success: bool,
+    /// Daemon `error` text, when present (typically the CPF0006 line).
+    pub error: Option<String>,
+    /// Db2 SQL code (`sql_rc` on the wire). `-443` for a CL escape.
+    pub sqlcode: Option<i32>,
+    /// SQLSTATE (`sql_state` on the wire). `38501` for a CL escape.
+    pub sqlstate: Option<String>,
+    /// Full job log, one row per `QueryResult.data` object.
+    pub entries: Vec<JobLogEntry>,
+}
+
+impl ClOutcome {
+    fn from_query_result(q: QueryResult) -> Self {
+        Self {
+            success: q.success,
+            error: q.error,
+            sqlcode: q.sqlcode,
+            sqlstate: q.sqlstate,
+            entries: q
+                .data
+                .into_iter()
+                .map(|row| {
+                    serde_json::from_value(serde_json::Value::Object(row)).unwrap_or_default()
                 })
-            }
-            Response::Error(e) => Err(crate::job_helpers::server_error(e)),
-            ref other => Err(crate::job_helpers::unexpected(other)),
+                .collect(),
         }
+    }
+
+    fn from_cl_result(success: bool, messages: Vec<ClMessage>) -> Self {
+        let error = if success {
+            None
+        } else {
+            messages.iter().find_map(|m| m.text.clone())
+        };
+        Self {
+            success,
+            error,
+            sqlcode: None,
+            sqlstate: None,
+            entries: messages
+                .into_iter()
+                .map(|m| JobLogEntry {
+                    message_id: m.id,
+                    message_type: m.kind,
+                    message_text: m.text,
+                    ..JobLogEntry::default()
+                })
+                .collect(),
+        }
+    }
+}
+
+fn cl_outcome_from_response(expected_id: &str, resp: Response) -> Result<ClOutcome, Error> {
+    match resp {
+        Response::QueryResult(q) if q.id == expected_id => Ok(ClOutcome::from_query_result(q)),
+        Response::ClResult {
+            id: got,
+            success,
+            messages,
+        } if got == expected_id => Ok(ClOutcome::from_cl_result(success, messages)),
+        Response::Error(e) => Err(crate::job_helpers::server_error(e)),
+        ref other => Err(crate::job_helpers::unexpected(other)),
     }
 }
 
@@ -733,5 +1049,146 @@ impl Drop for Job {
         crate::job_helpers::spawn_best_effort(async move {
             let _ = handle.send(Request::Exit { id }).await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+    use crate::protocol::ErrorResponse;
+
+    fn job_log_query_result(id: &str, success: bool) -> QueryResult {
+        let mut row = serde_json::Map::new();
+        row.insert("MESSAGE_ID".into(), serde_json::json!("CPF0006"));
+        row.insert("SEVERITY".into(), serde_json::json!(40));
+        row.insert(
+            "MESSAGE_TEXT".into(),
+            serde_json::json!("[CPF0006] Errors occurred in command."),
+        );
+        QueryResult {
+            id: id.into(),
+            success,
+            has_results: true,
+            update_count: -1,
+            cont_id: None,
+            is_done: true,
+            metadata: crate::protocol::QueryMetaData::default(),
+            data: vec![row],
+            execution_time: 1.0,
+            error: if success {
+                None
+            } else {
+                Some("[CPF0006] Errors occurred in command.".into())
+            },
+            sqlcode: if success { None } else { Some(-443) },
+            sqlstate: if success { None } else { Some("38501".into()) },
+            parameter_count: None,
+            output_parms: vec![],
+        }
+    }
+
+    #[test]
+    fn test_cl_outcome_from_query_result_failure_keeps_job_log() {
+        let q = job_log_query_result("cl1", false);
+        let outcome = cl_outcome_from_response("cl1", Response::QueryResult(q)).unwrap();
+        assert!(!outcome.success);
+        assert_eq!(outcome.sqlcode, Some(-443));
+        assert_eq!(outcome.sqlstate.as_deref(), Some("38501"));
+        assert_eq!(outcome.entries.len(), 1);
+        assert_eq!(outcome.entries[0].message_id.as_deref(), Some("CPF0006"));
+        assert_eq!(outcome.entries[0].severity.as_deref(), Some("40"));
+    }
+
+    #[test]
+    fn test_cl_outcome_from_tagged_cl_result() {
+        let resp = Response::ClResult {
+            id: "cl1".into(),
+            success: true,
+            messages: vec![ClMessage {
+                id: Some("CPC2102".into()),
+                kind: Some("COMPLETION".into()),
+                text: Some("Library displayed.".into()),
+            }],
+        };
+        let outcome = cl_outcome_from_response("cl1", resp).unwrap();
+        assert!(outcome.success);
+        assert_eq!(outcome.entries.len(), 1);
+        assert_eq!(outcome.entries[0].message_id.as_deref(), Some("CPC2102"));
+        assert_eq!(
+            outcome.entries[0].message_text.as_deref(),
+            Some("Library displayed.")
+        );
+    }
+
+    #[test]
+    fn test_cl_outcome_from_tagged_cl_result_failure_is_ok() {
+        let resp = Response::ClResult {
+            id: "cl1".into(),
+            success: false,
+            messages: vec![ClMessage {
+                id: Some("CPF0006".into()),
+                kind: Some("ESCAPE".into()),
+                text: Some("[CPF0006] Errors occurred in command.".into()),
+            }],
+        };
+        let outcome = cl_outcome_from_response("cl1", resp).unwrap();
+        assert!(!outcome.success);
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("[CPF0006] Errors occurred in command.")
+        );
+        assert_eq!(outcome.entries[0].message_id.as_deref(), Some("CPF0006"));
+    }
+
+    #[test]
+    fn test_cl_outcome_bare_error_is_err() {
+        let resp = Response::Error(ErrorResponse {
+            id: "cl1".into(),
+            success: false,
+            sqlstate: Some("38501".into()),
+            sqlcode: Some(-443),
+            error: Some("nope".into()),
+            job: None,
+        });
+        let err = cl_outcome_from_response("cl1", resp).unwrap_err();
+        assert!(matches!(err, Error::Server(_)));
+    }
+
+    #[test]
+    fn test_trace_level_wire_strings() {
+        assert_eq!(TraceLevel::Off.as_str(), "OFF");
+        assert_eq!(TraceLevel::Errors.as_str(), "ERRORS");
+        assert_eq!(TraceLevel::Datastream.as_str(), "DATASTREAM");
+        assert_eq!(TraceLevel::All.as_str(), "ON");
+        assert_ne!(TraceLevel::All.as_str(), "ALL");
+    }
+
+    #[test]
+    fn test_trace_dest_wire_strings() {
+        assert_eq!(TraceDest::File.as_str(), "FILE");
+        assert_eq!(TraceDest::InMem.as_str(), "IN_MEM");
+        assert_eq!(TraceDest::default(), TraceDest::InMem);
+    }
+
+    #[test]
+    fn test_set_trace_request_never_sends_empty_dest() {
+        let r = Request::SetConfig {
+            id: "1".into(),
+            tracelevel: TraceLevel::Off.as_str().to_owned(),
+            tracedest: TraceDest::InMem.as_str().to_owned(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains(r#""tracedest":"IN_MEM""#));
+        assert!(!json.contains(r#""tracedest":"""#));
+        let all = Request::SetConfig {
+            id: "2".into(),
+            tracelevel: TraceLevel::All.as_str().to_owned(),
+            tracedest: TraceDest::InMem.as_str().to_owned(),
+        };
+        let json = serde_json::to_string(&all).unwrap();
+        assert!(json.contains(r#""tracelevel":"ON""#));
+        assert!(!json.contains(r#""tracelevel":"ALL""#));
     }
 }

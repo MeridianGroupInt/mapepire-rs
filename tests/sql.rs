@@ -50,11 +50,17 @@ fn select_query_result(id: &str) -> mapepire::QueryResult {
                 },
             ],
             job: None,
+            parameters: vec![],
         },
         data: vec![row],
         cont_id: None,
         is_done: true,
         execution_time: 5.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     }
 }
 
@@ -71,11 +77,17 @@ fn dml_query_result(id: &str, count: i64) -> mapepire::QueryResult {
             column_count: 0,
             columns: vec![],
             job: None,
+            parameters: vec![],
         },
         data: vec![],
         cont_id: None,
         is_done: true,
         execution_time: 2.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     }
 }
 

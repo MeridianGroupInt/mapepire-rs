@@ -70,6 +70,10 @@ pub enum Request {
         /// Optional bound parameters (one set).
         #[serde(skip_serializing_if = "Option::is_none")]
         parameters: Option<Vec<serde_json::Value>>,
+        /// When `Some(true)`, the daemon returns each row as a JSON array
+        /// in column order. Omitted (`None`) keeps object rows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terse: Option<bool>,
     },
 
     /// Prepare a SQL statement without executing.
@@ -78,6 +82,10 @@ pub enum Request {
         id: String,
         /// SQL text.
         sql: String,
+        /// When `Some(true)`, subsequent result rows are arrays in column
+        /// order. Omitted (`None`) keeps object rows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terse: Option<bool>,
     },
 
     /// Prepare and execute in one round-trip; supports batched parameters.
@@ -86,13 +94,25 @@ pub enum Request {
         id: String,
         /// SQL text.
         sql: String,
-        /// One or more parameter sets. A vector of vectors yields one
-        /// execution per inner set.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        /// One or more parameter sets.
+        ///
+        /// In memory this is always a vector of sets. On the wire a single
+        /// set serializes as a flat JSON array (`[7]`, matching mapepire-js
+        /// and PROTOCOL.md); two or more sets stay nested
+        /// (`[[1,"a"],[2,"b"]]`).
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "parameter_sets"
+        )]
         parameters: Option<Vec<Vec<serde_json::Value>>>,
         /// Initial page size for the resulting cursor (per execution).
         #[serde(skip_serializing_if = "Option::is_none")]
         rows: Option<u32>,
+        /// When `Some(true)`, result rows are arrays in column order.
+        /// Omitted (`None`) keeps object rows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terse: Option<bool>,
     },
 
     /// Execute a previously prepared statement.
@@ -104,6 +124,13 @@ pub enum Request {
         /// Parameter set for this execution.
         #[serde(skip_serializing_if = "Option::is_none")]
         parameters: Option<Vec<serde_json::Value>>,
+        /// Page size for this execution; `None` lets the server pick.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rows: Option<u32>,
+        /// When `Some(true)`, result rows are arrays in column order.
+        /// Omitted (`None`) keeps object rows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terse: Option<bool>,
     },
 
     /// Fetch the next page of rows from an open cursor.
@@ -132,6 +159,11 @@ pub enum Request {
         id: String,
         /// CL command text — e.g., `WRKACTJOB`.
         cmd: String,
+        /// When `Some(true)`, job-log rows are arrays in column order.
+        /// Omitted (`None`) keeps object rows. [`crate::Job::cl`] always
+        /// omits this so job-log mapping stays named columns.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terse: Option<bool>,
     },
 
     /// Retrieve the daemon version.
@@ -153,9 +185,13 @@ pub enum Request {
     SetConfig {
         /// Caller-supplied correlation id.
         id: String,
-        /// Tracing level — opaque server-defined string.
+        /// Tracing level — `OFF`, `ON`, `ERRORS`, `DATASTREAM`, or
+        /// `INPUT_AND_ERRORS`. Omitted or empty leaves the current level.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         tracelevel: String,
-        /// Trace destination — opaque server-defined string.
+        /// Trace destination — `FILE` or `IN_MEM`. Never `""` (Jetty
+        /// `Tracer.Dest` has no empty constant). Omitted leaves the current dest.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         tracedest: String,
     },
 
@@ -172,6 +208,10 @@ pub enum Request {
         id: String,
         /// SQL statement to explain.
         sql: String,
+        /// When `Some(true)`, result rows (if `run` is set by the daemon)
+        /// are arrays in column order. Omitted (`None`) keeps object rows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terse: Option<bool>,
     },
 
     /// Health check.
@@ -215,39 +255,48 @@ impl fmt::Debug for Request {
                 sql,
                 rows,
                 parameters,
+                terse,
             } => f
                 .debug_struct("Sql")
                 .field("id", id)
                 .field("sql", sql)
                 .field("rows", rows)
                 .field("parameters", parameters)
+                .field("terse", terse)
                 .finish(),
-            Self::PrepareSql { id, sql } => f
+            Self::PrepareSql { id, sql, terse } => f
                 .debug_struct("PrepareSql")
                 .field("id", id)
                 .field("sql", sql)
+                .field("terse", terse)
                 .finish(),
             Self::PrepareSqlExecute {
                 id,
                 sql,
                 parameters,
                 rows,
+                terse,
             } => f
                 .debug_struct("PrepareSqlExecute")
                 .field("id", id)
                 .field("sql", sql)
                 .field("parameters", parameters)
                 .field("rows", rows)
+                .field("terse", terse)
                 .finish(),
             Self::Execute {
                 id,
                 cont_id,
                 parameters,
+                rows,
+                terse,
             } => f
                 .debug_struct("Execute")
                 .field("id", id)
                 .field("cont_id", cont_id)
                 .field("parameters", parameters)
+                .field("rows", rows)
+                .field("terse", terse)
                 .finish(),
             Self::SqlMore { id, cont_id, rows } => f
                 .debug_struct("SqlMore")
@@ -260,10 +309,11 @@ impl fmt::Debug for Request {
                 .field("id", id)
                 .field("cont_id", cont_id)
                 .finish(),
-            Self::Cl { id, cmd } => f
+            Self::Cl { id, cmd, terse } => f
                 .debug_struct("Cl")
                 .field("id", id)
                 .field("cmd", cmd)
+                .field("terse", terse)
                 .finish(),
             Self::GetVersion { id } => f.debug_struct("GetVersion").field("id", id).finish(),
             Self::GetDbJob { id } => f.debug_struct("GetDbJob").field("id", id).finish(),
@@ -278,13 +328,67 @@ impl fmt::Debug for Request {
                 .field("tracelevel", tracelevel)
                 .field("tracedest", tracedest)
                 .finish(),
-            Self::Dove { id, sql } => f
+            Self::Dove { id, sql, terse } => f
                 .debug_struct("Dove")
                 .field("id", id)
                 .field("sql", sql)
+                .field("terse", terse)
                 .finish(),
             Self::Ping { id } => f.debug_struct("Ping").field("id", id).finish(),
             Self::Exit { id } => f.debug_struct("Exit").field("id", id).finish(),
+        }
+    }
+}
+
+/// Wire shape for `prepare_sql_execute.parameters`.
+///
+/// PROTOCOL.md / mapepire-js: one set is a JSON array of values (`[7]`);
+/// a batch is an array of those arrays (`[[1,"a"],[2,"b"]]`). The in-memory
+/// type stays `Vec<Vec<Value>>` so `Job` / `Query` can treat every call as
+/// a list of sets.
+mod parameter_sets {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value;
+
+    // serde `serialize_with` receives `&FieldType`; the field is `Option<_>`.
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S>(sets: &Option<Vec<Vec<Value>>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match sets {
+            None => serializer.serialize_none(),
+            Some(sets) if sets.len() == 1 => sets[0].serialize(serializer),
+            Some(sets) => sets.serialize(serializer),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<Vec<Value>>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let Some(value) = Option::<Value>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        match value {
+            Value::Null => Ok(None),
+            Value::Array(items) => {
+                if items.iter().all(Value::is_array) {
+                    Ok(Some(
+                        items
+                            .into_iter()
+                            .filter_map(|v| match v {
+                                Value::Array(inner) => Some(inner),
+                                _ => None,
+                            })
+                            .collect(),
+                    ))
+                } else {
+                    Ok(Some(vec![items]))
+                }
+            }
+            _ => Err(D::Error::custom("parameters must be a JSON array")),
         }
     }
 }
@@ -360,6 +464,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn non_secret_variants_debug_faithfully() {
         // Every variant, so each arm of the hand-written `Debug` is exercised
         // and none of them silently stops rendering a field. `Connect` has no
@@ -385,15 +490,17 @@ mod tests {
                     sql: "SELECT 1".into(),
                     rows: Some(10),
                     parameters: None,
+                    terse: None,
                 },
-                r#"Sql { id: "1", sql: "SELECT 1", rows: Some(10), parameters: None }"#,
+                r#"Sql { id: "1", sql: "SELECT 1", rows: Some(10), parameters: None, terse: None }"#,
             ),
             (
                 Request::PrepareSql {
                     id: "2".into(),
                     sql: "SELECT ?".into(),
+                    terse: None,
                 },
-                r#"PrepareSql { id: "2", sql: "SELECT ?" }"#,
+                r#"PrepareSql { id: "2", sql: "SELECT ?", terse: None }"#,
             ),
             (
                 Request::PrepareSqlExecute {
@@ -401,16 +508,19 @@ mod tests {
                     sql: "SELECT ?".into(),
                     parameters: None,
                     rows: None,
+                    terse: None,
                 },
-                r#"PrepareSqlExecute { id: "3", sql: "SELECT ?", parameters: None, rows: None }"#,
+                r#"PrepareSqlExecute { id: "3", sql: "SELECT ?", parameters: None, rows: None, terse: None }"#,
             ),
             (
                 Request::Execute {
                     id: "4".into(),
                     cont_id: "cur-1".into(),
                     parameters: Some(vec![serde_json::Value::from("x")]),
+                    rows: None,
+                    terse: None,
                 },
-                r#"Execute { id: "4", cont_id: "cur-1", parameters: Some([String("x")]) }"#,
+                r#"Execute { id: "4", cont_id: "cur-1", parameters: Some([String("x")]), rows: None, terse: None }"#,
             ),
             (
                 Request::SqlMore {
@@ -431,8 +541,9 @@ mod tests {
                 Request::Cl {
                     id: "6".into(),
                     cmd: "WRKACTJOB".into(),
+                    terse: None,
                 },
-                r#"Cl { id: "6", cmd: "WRKACTJOB" }"#,
+                r#"Cl { id: "6", cmd: "WRKACTJOB", terse: None }"#,
             ),
             (
                 Request::GetVersion { id: "7".into() },
@@ -445,10 +556,10 @@ mod tests {
             (
                 Request::SetConfig {
                     id: "9".into(),
-                    tracelevel: "errors".into(),
-                    tracedest: "in_mem".into(),
+                    tracelevel: "ERRORS".into(),
+                    tracedest: "IN_MEM".into(),
                 },
-                r#"SetConfig { id: "9", tracelevel: "errors", tracedest: "in_mem" }"#,
+                r#"SetConfig { id: "9", tracelevel: "ERRORS", tracedest: "IN_MEM" }"#,
             ),
             (
                 Request::GetTraceData { id: "10".into() },
@@ -458,8 +569,9 @@ mod tests {
                 Request::Dove {
                     id: "11".into(),
                     sql: "SELECT 1".into(),
+                    terse: None,
                 },
-                r#"Dove { id: "11", sql: "SELECT 1" }"#,
+                r#"Dove { id: "11", sql: "SELECT 1", terse: None }"#,
             ),
             (Request::Ping { id: "12".into() }, r#"Ping { id: "12" }"#),
             (Request::Exit { id: "13".into() }, r#"Exit { id: "13" }"#),
@@ -486,6 +598,7 @@ mod tests {
             sql: "SELECT * FROM ORDERS WHERE ID = ?".into(),
             rows: Some(100),
             parameters: Some(vec![serde_json::json!(42)]),
+            terse: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         assert_eq!(
@@ -503,12 +616,38 @@ mod tests {
             sql: "SELECT 1 FROM SYSIBM.SYSDUMMY1".into(),
             rows: None,
             parameters: None,
+            terse: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         // Optional fields elided.
         assert!(!json.contains(r#""rows""#));
         assert!(!json.contains(r#""parameters""#));
+        assert!(!json.contains(r#""terse""#));
         let _back: Request = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn sql_serializes_terse_true_and_omits_false() {
+        let with_terse = Request::Sql {
+            id: "12".into(),
+            sql: "SELECT EMPNO, LASTNAME FROM EMPLOYEE".into(),
+            rows: Some(5),
+            parameters: None,
+            terse: Some(true),
+        };
+        let json = serde_json::to_string(&with_terse).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"sql","id":"12","sql":"SELECT EMPNO, LASTNAME FROM EMPLOYEE","rows":5,"terse":true}"#
+        );
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back,
+            Request::Sql {
+                terse: Some(true),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -516,6 +655,7 @@ mod tests {
         let r = Request::PrepareSql {
             id: "12".into(),
             sql: "SELECT * FROM T WHERE A = ?".into(),
+            terse: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         let back: Request = serde_json::from_str(&json).unwrap();
@@ -532,6 +672,7 @@ mod tests {
                 vec![serde_json::json!(2), serde_json::json!("b")],
             ]),
             rows: None,
+            terse: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         // `rows` is None → elided per skip_serializing_if; full shape pinned.
@@ -548,10 +689,55 @@ mod tests {
             id: "14".into(),
             cont_id: "stmt-7".into(),
             parameters: Some(vec![serde_json::json!("hello")]),
+            rows: Some(100),
+            terse: None,
         };
         let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"execute","id":"14","cont_id":"stmt-7","parameters":["hello"],"rows":100}"#
+        );
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, Request::Execute { cont_id, .. } if cont_id == "stmt-7"));
+    }
+
+    #[test]
+    fn prepare_sql_execute_single_set_flattens_on_wire() {
+        let r = Request::PrepareSqlExecute {
+            id: "13".into(),
+            sql: "VALUES (CAST(? AS INTEGER))".into(),
+            parameters: Some(vec![vec![serde_json::json!(7)]]),
+            rows: Some(100),
+            terse: None,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"prepare_sql_execute","id":"13","sql":"VALUES (CAST(? AS INTEGER))","parameters":[7],"rows":100}"#
+        );
+        let back: Request = serde_json::from_str(&json).unwrap();
+        match back {
+            Request::PrepareSqlExecute {
+                parameters, rows, ..
+            } => {
+                assert_eq!(parameters, Some(vec![vec![serde_json::json!(7)]]));
+                assert_eq!(rows, Some(100));
+            }
+            other => panic!("expected PrepareSqlExecute, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prepare_sql_execute_accepts_nested_single_set() {
+        let json =
+            r#"{"type":"prepare_sql_execute","id":"13","sql":"VALUES (?)","parameters":[[7]]}"#;
+        let back: Request = serde_json::from_str(json).unwrap();
+        match back {
+            Request::PrepareSqlExecute { parameters, .. } => {
+                assert_eq!(parameters, Some(vec![vec![serde_json::json!(7)]]));
+            }
+            other => panic!("expected PrepareSqlExecute, got {other:?}"),
+        }
     }
 
     #[test]
@@ -587,6 +773,7 @@ mod tests {
         let r = Request::Cl {
             id: "30".into(),
             cmd: "WRKACTJOB".into(),
+            terse: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         assert_eq!(json, r#"{"type":"cl","id":"30","cmd":"WRKACTJOB"}"#);
@@ -636,8 +823,41 @@ mod tests {
         );
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(
-            matches!(back, Request::SetConfig { tracelevel, .. } if tracelevel == "DATASTREAM")
+            matches!(back, Request::SetConfig { tracelevel, tracedest, .. }
+                if tracelevel == "DATASTREAM" && tracedest == "FILE")
         );
+    }
+
+    #[test]
+    fn setconfig_omits_empty_tracedest() {
+        let r = Request::SetConfig {
+            id: "50".into(),
+            tracelevel: "OFF".into(),
+            tracedest: String::new(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(json, r#"{"type":"setconfig","id":"50","tracelevel":"OFF"}"#);
+        assert!(!json.contains("tracedest"));
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back,
+            Request::SetConfig { tracedest, .. } if tracedest.is_empty()
+        ));
+    }
+
+    #[test]
+    fn setconfig_in_mem_is_present() {
+        let r = Request::SetConfig {
+            id: "50".into(),
+            tracelevel: "ON".into(),
+            tracedest: "IN_MEM".into(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"setconfig","id":"50","tracelevel":"ON","tracedest":"IN_MEM"}"#
+        );
+        assert!(!json.contains(r#""tracedest":"""#));
     }
 
     #[test]
@@ -645,10 +865,86 @@ mod tests {
         let r = Request::Dove {
             id: "60".into(),
             sql: "SELECT * FROM T".into(),
+            terse: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         assert_eq!(json, r#"{"type":"dove","id":"60","sql":"SELECT * FROM T"}"#);
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, Request::Dove { id, .. } if id == "60"));
+    }
+
+    #[test]
+    fn execute_and_cl_serialize_terse_true() {
+        let execute = Request::Execute {
+            id: "14".into(),
+            cont_id: "stmt-7".into(),
+            parameters: None,
+            rows: Some(10),
+            terse: Some(true),
+        };
+        let json = serde_json::to_string(&execute).unwrap();
+        assert!(json.contains(r#""terse":true"#), "missing terse: {json}");
+        assert!(json.contains(r#""rows":10"#), "missing rows: {json}");
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back,
+            Request::Execute {
+                terse: Some(true),
+                rows: Some(10),
+                ..
+            }
+        ));
+
+        let cl = Request::Cl {
+            id: "30".into(),
+            cmd: "WRKACTJOB".into(),
+            terse: Some(true),
+        };
+        let json = serde_json::to_string(&cl).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"cl","id":"30","cmd":"WRKACTJOB","terse":true}"#
+        );
+    }
+
+    #[test]
+    fn prepare_sql_execute_parameters_null_and_non_array() {
+        let null_json =
+            r#"{"type":"prepare_sql_execute","id":"13","sql":"VALUES (?)","parameters":null}"#;
+        let back: Request = serde_json::from_str(null_json).unwrap();
+        match back {
+            Request::PrepareSqlExecute { parameters, .. } => assert!(parameters.is_none()),
+            other => panic!("expected PrepareSqlExecute, got {other:?}"),
+        }
+
+        let bad =
+            r#"{"type":"prepare_sql_execute","id":"13","sql":"VALUES (?)","parameters":{"a":1}}"#;
+        let err = serde_json::from_str::<Request>(bad).unwrap_err();
+        assert!(
+            err.to_string().contains("parameters must be a JSON array"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn prepare_sql_and_dove_serialize_terse_true() {
+        let prep = Request::PrepareSql {
+            id: "12".into(),
+            sql: "SELECT * FROM T WHERE A = ?".into(),
+            terse: Some(true),
+        };
+        let json = serde_json::to_string(&prep).unwrap();
+        assert!(json.contains(r#""terse":true"#), "missing terse: {json}");
+
+        let dove = Request::Dove {
+            id: "60".into(),
+            sql: "SELECT * FROM T".into(),
+            terse: Some(true),
+        };
+        let json = serde_json::to_string(&dove).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"dove","id":"60","sql":"SELECT * FROM T","terse":true}"#
+        );
     }
 }

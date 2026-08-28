@@ -1,0 +1,68 @@
+---
+source: tests/wire_snapshots.rs
+expression: "Response::QueryResult(q)"
+---
+{
+  "type": "query_result",
+  "id": "call1",
+  "success": true,
+  "has_results": false,
+  "update_count": 0,
+  "cont_id": null,
+  "is_done": true,
+  "metadata": {
+    "column_count": 0,
+    "columns": [],
+    "parameters": [
+      {
+        "type": "INTEGER",
+        "mode": "IN",
+        "precision": 10,
+        "scale": 0,
+        "name": "P1"
+      },
+      {
+        "type": "INTEGER",
+        "mode": "INOUT",
+        "precision": 10,
+        "scale": 0,
+        "name": "P2"
+      },
+      {
+        "type": "INTEGER",
+        "mode": "OUT",
+        "precision": 10,
+        "scale": 0,
+        "name": "P3"
+      }
+    ]
+  },
+  "data": [],
+  "execution_time": 5.0,
+  "parameter_count": 3,
+  "output_parms": [
+    {
+      "index": 1,
+      "type": "INTEGER",
+      "precision": 10,
+      "scale": 0,
+      "name": "P1"
+    },
+    {
+      "index": 2,
+      "type": "INTEGER",
+      "precision": 10,
+      "scale": 0,
+      "name": "P2",
+      "value": 0
+    },
+    {
+      "index": 3,
+      "type": "INTEGER",
+      "precision": 10,
+      "scale": 0,
+      "name": "P3",
+      "value": 10
+    }
+  ]
+}

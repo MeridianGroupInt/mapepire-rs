@@ -1,0 +1,11 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+{
+  "type": "sql",
+  "id": "test",
+  "sql": "SELECT EMPNO, LASTNAME FROM EMPLOYEE",
+  "rows": 5,
+  "terse": true
+}

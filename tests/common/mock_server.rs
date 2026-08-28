@@ -234,6 +234,15 @@ pub enum MockBehavior {
         pages: Vec<QueryResult>,
     },
 
+    /// Accept connect, then reply to every [`Request::Cl`] with an untagged
+    /// [`QueryResult`]-shaped job-log frame (live daemon dialect). Later
+    /// requests are acked like [`MockBehavior::AcceptAndConnect`] so the
+    /// dispatcher can be probed with ping after a failed CL.
+    ClThen {
+        /// Canned CL reply. `id` is overwritten from the inbound request.
+        result: QueryResult,
+    },
+
     /// Accept connect with success, then respond to the protocol sequence for
     /// prepared statements:
     /// - The next [`Request::PrepareSql`] request: emit [`Response::PreparedStatement`] with
@@ -257,10 +266,39 @@ const MOCK_VERSION: &str = "0.0.0-mock";
 /// Mock Db2 job name echoed in [`Response::Connected`].
 const MOCK_JOB: &str = "MOCK/QUSER/000001";
 
+/// Serialize a [`QueryResult`]. When `terse` is `Some(true)`, rewrite
+/// object rows as arrays in `metadata.columns` order so the client
+/// exercises array-row decode (live daemon `terse: true`).
+fn encode_query_result_maybe_terse(q: &QueryResult, terse: Option<bool>) -> String {
+    if terse != Some(true) {
+        return serde_json::to_string(q).expect("serialize QueryResult");
+    }
+    let mut v = serde_json::to_value(q).expect("serialize QueryResult");
+    let names: Vec<String> = q.metadata.columns.iter().map(|c| c.name.clone()).collect();
+    if let Some(data) = v.get("data").and_then(serde_json::Value::as_array) {
+        let arrays: Vec<serde_json::Value> = data
+            .iter()
+            .map(|row| match row {
+                serde_json::Value::Object(map) => serde_json::Value::Array(
+                    names
+                        .iter()
+                        .map(|n| map.get(n).cloned().unwrap_or(serde_json::Value::Null))
+                        .collect(),
+                ),
+                other => other.clone(),
+            })
+            .collect();
+        v["data"] = serde_json::Value::Array(arrays);
+    }
+    v.to_string()
+}
+
 /// Encode a [`Response`] as the live daemon would.
 ///
-/// Success frames omit `"type"`. Tagged serde is kept only for variants
-/// the live daemon has not been observed to send untagged (CL, dove, trace).
+/// Success frames omit `"type"`. Live `cl` replies are untagged
+/// [`QueryResult`] job-log frames (see [`MockBehavior::ClThen`]). Tagged
+/// serde is kept for variants the live daemon has not been observed to
+/// send untagged (tagged `cl_result`, dove, trace).
 fn encode_live_response(response: &Response) -> String {
     match response {
         Response::Connected { id, version, job } => {
@@ -275,7 +313,7 @@ fn encode_live_response(response: &Response) -> String {
             }
             v.to_string()
         }
-        Response::QueryResult(q) => serde_json::to_string(q).expect("serialize QueryResult"),
+        Response::QueryResult(q) => encode_query_result_maybe_terse(q, None),
         Response::Error(e) => serde_json::to_string(e).expect("serialize ErrorResponse"),
         Response::Pong { id } | Response::Exited { id } => {
             serde_json::json!({"id": id, "success": true}).to_string()
@@ -670,10 +708,19 @@ where
                                 let _ = sink.send(Message::Close(None)).await;
                                 break;
                             }
-                            Request::Sql { id, .. }
-                            | Request::PrepareSqlExecute { id, .. }
-                            | Request::Execute { id, .. }
-                            | Request::SqlMore { id, .. } => {
+                            Request::Sql { id, terse, .. }
+                            | Request::PrepareSqlExecute { id, terse, .. }
+                            | Request::Execute { id, terse, .. } => {
+                                let mut page = pages_iter
+                                    .next()
+                                    .expect("mock Pages ran out of pre-baked pages");
+                                page.id = id;
+                                let json = encode_query_result_maybe_terse(&page, terse);
+                                sink.send(Message::Text(json.into()))
+                                    .await
+                                    .expect("send response frame");
+                            }
+                            Request::SqlMore { id, .. } => {
                                 let mut page = pages_iter
                                     .next()
                                     .expect("mock Pages ran out of pre-baked pages");
@@ -826,6 +873,31 @@ where
                     Some(req) => {
                         let id = request_id(&req);
                         send_response!(Response::Pong { id });
+                    }
+                }
+            }
+        }
+
+        MockBehavior::ClThen { mut result } => {
+            send_response!(Response::Connected {
+                id: connect_id,
+                version: MOCK_VERSION.into(),
+                job: MOCK_JOB.into(),
+            });
+            loop {
+                match recv_request!() {
+                    None => break,
+                    Some(Request::Exit { id }) => {
+                        send_response!(Response::Exited { id });
+                        let _ = sink.send(Message::Close(None)).await;
+                        break;
+                    }
+                    Some(Request::Cl { id, .. }) => {
+                        result.id = id;
+                        send_response!(Response::QueryResult(result.clone()));
+                    }
+                    Some(req) => {
+                        send_response!(live_ack(&req));
                     }
                 }
             }
@@ -1400,8 +1472,14 @@ fn canned_empty_query_result(id: String) -> QueryResult {
             column_count: 0,
             columns: Vec::<Column>::new(),
             job: None,
+            parameters: Vec::new(),
         },
         data: Vec::new(),
         execution_time: 0.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+        parameter_count: None,
+        output_parms: Vec::new(),
     }
 }

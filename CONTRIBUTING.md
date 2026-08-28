@@ -2,8 +2,8 @@
 
 Thanks for your interest in contributing! The full contributor guide
 lives in [`AGENTS.md`](AGENTS.md) — coding standards, testing
-requirements, the pre-PR checklist, security invariants, and the
-donation-readiness checklist are all there.
+requirements, the pre-PR checklist, and security invariants are all
+there.
 
 ## Quick links
 

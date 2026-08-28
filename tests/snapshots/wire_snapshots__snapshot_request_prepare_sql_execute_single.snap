@@ -1,0 +1,13 @@
+---
+source: tests/wire_snapshots.rs
+expression: r
+---
+{
+  "type": "prepare_sql_execute",
+  "id": "test",
+  "sql": "VALUES (CAST(? AS INTEGER))",
+  "parameters": [
+    7
+  ],
+  "rows": 100
+}

@@ -12,9 +12,10 @@ Async Rust client SDK for [Mapepire](https://mapepire-ibmi.github.io/) —
 a cloud-friendly access layer for **Db2 for IBM i** that exposes the
 database over TLS-secured `WebSockets`.
 
-> **Status:** v0.6 speaks a live Mapepire daemon (mapepire-js 0.6.x
-> handshake and TLS). On [crates.io](https://crates.io/crates/mapepire).
-> Real-IBM-i CI and the donation proposal land in v1.0.
+> **Status:** v0.7 speaks a live Mapepire daemon (mapepire-js 0.6.x
+> handshake, CL, bind, terse, CALL/OUT, and trace dest). On
+> [crates.io](https://crates.io/crates/mapepire). Real-IBM-i CI lands in
+> v1.0.
 
 Sibling SDKs exist for [Node.js](https://github.com/Mapepire-IBMi/mapepire-js),
 [Python](https://github.com/Mapepire-IBMi/mapepire-python),
@@ -113,7 +114,7 @@ the common patterns:
 | [`examples/transaction.rs`](examples/transaction.rs) | `pool.acquire().rollback_on_drop()` + v0.4 typed `begin/commit` |
 | [`examples/streaming.rs`](examples/streaming.rs) | `Rows::stream_typed::<T>` with a `serde::Deserialize` row struct |
 | [`examples/with_tracing.rs`](examples/with_tracing.rs) | `tracing-subscriber` registration + per-execute span output |
-| [`examples/cl_command.rs`](examples/cl_command.rs) | `Job::cl(...)` + `ClMessage` walkthrough |
+| [`examples/cl_command.rs`](examples/cl_command.rs) | `Job::cl(...)` + `ClOutcome` job-log walkthrough |
 
 Each example reads `MAPEPIRE_HOST`, `MAPEPIRE_USER`, and `MAPEPIRE_PASSWORD`
 from the environment. [`examples/one_shot.rs`](examples/one_shot.rs) also
@@ -179,7 +180,7 @@ Enable `tracing` and/or `metrics` features for production observability:
 
 ```toml
 [dependencies]
-mapepire = { version = "0.6", features = ["rustls-tls", "tracing", "metrics"] }
+mapepire = { version = "0.7", features = ["rustls-tls", "tracing", "metrics"] }
 tracing-subscriber = "0.3"
 metrics-exporter-prometheus = "0.15"
 ```
@@ -216,8 +217,9 @@ and is **SemVer-stable** — names won't be renamed without a major bump.
 - **v0.6** — live Mapepire handshake: `/db/` + HTTP Basic, untagged
   responses, rustls `ring`, [`TlsConfig::Ca`] leaf pin, `connect_address`
   (done).
-- **v1.0** — real-IBM-i CI, donation proposal to the
-  [Mapepire-IBMi](https://github.com/Mapepire-IBMi) GitHub org.
+- **v0.7** — live dialect leftovers: `ClOutcome`, `rows: 100`, terse
+  array rows, CALL/OUT `output_parms`, `FILE`/`IN_MEM` trace dest (done).
+- **v1.0** — real-IBM-i CI.
 
 ## Documentation
 

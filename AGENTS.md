@@ -18,10 +18,9 @@ IBM's open-source database access layer for **Db2 for IBM i** that exposes
 the database over TLS-secured WebSockets. Sibling SDKs exist for Node.js,
 Python, Java, Go, PHP, C#/.NET, and RPG; this crate fills the Rust gap.
 
-**Quality bar:** donation-ready. The eventual goal is to propose this
-crate to the [`Mapepire-IBMi`](https://github.com/Mapepire-IBMi) GitHub
-org as the official Rust SDK. Architecture, documentation, security
-posture, and CI shape are all calibrated to that bar.
+**Quality bar:** the standard expected of an official SDK.
+Architecture, documentation, security posture, and CI shape are all
+calibrated to that bar.
 
 **Status:** pre-1.0. v0.1 is the protocol foundation (types only, no
 network). v0.2 adds transport. v0.3 adds the connection pool. v1.0 is the
@@ -357,7 +356,7 @@ compatible with downstream Rust consumers that prefer the simpler text.
 
 ---
 
-## 11. Donation-readiness checklist
+## 11. v1.0 readiness checklist
 
 Updated as we approach v1.0; tracked in the Linear project alongside the
 v1.0 milestone.
@@ -371,8 +370,6 @@ v1.0 milestone.
 - [ ] No GPL deps. Mapepire's *server* is GPL-3.0; an Apache-2.0 client
       is the right shape for sibling parity
 - [ ] Public benchmark vs. an ODBC alternative (post-1.0)
-- [ ] Maintainer outreach issue filed at
-      [`Mapepire-IBMi/.github`](https://github.com/Mapepire-IBMi)
 
 ---
 
@@ -452,6 +449,5 @@ explicit `RUSTFLAGS="-D warnings" cargo check` against the non-default
 TLS backend catches feature-gated unused-import drift that a default-
 features build silently masks.
 
-The donation goal is the north star. When a tradeoff is unclear, pick
-the option that makes the crate easier for the Mapepire-IBMi org to
-adopt.
+When a tradeoff is unclear, pick the option that keeps this crate
+closest to sibling-SDK behavior.

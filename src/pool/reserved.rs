@@ -217,6 +217,45 @@ impl Reserved {
         result
     }
 
+    /// Execute a SQL statement with explicit [`crate::ExecuteOptions`].
+    ///
+    /// Same transaction-state tracking as [`Reserved::execute`].
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::Job::execute_opts`].
+    pub async fn execute_opts(
+        &self,
+        sql: &str,
+        opts: crate::ExecuteOptions,
+    ) -> crate::Result<crate::query::Rows> {
+        let job: &Job = &self.obj;
+        let result = Job::execute_opts(job, sql, opts).await;
+        if result.is_ok() {
+            Self::observe_sql(&self.tx_state, sql);
+        }
+        result
+    }
+
+    /// Parameterized variant of [`Reserved::execute_opts`].
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::Job::execute_with_opts`].
+    pub async fn execute_with_opts(
+        &self,
+        sql: &str,
+        params: &[serde_json::Value],
+        opts: crate::ExecuteOptions,
+    ) -> crate::Result<crate::query::Rows> {
+        let job: &Job = &self.obj;
+        let result = Job::execute_with_opts(job, sql, params, opts).await;
+        if result.is_ok() {
+            Self::observe_sql(&self.tx_state, sql);
+        }
+        result
+    }
+
     /// Begin a transaction on the held connection.
     ///
     /// Equivalent to [`Reserved::execute`]`("BEGIN")`. Updates the internal
@@ -309,6 +348,7 @@ impl Drop for Reserved {
                     sql: "ROLLBACK".into(),
                     rows: None,
                     parameters: None,
+                    terse: None,
                 };
                 let _ = handle.send(req).await;
             });

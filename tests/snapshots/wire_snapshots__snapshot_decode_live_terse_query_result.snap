@@ -4,7 +4,7 @@ expression: r
 ---
 QueryResult(
     QueryResult {
-        id: "query3",
+        id: "q1",
         success: true,
         has_results: true,
         update_count: -1,
@@ -14,9 +14,9 @@ QueryResult(
             column_count: 1,
             columns: [
                 Column {
-                    name: "READY",
+                    name: "1",
                     label: Some(
-                        "READY",
+                        "1",
                     ),
                     type_name: Some(
                         "INTEGER",
@@ -32,17 +32,15 @@ QueryResult(
                     ),
                 },
             ],
-            job: Some(
-                "123456/QUSER/QZDASOINIT",
-            ),
+            job: None,
             parameters: [],
         },
         data: [
             {
-                "READY": Number(1),
+                "1": Number(7),
             },
         ],
-        execution_time: 215.0,
+        execution_time: 1.0,
         error: None,
         sqlcode: None,
         sqlstate: None,

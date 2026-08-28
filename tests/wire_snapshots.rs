@@ -9,7 +9,8 @@
 
 use mapepire::protocol::request::Request;
 use mapepire::protocol::response::{
-    ClMessage, Column, ErrorResponse, QueryMetaData, QueryResult, Response,
+    ClMessage, Column, ErrorResponse, ParameterDetail, ParameterResult, QueryMetaData, QueryResult,
+    Response,
 };
 
 #[test]
@@ -30,6 +31,7 @@ fn snapshot_request_sql_minimal() {
         sql: "SELECT 1 FROM SYSIBM.SYSDUMMY1".into(),
         rows: None,
         parameters: None,
+        terse: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -41,6 +43,19 @@ fn snapshot_request_sql_with_params_and_rows() {
         sql: "SELECT * FROM T WHERE ID=?".into(),
         rows: Some(50),
         parameters: Some(vec![serde_json::json!(42)]),
+        terse: None,
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_request_sql_terse() {
+    let r = Request::Sql {
+        id: "test".into(),
+        sql: "SELECT EMPNO, LASTNAME FROM EMPLOYEE".into(),
+        rows: Some(5),
+        parameters: None,
+        terse: Some(true),
     };
     insta::assert_json_snapshot!(r);
 }
@@ -50,6 +65,7 @@ fn snapshot_request_prepare_sql() {
     let r = Request::PrepareSql {
         id: "test".into(),
         sql: "SELECT * FROM T WHERE ID=?".into(),
+        terse: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -64,6 +80,7 @@ fn snapshot_request_prepare_sql_execute_batched() {
             vec![serde_json::json!(2), serde_json::json!("b")],
         ]),
         rows: None,
+        terse: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -74,6 +91,20 @@ fn snapshot_request_execute() {
         id: "test".into(),
         cont_id: "stmt-7".into(),
         parameters: Some(vec![serde_json::json!("hello")]),
+        rows: None,
+        terse: None,
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_request_prepare_sql_execute_single() {
+    let r = Request::PrepareSqlExecute {
+        id: "test".into(),
+        sql: "VALUES (CAST(? AS INTEGER))".into(),
+        parameters: Some(vec![vec![serde_json::json!(7)]]),
+        rows: Some(100),
+        terse: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -102,6 +133,7 @@ fn snapshot_request_cl() {
     let r = Request::Cl {
         id: "test".into(),
         cmd: "WRKACTJOB".into(),
+        terse: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -126,18 +158,19 @@ fn snapshot_request_metadata_and_diagnostics() {
         Request::Dove {
             id: "test".into(),
             sql: "SELECT 1 FROM SYSIBM.SYSDUMMY1".into(),
+            terse: None,
         }
     );
 }
 
 #[test]
 fn set_config_trace_off() {
-    // Pins the typical shape produced by `Job::set_trace(TraceLevel::Off)`:
-    // `tracelevel: "OFF"` + empty-`tracedest` (default destination).
+    // Pins `Job::set_trace(TraceLevel::Off)`: `OFF` + `IN_MEM`. Empty dest
+    // is not a `Tracer.Dest` constant and must never appear on the wire.
     let r = Request::SetConfig {
         id: "1".into(),
         tracelevel: "OFF".into(),
-        tracedest: String::new(),
+        tracedest: "IN_MEM".into(),
     };
     insta::assert_json_snapshot!(r);
 }
@@ -162,6 +195,7 @@ fn snapshot_response_query_result_select() {
                 scale: Some(0),
             }],
             job: None,
+            parameters: vec![],
         },
         data: vec![{
             let mut m = serde_json::Map::new();
@@ -169,6 +203,11 @@ fn snapshot_response_query_result_select() {
             m
         }],
         execution_time: 1.23,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     };
     insta::assert_json_snapshot!(Response::QueryResult(q));
 }
@@ -185,6 +224,87 @@ fn snapshot_response_query_result_dml() {
         metadata: QueryMetaData::default(),
         data: vec![],
         execution_time: 0.5,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
+    };
+    insta::assert_json_snapshot!(Response::QueryResult(q));
+}
+
+#[test]
+fn snapshot_response_query_result_call_out() {
+    let q = QueryResult {
+        id: "call1".into(),
+        success: true,
+        has_results: false,
+        update_count: 0,
+        cont_id: None,
+        is_done: true,
+        metadata: QueryMetaData {
+            column_count: 0,
+            columns: vec![],
+            job: None,
+            parameters: vec![
+                ParameterDetail {
+                    type_name: "INTEGER".into(),
+                    mode: "IN".into(),
+                    precision: 10,
+                    scale: Some(0),
+                    name: "P1".into(),
+                },
+                ParameterDetail {
+                    type_name: "INTEGER".into(),
+                    mode: "INOUT".into(),
+                    precision: 10,
+                    scale: Some(0),
+                    name: "P2".into(),
+                },
+                ParameterDetail {
+                    type_name: "INTEGER".into(),
+                    mode: "OUT".into(),
+                    precision: 10,
+                    scale: Some(0),
+                    name: "P3".into(),
+                },
+            ],
+        },
+        data: vec![],
+        execution_time: 5.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+        parameter_count: Some(3),
+        output_parms: vec![
+            ParameterResult {
+                index: 1,
+                type_name: "INTEGER".into(),
+                precision: 10,
+                scale: Some(0),
+                name: "P1".into(),
+                ccsid: None,
+                value: None,
+            },
+            ParameterResult {
+                index: 2,
+                type_name: "INTEGER".into(),
+                precision: 10,
+                scale: Some(0),
+                name: "P2".into(),
+                ccsid: None,
+                value: Some(serde_json::json!(0)),
+            },
+            ParameterResult {
+                index: 3,
+                type_name: "INTEGER".into(),
+                precision: 10,
+                scale: Some(0),
+                name: "P3".into(),
+                ccsid: None,
+                value: Some(serde_json::json!(10)),
+            },
+        ],
     };
     insta::assert_json_snapshot!(Response::QueryResult(q));
 }
@@ -329,6 +449,32 @@ fn snapshot_decode_live_connect() {
 }
 
 #[test]
+fn snapshot_decode_live_terse_query_result() {
+    let json = serde_json::json!({
+        "id": "q1",
+        "has_results": true,
+        "update_count": -1,
+        "metadata": {
+            "column_count": 1,
+            "columns": [{
+                "name": "1",
+                "type": "INTEGER",
+                "display_size": 11,
+                "label": "1",
+                "precision": 10,
+                "scale": 0
+            }]
+        },
+        "data": [[7]],
+        "is_done": true,
+        "success": true,
+        "execution_time": 1
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
 fn snapshot_decode_live_query_result() {
     let json = serde_json::json!({
         "id": "query3",
@@ -356,10 +502,56 @@ fn snapshot_decode_live_query_result() {
 }
 
 #[test]
+fn snapshot_decode_live_call_output_parms() {
+    let json = serde_json::json!({
+        "id": "call1",
+        "success": true,
+        "has_results": false,
+        "update_count": 0,
+        "is_done": true,
+        "parameter_count": 3,
+        "metadata": {
+            "column_count": 0,
+            "columns": [],
+            "parameters": [
+                {"type": "INTEGER", "mode": "IN", "precision": 10, "scale": 0, "name": "P1"},
+                {"type": "INTEGER", "mode": "INOUT", "precision": 10, "scale": 0, "name": "P2"},
+                {"type": "INTEGER", "mode": "OUT", "precision": 10, "scale": 0, "name": "P3"}
+            ]
+        },
+        "data": [],
+        "output_parms": [
+            {"index": 1, "type": "INTEGER", "precision": 10, "scale": 0, "name": "P1"},
+            {"index": 2, "type": "INTEGER", "precision": 10, "scale": 0, "name": "P2", "value": 0},
+            {"index": 3, "type": "INTEGER", "precision": 10, "scale": 0, "name": "P3", "value": 10}
+        ],
+        "execution_time": 5
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
 fn snapshot_decode_live_pong() {
     let json = serde_json::json!({
         "id": "p1",
         "success": true
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_setconfig() {
+    // Live `setconfig` success is untagged `{id, success, tracedest,
+    // tracelevel}` (PROTOCOL.md §13). Decode is Pong; dispatcher remaps
+    // outstanding SetConfig → ConfigSet.
+    let json = serde_json::json!({
+        "id": "t1",
+        "success": true,
+        "tracedest": "IN_MEM",
+        "tracelevel": "OFF",
+        "execution_time": 1
     });
     let r: Response = serde_json::from_value(json).unwrap();
     insta::assert_debug_snapshot!(r);
@@ -386,6 +578,52 @@ fn snapshot_decode_live_error() {
         "error": "nope",
         "sql_rc": -803,
         "sql_state": "23505"
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_cl_success() {
+    let json = serde_json::json!({
+        "id": "cl1",
+        "success": true,
+        "has_results": true,
+        "is_done": true,
+        "data": [{
+            "MESSAGE_ID": "CPC2102",
+            "SEVERITY": "0",
+            "MESSAGE_TIMESTAMP": "2026-08-27-12.00.00.000000",
+            "FROM_LIBRARY": "QSYS",
+            "FROM_PROGRAM": "QCAEXEC",
+            "MESSAGE_TYPE": "COMPLETION",
+            "MESSAGE_TEXT": "Library QGPL displayed.",
+            "MESSAGE_SECOND_LEVEL_TEXT": ""
+        }]
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_cl_failure() {
+    let json = serde_json::json!({
+        "id": "cl2",
+        "success": false,
+        "is_done": true,
+        "error": "[CPF0006] Errors occurred in command.",
+        "sql_rc": -443,
+        "sql_state": "38501",
+        "data": [{
+            "MESSAGE_ID": "CPF0006",
+            "SEVERITY": 40,
+            "MESSAGE_TIMESTAMP": "2026-08-27-12.00.00.000000",
+            "FROM_LIBRARY": "QSYS",
+            "FROM_PROGRAM": "QCAEXEC",
+            "MESSAGE_TYPE": "ESCAPE",
+            "MESSAGE_TEXT": "[CPF0006] Errors occurred in command.",
+            "MESSAGE_SECOND_LEVEL_TEXT": "Cause . . . . :   Errors occurred."
+        }]
     });
     let r: Response = serde_json::from_value(json).unwrap();
     insta::assert_debug_snapshot!(r);
