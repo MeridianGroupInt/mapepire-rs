@@ -89,26 +89,21 @@ async fn reserved_runs_begin_dml_commit_on_one_socket() {
     );
     drop(Box::pin(conn.execute("COMMIT")).await.expect("commit"));
 
-    // Verify the dispatcher emitted exactly the three expected SQL
-    // requests in order. `Job::execute` and `Job::execute_with` both emit
-    // `Request::Sql` (see `src/job.rs::execute_inner`). Filtering by
-    // variant guards against incidental traffic — e.g., the `recycle()`
-    // ping that fires when `conn` drops below.
+    // Unbound statements stay `Request::Sql`; `execute_with` is
+    // `prepare_sql_execute`. Filter both so recycle pings are ignored.
     let observed = recorder.lock().expect("recorder mutex").clone();
     let sql_requests: Vec<&Request> = observed
         .iter()
-        .filter(|r| matches!(r, Request::Sql { .. }))
+        .filter(|r| matches!(r, Request::Sql { .. } | Request::PrepareSqlExecute { .. }))
         .collect();
     assert_eq!(
         sql_requests.len(),
         3,
-        "expected 3 Sql requests through Reserved, got {} (full trace: {:?})",
+        "expected 3 SQL-ish requests through Reserved, got {} (full trace: {:?})",
         sql_requests.len(),
         observed,
     );
 
-    // Spot-check the SQL text and parameter shape. The mock returns pages
-    // in the order received via `Vec::drain`, so position is stable.
     match &sql_requests[0] {
         Request::Sql {
             sql, parameters, ..
@@ -119,19 +114,20 @@ async fn reserved_runs_begin_dml_commit_on_one_socket() {
         other => panic!("expected Sql(BEGIN), got {other:?}"),
     }
     match &sql_requests[1] {
-        Request::Sql {
+        Request::PrepareSqlExecute {
             sql, parameters, ..
         } => {
             assert!(
                 sql.contains("UPDATE T"),
                 "expected UPDATE T statement, got {sql:?}"
             );
-            let params = parameters
+            let sets = parameters
                 .as_ref()
-                .expect("UPDATE should carry 2 parameters");
-            assert_eq!(params.len(), 2, "UPDATE should carry 2 parameters");
+                .expect("UPDATE should carry a parameter set");
+            assert_eq!(sets.len(), 1, "one bind set");
+            assert_eq!(sets[0].len(), 2, "UPDATE should carry 2 parameters");
         }
-        other => panic!("expected Sql(UPDATE), got {other:?}"),
+        other => panic!("expected PrepareSqlExecute(UPDATE), got {other:?}"),
     }
     match &sql_requests[2] {
         Request::Sql {

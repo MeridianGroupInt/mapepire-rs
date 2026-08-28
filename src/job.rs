@@ -308,11 +308,19 @@ impl Job {
         params: Option<Vec<serde_json::Value>>,
     ) -> crate::Result<crate::query::Rows> {
         let id = self.inner.ids.next();
-        let request = Request::Sql {
-            id: id.clone(),
-            sql: sql.to_owned(),
-            rows: None,
-            parameters: params,
+        let request = match params {
+            None => Request::Sql {
+                id: id.clone(),
+                sql: sql.to_owned(),
+                rows: None,
+                parameters: None,
+            },
+            Some(params) => Request::PrepareSqlExecute {
+                id: id.clone(),
+                sql: sql.to_owned(),
+                parameters: Some(vec![params]),
+                rows: None,
+            },
         };
         let resp = self.send(request).await?;
         match resp {
