@@ -88,13 +88,6 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> crate::Result<T
                 .with_custom_certificate_verifier(Arc::new(NoVerify))
                 .with_no_client_auth()
         }
-
-        #[cfg(not(feature = "insecure-tls"))]
-        TlsConfig::Insecure => {
-            return Err(Error::Internal(
-                "TlsConfig::Insecure requires the `insecure-tls` Cargo feature".into(),
-            ));
-        }
     };
 
     let connector = TlsConnector::from(Arc::new(config));
@@ -179,13 +172,6 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> crate::Result<T
             builder
                 .danger_accept_invalid_certs(true)
                 .danger_accept_invalid_hostnames(true);
-        }
-
-        #[cfg(not(feature = "insecure-tls"))]
-        TlsConfig::Insecure => {
-            return Err(Error::Internal(
-                "TlsConfig::Insecure requires the `insecure-tls` Cargo feature".into(),
-            ));
         }
     }
 
