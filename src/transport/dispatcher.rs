@@ -25,6 +25,26 @@ use tokio::task::JoinHandle;
 
 use crate::error::{Error, ProtocolError, TransportError};
 use crate::protocol::{Request, Response};
+
+/// Kind of outstanding request, used to remap live untagged acks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingKind {
+    Connect,
+    Ping,
+    GetDbJob,
+    GetVersion,
+    PrepareSql,
+    SetConfig,
+    SqlClose,
+    Exit,
+    Other,
+}
+
+/// One pending correlation slot.
+struct Pending {
+    reply: oneshot::Sender<Result<Response, Error>>,
+    kind: PendingKind,
+}
 use crate::transport::BoxedTransport;
 
 /// Bounded outbound queue capacity. 64 slots is enough to absorb burst
@@ -42,6 +62,8 @@ struct Outbound {
     /// One-shot channel the dispatcher uses to deliver the response (or
     /// a transport/protocol error) back to the caller.
     reply: oneshot::Sender<Result<Response, Error>>,
+    /// Outstanding request kind, for live untagged ack remapping.
+    kind: PendingKind,
 }
 
 /// Caller-facing handle for issuing requests through the dispatcher.
@@ -57,6 +79,7 @@ impl DispatcherHandle {
     /// that arrives after is silently discarded.
     pub(crate) async fn send(&self, request: Request) -> crate::Result<Response> {
         let id = request_id(&request).to_string();
+        let kind = pending_kind(&request);
         let bytes = serde_json::to_vec(&request)
             .map(Bytes::from)
             .map_err(|e| Error::from(ProtocolError::Json(e)))?;
@@ -67,6 +90,7 @@ impl DispatcherHandle {
                 id,
                 bytes,
                 reply: reply_tx,
+                kind,
             })
             .await
             .map_err(|_| Error::from(TransportError::Closed))?;
@@ -148,6 +172,46 @@ fn request_id(request: &Request) -> &str {
     }
 }
 
+#[allow(clippy::match_same_arms)]
+fn pending_kind(request: &Request) -> PendingKind {
+    match request {
+        Request::Connect { .. } => PendingKind::Connect,
+        Request::Ping { .. } => PendingKind::Ping,
+        Request::GetDbJob { .. } => PendingKind::GetDbJob,
+        Request::GetVersion { .. } => PendingKind::GetVersion,
+        Request::PrepareSql { .. } => PendingKind::PrepareSql,
+        Request::SetConfig { .. } => PendingKind::SetConfig,
+        Request::SqlClose { .. } => PendingKind::SqlClose,
+        Request::Exit { .. } => PendingKind::Exit,
+        Request::Sql { .. }
+        | Request::PrepareSqlExecute { .. }
+        | Request::Execute { .. }
+        | Request::SqlMore { .. }
+        | Request::Cl { .. }
+        | Request::GetTraceData { .. }
+        | Request::Dove { .. } => PendingKind::Other,
+    }
+}
+
+/// Live untagged `{id, success, job}` is `Connected`. After handshake the
+/// same shape is `getdbjob`. Untagged `{id, success}` is `Pong`; remap
+/// when the outstanding request is sqlclose/setconfig/exit.
+fn remap_response(kind: PendingKind, response: Response) -> Response {
+    match (kind, response) {
+        (PendingKind::GetDbJob, Response::Connected { id, job, .. }) => Response::DbJob {
+            id,
+            success: true,
+            job,
+        },
+        (PendingKind::SetConfig, Response::Pong { id }) => {
+            Response::ConfigSet { id, success: true }
+        }
+        (PendingKind::SqlClose, Response::Pong { id }) => Response::SqlClosed { id, success: true },
+        (PendingKind::Exit, Response::Pong { id }) => Response::Exited { id },
+        (_, other) => other,
+    }
+}
+
 /// Pull the `id` from a `Response` for routing back to the matching
 /// `pending` entry. Every `Response` variant in the v0.1-pinned wire
 /// protocol carries an id, so this is infallible — confirmed against
@@ -182,14 +246,14 @@ async fn run(
     mut rx: mpsc::Receiver<Outbound>,
     in_flight: Arc<AtomicU32>,
 ) {
-    let mut pending: HashMap<String, oneshot::Sender<Result<Response, Error>>> = HashMap::new();
+    let mut pending: HashMap<String, Pending> = HashMap::new();
 
     loop {
         tokio::select! {
             // New outgoing request from a caller.
             outbound = rx.recv() => {
                 match outbound {
-                    Some(Outbound { id, bytes, reply }) => {
+                    Some(Outbound { id, bytes, reply, kind }) => {
                         // Body of the resolved arm — runs to completion outside select!'s
                         // polling set; not subject to mid-flush cancellation.
                         if let Err(e) = transport.send(bytes).await {
@@ -209,7 +273,7 @@ async fn run(
                         // Entries for cancelled futures (caller dropped reply_rx) remain
                         // here until the matching response arrives and is silently discarded
                         // or shutdown drains. Acceptable for v0.2; revisit if leak grows.
-                        pending.insert(id, reply);
+                        pending.insert(id, Pending { reply, kind });
                     }
                     None => {
                         // All handles dropped; exit cleanly.
@@ -221,34 +285,39 @@ async fn run(
             // Inbound frame from the daemon.
             frame = transport.next() => {
                 match frame {
-                    Some(Ok(bytes)) => match serde_json::from_slice::<Response>(&bytes) {
-                        Ok(response) => {
-                            let id = response_id(&response).to_owned();
-                            if let Some(reply) = pending.remove(&id) {
-                                // Matching pending entry → request settles; drop the
-                                // in-flight count. The reply receiver may already be
-                                // closed (caller dropped the future); `oneshot::send`
-                                // returns Err in that case and we discard via `let _`.
-                                in_flight.fetch_sub(1, Ordering::Relaxed);
-                                let _ = reply.send(Ok(response));
+                    Some(Ok(bytes)) => {
+                        let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                // Truncated / non-JSON stream — fatal.
+                                drain_pending_with_error(
+                                    &mut pending,
+                                    &in_flight,
+                                    Error::from(ProtocolError::Json(e)),
+                                );
+                                return;
                             }
-                            // No pending match → an unsolicited frame from the
-                            // server (no outbound was ever registered for this id).
-                            // We never incremented `in_flight` for it, so we must
-                            // not decrement either. The counter reflects only
-                            // requests we still expect a reply for.
+                        };
+                        match serde_json::from_value::<Response>(value.clone()) {
+                            Ok(response) => {
+                                let id = response_id(&response).to_owned();
+                                if let Some(slot) = pending.remove(&id) {
+                                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                                    let response = remap_response(slot.kind, response);
+                                    let _ = slot.reply.send(Ok(response));
+                                }
+                            }
+                            Err(e) => {
+                                // One unrecognized object fails that request; keep reading.
+                                if let Some(id) = value.get("id").and_then(serde_json::Value::as_str)
+                                    && let Some(slot) = pending.remove(id)
+                                {
+                                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                                    let _ = slot.reply.send(Err(Error::from(ProtocolError::Json(e))));
+                                }
+                            }
                         }
-                        Err(e) => {
-                            // Malformed JSON from the server — fatal for
-                            // this dispatcher; drain and exit.
-                            drain_pending_with_error(
-                                &mut pending,
-                                &in_flight,
-                                Error::from(ProtocolError::Json(e)),
-                            );
-                            return;
-                        }
-                    },
+                    }
                     Some(Err(e)) => {
                         drain_pending_with_error(&mut pending, &in_flight, Error::from(e));
                         return;
@@ -265,34 +334,34 @@ async fn run(
 }
 
 fn drain_pending(
-    pending: &mut HashMap<String, oneshot::Sender<Result<Response, Error>>>,
+    pending: &mut HashMap<String, Pending>,
     in_flight: &Arc<AtomicU32>,
     closed: TransportError,
 ) {
     let mut iter = pending.drain();
-    if let Some((_id, reply)) = iter.next() {
+    if let Some((_id, slot)) = iter.next() {
         in_flight.fetch_sub(1, Ordering::Relaxed);
-        let _ = reply.send(Err(Error::from(closed)));
+        let _ = slot.reply.send(Err(Error::from(closed)));
     }
-    for (_id, reply) in iter {
+    for (_id, slot) in iter {
         in_flight.fetch_sub(1, Ordering::Relaxed);
-        let _ = reply.send(Err(Error::from(TransportError::Closed)));
+        let _ = slot.reply.send(Err(Error::from(TransportError::Closed)));
     }
 }
 
 fn drain_pending_with_error(
-    pending: &mut HashMap<String, oneshot::Sender<Result<Response, Error>>>,
+    pending: &mut HashMap<String, Pending>,
     in_flight: &Arc<AtomicU32>,
     err: Error,
 ) {
     let mut iter = pending.drain();
-    if let Some((_id, reply)) = iter.next() {
+    if let Some((_id, slot)) = iter.next() {
         in_flight.fetch_sub(1, Ordering::Relaxed);
-        let _ = reply.send(Err(err));
+        let _ = slot.reply.send(Err(err));
     }
-    for (_id, reply) in iter {
+    for (_id, slot) in iter {
         in_flight.fetch_sub(1, Ordering::Relaxed);
-        let _ = reply.send(Err(Error::from(TransportError::Closed)));
+        let _ = slot.reply.send(Err(Error::from(TransportError::Closed)));
     }
 }
 
@@ -454,5 +523,87 @@ mod tests {
         for resp in cases {
             assert_eq!(response_id(resp), id.as_str());
         }
+    }
+
+    #[test]
+    fn test_remap_getdbjob_connected_to_dbjob() {
+        let remapped = remap_response(
+            PendingKind::GetDbJob,
+            Response::Connected {
+                id: "g".into(),
+                version: String::new(),
+                job: "123456/QUSER/QZDASOINIT".into(),
+            },
+        );
+        assert!(matches!(
+            remapped,
+            Response::DbJob { id, success, job }
+                if id == "g" && success && job == "123456/QUSER/QZDASOINIT"
+        ));
+    }
+
+    #[test]
+    fn test_remap_connect_stays_connected() {
+        let remapped = remap_response(
+            PendingKind::Connect,
+            Response::Connected {
+                id: "c".into(),
+                version: String::new(),
+                job: "J".into(),
+            },
+        );
+        assert!(matches!(remapped, Response::Connected { id, .. } if id == "c"));
+    }
+
+    #[test]
+    fn test_remap_pong_acks() {
+        let pong = Response::Pong { id: "x".into() };
+        assert!(matches!(
+            remap_response(PendingKind::SetConfig, pong.clone()),
+            Response::ConfigSet { id, success } if id == "x" && success
+        ));
+        assert!(matches!(
+            remap_response(PendingKind::SqlClose, pong.clone()),
+            Response::SqlClosed { id, success } if id == "x" && success
+        ));
+        assert!(matches!(
+            remap_response(PendingKind::Exit, pong.clone()),
+            Response::Exited { id } if id == "x"
+        ));
+        assert!(matches!(
+            remap_response(PendingKind::Ping, pong),
+            Response::Pong { id } if id == "x"
+        ));
+    }
+
+    #[test]
+    fn test_pending_kind_for_every_variant() {
+        let id = "k".to_string();
+        assert_eq!(
+            pending_kind(&Request::Ping { id: id.clone() }),
+            PendingKind::Ping
+        );
+        assert_eq!(
+            pending_kind(&Request::GetDbJob { id: id.clone() }),
+            PendingKind::GetDbJob
+        );
+        assert_eq!(
+            pending_kind(&Request::Connect {
+                id: id.clone(),
+                technique: "tcp".into(),
+                application: "mapepire-rs".into(),
+                props: None,
+            }),
+            PendingKind::Connect
+        );
+        assert_eq!(
+            pending_kind(&Request::Sql {
+                id,
+                sql: "SELECT 1".into(),
+                rows: None,
+                parameters: None,
+            }),
+            PendingKind::Other
+        );
     }
 }
