@@ -553,7 +553,7 @@ mod tests {
         let s = DaemonServer::builder()
             .host("h")
             .user("u")
-            .password("p".to_string())
+            .password(dummy_pass())
             .tls(TlsConfig::Insecure)
             .build()
             .expect("DaemonServer builds with Insecure when feature is on");

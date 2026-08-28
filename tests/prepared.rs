@@ -221,3 +221,22 @@ async fn test_query_uses_originating_job_allocator() {
         "job B must have a distinct allocator prefix"
     );
 }
+
+/// Prepare on `AcceptAndConnect` yields no cursor; `Query::execute` then
+/// sees a Pong and surfaces Protocol (covers `execute_inner` catch-all).
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_query_execute_unexpected_is_protocol() {
+    use mapepire::Error;
+
+    let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;
+    let query = job
+        .prepare("SELECT 1 FROM SYSIBM.SYSDUMMY1")
+        .await
+        .expect("prepare");
+    let err = query.execute().await.expect_err("pong is not QueryResult");
+    assert!(
+        matches!(err, Error::Protocol(_)),
+        "expected Protocol, got {err:?}"
+    );
+}

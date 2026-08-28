@@ -154,6 +154,9 @@ async fn test_pool_and_reserved_execute_opts() {
     );
     drop(trait_execute_opts(&conn, sql).await);
     drop(dyn_execute_with_opts(&conn, bound, &params).await);
+    drop(Box::pin(conn.begin()).await.expect("Reserved::begin"));
+    drop(Box::pin(conn.commit()).await.expect("Reserved::commit"));
+    drop(Box::pin(conn.rollback()).await.expect("Reserved::rollback"));
 }
 
 /// Pool `default_page_size` is the wire `rows` when opts omit it;
@@ -206,4 +209,7 @@ async fn test_pool_default_page_size_on_execute() {
         Request::Sql { rows, .. } => assert_eq!(*rows, Some(10), "explicit execute_opts rows"),
         other => panic!("expected Sql, got {other:?}"),
     }
+
+    let st = pool.status();
+    assert_eq!(st.waiting, 0);
 }
