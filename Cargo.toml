@@ -1,6 +1,6 @@
 [package]
 name = "mapepire"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -39,7 +39,7 @@ native-tls = [
     "tokio-tungstenite/native-tls",
 ]
 insecure-tls = []
-serde-config = ["dep:base64"]
+serde-config = []
 tracing = ["dep:tracing"]
 metrics = ["dep:metrics"]
 
@@ -48,7 +48,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
-base64 = { version = "0.23.1", optional = true }
+# Required: HTTP Basic on the WebSocket upgrade (`src/transport/handshake.rs`)
+# and, under `serde-config`, decoding pinned-CA DER in `TlsConfigSpec`.
+base64 = "0.23.1"
 tokio = { version = "1.23.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 futures = "0.3"
@@ -59,7 +61,10 @@ bytes = "1.11.1"
 tracing = { version = "0.1", optional = true }
 metrics = { version = "0.24", optional = true }
 # Optional TLS stacks — pulled by their respective feature flags above.
-rustls = { version = "0.23.43", optional = true, default-features = false, features = ["std", "tls12"] }
+# `ring` is on the *library* rustls dep so `ClientConfig::builder()` has a
+# process-level CryptoProvider. `std`+`tls12` alone panics at handshake;
+# tests previously hid that via the rustls *dev-dep* `ring` feature.
+rustls = { version = "0.23.43", optional = true, default-features = false, features = ["std", "tls12", "ring"] }
 tokio-rustls = { version = "0.26.4", optional = true, default-features = false }
 rustls-pki-types = { version = "1.15.1", optional = true }
 webpki-roots = { version = "1.0.9", optional = true }
@@ -94,11 +99,9 @@ tracing-subscriber = { version = "0.3.20", default-features = false, features = 
 # under cargo-deny's `multiple-versions = "deny"`.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 tokio-rustls = { version = "0.26.4", default-features = false }
-# Enable rustls' ring provider so the process-level CryptoProvider is
-# populated when running tests. rcgen pulls ring into the dep tree, but
-# rustls only auto-selects a provider when exactly one of its own
-# `ring`/`aws_lc_rs` features is active. This dev-dep activates `ring`
-# on the same rustls version, resolving the ambiguity at test time only.
+# Library rustls now enables `ring` too. This matching dev-dep is kept so
+# tests still pin the provider if the lib feature set drifts. Redundant
+# with the library dep after issue 5b; leave unless cargo-deny complains.
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 # `metrics-util`'s `debugging` feature exposes `DebuggingRecorder` +
 # `Snapshotter` for the Task 13 metrics integration test

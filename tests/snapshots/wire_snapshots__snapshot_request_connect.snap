@@ -5,6 +5,6 @@ expression: r
 {
   "type": "connect",
   "id": "test",
-  "user": "DCURTIS",
-  "password": "hunter2"
+  "technique": "tcp",
+  "application": "mapepire-rs"
 }

@@ -49,6 +49,7 @@ fn select_query_result(id: &str) -> mapepire::QueryResult {
                     precision: Some(10),
                 },
             ],
+            job: None,
         },
         data: vec![row],
         cont_id: None,
@@ -69,6 +70,7 @@ fn dml_query_result(id: &str, count: i64) -> mapepire::QueryResult {
         metadata: QueryMetaData {
             column_count: 0,
             columns: vec![],
+            job: None,
         },
         data: vec![],
         cont_id: None,

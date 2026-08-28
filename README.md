@@ -5,19 +5,16 @@
 [![deps.rs](https://deps.rs/repo/github/MeridianGroupInt/mapepire-rs/status.svg)](https://deps.rs/repo/github/MeridianGroupInt/mapepire-rs)
 [![MSRV](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FMeridianGroupInt%2Fmapepire-rs%2Fmain%2FCargo.toml&query=%24.package.rust-version&label=MSRV&color=blue)](Cargo.toml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-
-<!-- Uncomment after first crates.io publish:
 [![crates.io](https://img.shields.io/crates/v/mapepire.svg)](https://crates.io/crates/mapepire)
 [![docs.rs](https://img.shields.io/docsrs/mapepire)](https://docs.rs/mapepire)
--->
 
 Async Rust client SDK for [Mapepire](https://mapepire-ibmi.github.io/) —
 a cloud-friendly access layer for **Db2 for IBM i** that exposes the
 database over TLS-secured `WebSockets`.
 
-> **Status:** v0.4 ready (observability + cleanup). Not yet on
-> [crates.io](https://crates.io). The full v1.0 surface (real-IBM-i CI,
-> examples) lands in v1.0.
+> **Status:** v0.6 speaks a live Mapepire daemon (mapepire-js 0.6.x
+> handshake and TLS). On [crates.io](https://crates.io/crates/mapepire).
+> Real-IBM-i CI and the donation proposal land in v1.0.
 
 Sibling SDKs exist for [Node.js](https://github.com/Mapepire-IBMi/mapepire-js),
 [Python](https://github.com/Mapepire-IBMi/mapepire-python),
@@ -34,8 +31,8 @@ use mapepire::{DaemonServer, Pool, TlsConfig};
 
 # async fn example() -> mapepire::Result<()> {
 let server = DaemonServer::builder()
-    .host("ibmi.example.com")
-    .user("DCURTIS")
+    .host("ibmi.example")
+    .user("USER")
     .password(std::env::var("MAPEPIRE_PASSWORD").unwrap())
     .tls(TlsConfig::Verified)
     .build()
@@ -70,6 +67,40 @@ it into a zeroizing buffer (`Password`). `DaemonServer` is not `Clone` —
 the `Pool::builder` constructor takes `impl Into<Arc<DaemonServer>>` so the
 single config is shared across every pooled connection.
 
+### Self-signed IBM i (CN-only) and SSH tunnels
+
+Stock IBM i Mapepire certs are often CN-only (no SAN). Pin the leaf DER
+with [`TlsConfig::Ca`] — the default `rustls-tls` backend skips SAN/CN
+checks on an exact DER match. If TCP is not the certificate name (laptop
+SSH forward), set `connect_address` separately; `host` stays SNI / HTTP
+`Host` / the cert name.
+
+```rust,no_run
+use mapepire::{DaemonServer, TlsConfig};
+
+# async fn example() -> mapepire::Result<()> {
+let der = std::fs::read("daemon.der").expect("leaf DER from out-of-band pin");
+let server = DaemonServer::builder()
+    .host("ibmi.example")
+    .connect_address("127.0.0.1")
+    .user("USER")
+    .password(std::env::var("MAPEPIRE_PASSWORD").unwrap())
+    .tls(TlsConfig::Ca(der))
+    .build()
+    .expect("missing required field");
+# let _ = server;
+# Ok(()) }
+```
+
+| Situation | What to use |
+|---|---|
+| Public / webpki-trusted daemon cert | default `rustls-tls` + [`TlsConfig::Verified`] |
+| IBM i self-signed, CN-only (no SAN) | default `rustls-tls` + [`TlsConfig::Ca`] (leaf pin). Alternative: `default-features = false, features = ["native-tls"]` (OpenSSL CN fallback). **Never** `insecure-tls` for this. |
+| SSH tunnel (`host` ≠ TCP hop) | `host` = certificate / SNI name (`ibmi.example`); `connect_address` = TCP (`127.0.0.1`) |
+
+Obtain the pin bytes out-of-band (admin-provided DER, or `openssl s_client`
+plus a fingerprint check). Do not skip verification in production.
+
 ### Runnable examples
 
 The [`examples/`](examples/) directory ships six runnable demos covering
@@ -85,7 +116,11 @@ the common patterns:
 | [`examples/cl_command.rs`](examples/cl_command.rs) | `Job::cl(...)` + `ClMessage` walkthrough |
 
 Each example reads `MAPEPIRE_HOST`, `MAPEPIRE_USER`, and `MAPEPIRE_PASSWORD`
-from the environment. Run with `cargo run --example <name>` (or
+from the environment. [`examples/one_shot.rs`](examples/one_shot.rs) also
+honors `MAPEPIRE_CONNECT_ADDRESS` (TCP hop, e.g. `127.0.0.1` through an
+SSH tunnel), `MAPEPIRE_PORT`, `MAPEPIRE_PROPS` (JDBC properties string),
+and `MAPEPIRE_CA` (path to a DER leaf pin for [`TlsConfig::Ca`]). Run
+with `cargo run --example <name>` (or
 `cargo run --example with_tracing --features tracing` for the tracing demo).
 
 ### Single-connection alternative
@@ -98,7 +133,7 @@ use mapepire::{DaemonServer, Job, TlsConfig};
 
 # async fn example() -> mapepire::Result<()> {
 let server = DaemonServer::builder()
-    .host("daemon.example.com")
+    .host("ibmi.example")
     .port(8076)
     .user("USER")
     .password(std::env::var("MAPEPIRE_PASSWORD").unwrap())
@@ -119,14 +154,17 @@ for row in dynamic {
 
 `Job::connect` performs the full TCP → TLS → WebSocket Upgrade →
 `Connect` handshake and resolves once the daemon confirms the session.
+[`Job::version`] may be empty on a live connect (the connect frame often
+omits it); call [`Job::server_version`] (`getversion`) for the daemon
+version string.
 
 ## Cargo features
 
 | Feature | Default | Purpose |
 |---|---|---|
-| `rustls-tls` | **on** | Pure-Rust TLS via `rustls` (target for v0.2 transport) |
-| `native-tls` | off | OS-platform TLS via `native-tls` (alternate v0.2 backend) |
-| `insecure-tls` | off | Compile-time gate for `TlsConfig::Insecure` (skip server-cert validation; **never use in production**) |
+| `rustls-tls` | **on** | Pure-Rust TLS via `rustls` with the `ring` `CryptoProvider`. [`TlsConfig::Ca`] is a leaf pin (SAN skipped on exact DER match). |
+| `native-tls` | off | OS-platform TLS via `native-tls` (OpenSSL CN fallback for CN-only IBM i certs) |
+| `insecure-tls` | off | Compile-time gate for `TlsConfig::Insecure` (skip server-cert validation; **never use in production** — CN-only IBM i certs use [`TlsConfig::Ca`], not this) |
 | `serde-config` | off | `DaemonServerSpec` DTO for loading from config files (TOML/YAML/JSON via consumer's choice of parser) |
 | `tracing` | off | [`tracing`](https://docs.rs/tracing) span instrumentation on every public dispatch entry point (`Job::execute`, `Pool::execute`, `Reserved::*`). Per-pool [`ParameterLogging`](https://docs.rs/mapepire/latest/mapepire/enum.ParameterLogging.html) governs whether parameter values appear on spans. |
 | `metrics` | off | [`metrics`](https://docs.rs/metrics) facade integration. Counters / gauges / histograms documented at [`mapepire::observability`](https://docs.rs/mapepire/latest/mapepire/observability/index.html). |
@@ -141,7 +179,7 @@ Enable `tracing` and/or `metrics` features for production observability:
 
 ```toml
 [dependencies]
-mapepire = { version = "0.4", features = ["rustls-tls", "tracing", "metrics"] }
+mapepire = { version = "0.6", features = ["rustls-tls", "tracing", "metrics"] }
 tracing-subscriber = "0.3"
 metrics-exporter-prometheus = "0.15"
 ```
@@ -174,7 +212,11 @@ and is **SemVer-stable** — names won't be renamed without a major bump.
 - **v0.4** — `tracing` and `metrics` feature flags; `idle_timeout`
   enforcement; `rollback_on_drop` tightened to only-if-in-tx;
   registry-backed routing fast path (done).
-- **v1.0** — examples, real-IBM-i CI, donation proposal to the
+- **v0.5** — MSRV 1.88; `Request` Debug redacts credentials (done).
+- **v0.6** — live Mapepire handshake: `/db/` + HTTP Basic, untagged
+  responses, rustls `ring`, [`TlsConfig::Ca`] leaf pin, `connect_address`
+  (done).
+- **v1.0** — real-IBM-i CI, donation proposal to the
   [Mapepire-IBMi](https://github.com/Mapepire-IBMi) GitHub org.
 
 ## Documentation

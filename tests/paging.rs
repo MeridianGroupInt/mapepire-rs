@@ -45,6 +45,7 @@ fn page(start: i64, count: i64, cont_id: Option<&str>, is_done: bool) -> mapepir
                 scale: Some(0),
                 precision: Some(10),
             }],
+            job: None,
         },
         data,
         cont_id: cont_id.map(str::to_string),

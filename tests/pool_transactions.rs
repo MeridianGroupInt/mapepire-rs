@@ -52,6 +52,7 @@ async fn reserved_runs_begin_dml_commit_on_one_socket() {
         metadata: QueryMetaData {
             column_count: 0,
             columns: Vec::<Column>::new(),
+            job: None,
         },
         data: Vec::new(),
         cont_id: None,
@@ -277,6 +278,7 @@ async fn drop_without_rollback_on_drop_does_not_send_rollback() {
         metadata: QueryMetaData {
             column_count: 0,
             columns: Vec::<Column>::new(),
+            job: None,
         },
         data: Vec::new(),
         cont_id: None,
@@ -338,6 +340,7 @@ async fn explicit_commit_suppresses_drop_rollback() {
         metadata: QueryMetaData {
             column_count: 0,
             columns: Vec::<Column>::new(),
+            job: None,
         },
         data: Vec::new(),
         cont_id: None,

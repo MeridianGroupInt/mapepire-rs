@@ -31,19 +31,25 @@ regressions are treated as **P0**:
 
 - `Password` is never `Clone`, `Serialize`, `Deserialize`, `Display`,
   `PartialEq`, or `Hash`. Its inner buffer is zeroized on drop.
-- **Wire-protocol boundary (accepted tradeoff):** `Password::expose() -> &str`
-  is called by `transport::handshake::connect` to materialize the plaintext
-  into a `String` field of `Request::Connect`. The cloned `String` is not
-  zeroized — it lives in heap memory until dropped after JSON serialization
-  and the allocator reuses the page. A future revision may thread
-  `Zeroizing<String>` through `Request::Connect` to close this gap. This
-  leak is bounded to the connection-establishment moment; the `Password`
-  itself remains zeroize-on-drop.
+- **Wire-protocol boundary:** `Request::Connect` does **not** carry
+  credentials. Live daemon authentication is HTTP Basic on the WebSocket
+  upgrade. `Password::expose() -> &str` is used to build the
+  `Authorization: Basic` header. The `user:pass` concatenation is a
+  `Zeroizing<String>` and is dropped after Base64 encoding. The header
+  value is not logged. The password is not on the query string and is
+  not in connect JSON. The `Password` itself remains zeroize-on-drop.
 - TLS is mandatory. There is no plaintext path to the daemon. The
   `TlsConfig::Insecure` variant must be opted into via the `insecure-tls`
   Cargo feature at compile time and emits a runtime warning when used.
-- Default TLS verification uses webpki roots; `cargo deny check` enforces
-  the supply-chain policy on every PR.
+  `DaemonServer.host` is the TLS server name (SNI, HTTP Host, certificate
+  name). TCP uses `connect_address` when set. Using the tunnel IP as
+  `host` without a matching leaf pin fails closed.
+- Default TLS verification uses webpki roots (`TlsConfig::Verified`) and
+  never skips name checks. On rustls, `TlsConfig::Ca` treats an exact
+  leaf-DER match as a pin (SAN skipped); a non-matching leaf still uses
+  `WebPkiServerVerifier` with name checks. native-tls is unchanged
+  (OpenSSL CN fallback). `cargo deny check` enforces the supply-chain
+  policy on every PR.
 - `IdAllocator` produces collision-free correlation ids across `Job`
   instances. Modifying its construction requires a regression test.
 - Parameter logging defaults to `ParameterLogging::None` and never logs

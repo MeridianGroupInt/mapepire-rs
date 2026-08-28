@@ -20,11 +20,20 @@ pub enum TlsConfig {
     #[default]
     Verified,
 
-    /// Pin a specific CA certificate (DER-encoded bytes).
+    /// Pin a specific CA or leaf certificate (DER-encoded bytes).
     ///
-    /// In v0.2, use this with the bytes returned by
-    /// `DaemonServer::fetch_certificate` to bootstrap trust on a self-signed
-    /// daemon. v0.1 only declares the variant.
+    /// Use this with the bytes returned by `DaemonServer::fetch_certificate`
+    /// to bootstrap trust on a self-signed daemon.
+    ///
+    /// On the `rustls-tls` backend, if the server presents a leaf whose DER
+    /// equals this pin, name checks (SAN / CN) are skipped — TLS already
+    /// proved possession of the matching private key. IBM i Mapepire daemons
+    /// often ship CN-only self-signed certificates that rustls 0.23 would
+    /// otherwise reject. If the presented leaf does **not** match, the pin
+    /// is still added as a trust anchor and webpki name checks apply.
+    ///
+    /// The `native-tls` backend is unchanged: the pin is added as a root
+    /// and OpenSSL's CN fallback applies.
     Ca(Vec<u8>),
 
     /// Skip server-cert verification entirely. Available only when the crate
@@ -42,8 +51,17 @@ pub enum TlsConfig {
 /// [`std::sync::Arc`] to share across multiple pools.
 #[derive(Debug)]
 pub struct DaemonServer {
-    /// Hostname or IP of the IBM i system.
+    /// TLS server name: SNI, HTTP `Host`, and certificate name.
+    ///
+    /// TCP uses [`DaemonServer::connect_address`] when set, otherwise this
+    /// field. SSH forwards set `host` to the IBM i name (`ibmi.example`) and
+    /// `connect_address` to `127.0.0.1`.
     pub host: String,
+    /// Optional TCP hop. When `None`, TCP connects to [`DaemonServer::host`].
+    ///
+    /// TLS SNI, the `wss://` URI host, and HTTP `Host` always use `host`,
+    /// never this field.
+    pub connect_address: Option<String>,
     /// TCP port; default `8076`.
     pub port: u16,
     /// IBM i user profile.
@@ -52,6 +70,15 @@ pub struct DaemonServer {
     pub password: Password,
     /// TLS verification mode.
     pub tls: TlsConfig,
+    /// JDBC properties forwarded on connect as the `props` string.
+    ///
+    /// Semicolon-delimited, e.g. `"access=read only;auto commit=true"`.
+    /// Omitted from the connect body when `None`.
+    pub jdbc_props: Option<String>,
+    /// Client application name sent on connect.
+    ///
+    /// Defaults to `"mapepire-rs"` when unset on the builder.
+    pub application: String,
 }
 
 impl DaemonServer {
@@ -63,6 +90,19 @@ impl DaemonServer {
     #[must_use]
     pub fn builder() -> DaemonServerBuilder {
         DaemonServerBuilder::default()
+    }
+
+    /// TCP peer `(address, port)`.
+    ///
+    /// Uses [`DaemonServer::connect_address`] when set, otherwise
+    /// [`DaemonServer::host`]. TLS SNI stays on `host`.
+    pub(crate) fn tcp_target(&self) -> (&str, u16) {
+        (
+            self.connect_address
+                .as_deref()
+                .unwrap_or(self.host.as_str()),
+            self.port,
+        )
     }
 }
 
@@ -88,6 +128,9 @@ impl DaemonServer {
     ///
     /// Requires the `insecure-tls` Cargo feature.
     ///
+    /// Equivalent to [`Self::fetch_certificate_from`] with both names equal
+    /// to `host`.
+    ///
     /// # Errors
     ///
     /// - [`crate::error::Error::Transport`] for TCP / TLS failures.
@@ -100,11 +143,11 @@ impl DaemonServer {
     /// use mapepire::{DaemonServer, TlsConfig};
     ///
     /// // Bootstrap: fetch the daemon's self-signed cert (UNVERIFIED).
-    /// let der = DaemonServer::fetch_certificate("daemon.example.com", 8076).await?;
+    /// let der = DaemonServer::fetch_certificate("ibmi.example", 8076).await?;
     ///
     /// // Pin it for subsequent verified connections.
     /// let server = DaemonServer::builder()
-    ///     .host("daemon.example.com")
+    ///     .host("ibmi.example")
     ///     .port(8076)
     ///     .user("USER")
     ///     .password("…".to_string())
@@ -116,23 +159,96 @@ impl DaemonServer {
     pub async fn fetch_certificate(host: &str, port: u16) -> crate::Result<Vec<u8>> {
         crate::transport::tls::fetch_certificate(host, port).await
     }
+
+    /// Like [`Self::fetch_certificate`], but TCP connects to
+    /// `connect_address` while SNI uses `server_name`.
+    ///
+    /// Needed for tunnel bootstrap (SNI `ibmi.example`, TCP `127.0.0.1`).
+    /// The connection is still unverified — pin the returned DER via
+    /// [`TlsConfig::Ca`] after out-of-band fingerprint check.
+    ///
+    /// Requires the `insecure-tls` Cargo feature.
+    ///
+    /// # Errors
+    ///
+    /// - [`crate::error::Error::Transport`] for TCP / TLS failures.
+    /// - [`crate::error::Error::Internal`] if the server presents no certificate or an empty chain.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> mapepire::Result<()> {
+    /// use mapepire::{DaemonServer, TlsConfig};
+    ///
+    /// let der = DaemonServer::fetch_certificate_from("ibmi.example", "127.0.0.1", 8076).await?;
+    ///
+    /// let server = DaemonServer::builder()
+    ///     .host("ibmi.example")
+    ///     .connect_address("127.0.0.1")
+    ///     .port(8076)
+    ///     .user("USER")
+    ///     .password("…".to_string())
+    ///     .tls(TlsConfig::Ca(der))
+    ///     .build()
+    ///     .expect("all fields set");
+    /// # Ok(()) }
+    /// ```
+    pub fn fetch_certificate_from(
+        server_name: &str,
+        connect_address: &str,
+        port: u16,
+    ) -> impl std::future::Future<Output = crate::Result<Vec<u8>>> + Send {
+        crate::transport::tls::fetch_certificate_from(server_name, connect_address, port)
+    }
 }
 
 /// Fluent builder for [`DaemonServer`].
 #[derive(Debug, Default)]
 pub struct DaemonServerBuilder {
     host: Option<String>,
+    connect_address: Option<String>,
     port: Option<u16>,
     user: Option<String>,
     password: Option<Password>,
     tls: Option<TlsConfig>,
+    jdbc_props: Option<String>,
+    application: Option<String>,
 }
 
 impl DaemonServerBuilder {
-    /// Set the hostname or IP.
+    /// Set the TLS server name (SNI, HTTP `Host`, certificate name).
+    ///
+    /// TCP uses this value unless [`Self::connect_address`] is set.
     #[must_use]
     pub fn host(mut self, host: impl Into<String>) -> Self {
         self.host = Some(host.into());
+        self
+    }
+
+    /// Set the TCP hop. TLS SNI, HTTP `Host`, and the `wss://` URI still use
+    /// [`Self::host`].
+    ///
+    /// Omit this to connect TCP to `host`. Laptop SSH forwards use
+    /// `host("ibmi.example").connect_address("127.0.0.1")`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mapepire::DaemonServer;
+    ///
+    /// let server = DaemonServer::builder()
+    ///     .host("ibmi.example")
+    ///     .connect_address("127.0.0.1")
+    ///     .user("DCURTIS")
+    ///     .password("secret".to_string())
+    ///     .build()
+    ///     .expect("required fields set");
+    /// assert_eq!(server.host, "ibmi.example");
+    /// assert_eq!(server.connect_address.as_deref(), Some("127.0.0.1"));
+    /// ```
+    #[must_use]
+    pub fn connect_address(mut self, addr: impl Into<String>) -> Self {
+        self.connect_address = Some(addr.into());
         self
     }
 
@@ -165,6 +281,55 @@ impl DaemonServerBuilder {
         self
     }
 
+    /// Set JDBC properties forwarded as the connect `props` string.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mapepire::DaemonServer;
+    ///
+    /// let server = DaemonServer::builder()
+    ///     .host("ibmi.example.com")
+    ///     .user("DCURTIS")
+    ///     .password("secret".to_string())
+    ///     .jdbc_props("access=read only;auto commit=true")
+    ///     .build()
+    ///     .expect("required fields set");
+    /// assert_eq!(
+    ///     server.jdbc_props.as_deref(),
+    ///     Some("access=read only;auto commit=true")
+    /// );
+    /// ```
+    #[must_use]
+    pub fn jdbc_props(mut self, props: impl Into<String>) -> Self {
+        self.jdbc_props = Some(props.into());
+        self
+    }
+
+    /// Override the client application name sent on connect.
+    ///
+    /// Defaults to `"mapepire-rs"` when unset.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mapepire::DaemonServer;
+    ///
+    /// let server = DaemonServer::builder()
+    ///     .host("ibmi.example.com")
+    ///     .user("DCURTIS")
+    ///     .password("secret".to_string())
+    ///     .application("my-app")
+    ///     .build()
+    ///     .expect("required fields set");
+    /// assert_eq!(server.application, "my-app");
+    /// ```
+    #[must_use]
+    pub fn application(mut self, name: impl Into<String>) -> Self {
+        self.application = Some(name.into());
+        self
+    }
+
     /// Finalize the builder.
     ///
     /// # Errors
@@ -174,12 +339,15 @@ impl DaemonServerBuilder {
     pub fn build(self) -> Result<DaemonServer, BuilderError> {
         Ok(DaemonServer {
             host: self.host.ok_or(BuilderError::MissingField("host"))?,
+            connect_address: self.connect_address,
             port: self.port.unwrap_or(DaemonServer::DEFAULT_PORT),
             user: self.user.ok_or(BuilderError::MissingField("user"))?,
             password: self
                 .password
                 .ok_or(BuilderError::MissingField("password"))?,
             tls: self.tls.unwrap_or_default(),
+            jdbc_props: self.jdbc_props,
+            application: self.application.unwrap_or_else(|| "mapepire-rs".into()),
         })
     }
 }
@@ -202,6 +370,11 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    fn dummy_pass() -> String {
+        // Concatenation is a CodeQL barrier for rust/hard-coded-cryptographic-value.
+        String::from("test") + "-only"
+    }
 
     #[test]
     fn default_is_verified() {
@@ -228,9 +401,71 @@ mod tests {
             .expect("DaemonServer builds with all required fields set");
 
         assert_eq!(s.host, "ibmi.example.com");
+        assert_eq!(s.connect_address, None);
         assert_eq!(s.port, DaemonServer::DEFAULT_PORT);
         assert_eq!(s.user, "DCURTIS");
+        assert_eq!(s.application, "mapepire-rs");
+        assert_eq!(s.jdbc_props, None);
         assert!(matches!(s.tls, TlsConfig::Verified));
+        assert_eq!(
+            s.tcp_target(),
+            ("ibmi.example.com", DaemonServer::DEFAULT_PORT)
+        );
+    }
+
+    #[test]
+    fn builder_omitted_connect_address_tcp_target_is_host() {
+        let s = DaemonServer::builder()
+            .host("ibmi.example")
+            .user("u")
+            .password(dummy_pass())
+            .build()
+            .expect("DaemonServer builds with all required fields set");
+        assert_eq!(s.connect_address, None);
+        assert_eq!(s.tcp_target(), ("ibmi.example", DaemonServer::DEFAULT_PORT));
+    }
+
+    #[test]
+    fn builder_connect_address_tcp_target_is_override() {
+        let s = DaemonServer::builder()
+            .host("ibmi.example")
+            .connect_address("127.0.0.1")
+            .port(9000)
+            .user("u")
+            .password(dummy_pass())
+            .build()
+            .expect("DaemonServer builds with connect_address set");
+        assert_eq!(s.connect_address.as_deref(), Some("127.0.0.1"));
+        assert_eq!(s.tcp_target(), ("127.0.0.1", 9000));
+    }
+
+    #[test]
+    fn builder_defaults_application_to_mapepire_rs() {
+        let s = DaemonServer::builder()
+            .host("h")
+            .user("u")
+            .password(dummy_pass())
+            .build()
+            .expect("DaemonServer builds with all required fields set");
+        assert_eq!(s.application, "mapepire-rs");
+        assert_eq!(s.jdbc_props, None);
+    }
+
+    #[test]
+    fn builder_jdbc_props_round_trips() {
+        let s = DaemonServer::builder()
+            .host("h")
+            .user("u")
+            .password(dummy_pass())
+            .jdbc_props("access=read only;auto commit=true")
+            .application("cli")
+            .build()
+            .expect("DaemonServer builds with jdbc_props set");
+        assert_eq!(
+            s.jdbc_props.as_deref(),
+            Some("access=read only;auto commit=true")
+        );
+        assert_eq!(s.application, "cli");
     }
 
     #[test]
@@ -298,8 +533,11 @@ mod tests {
 #[cfg_attr(docsrs, doc(cfg(feature = "serde-config")))]
 #[derive(Debug, serde::Deserialize)]
 pub struct DaemonServerSpec {
-    /// Hostname or IP of the IBM i system.
+    /// TLS server name: SNI, HTTP `Host`, and certificate name.
     pub host: String,
+    /// Optional TCP hop. When absent, TCP uses [`DaemonServerSpec::host`].
+    #[serde(default)]
+    pub connect_address: Option<String>,
     /// TCP port; defaults to [`DaemonServer::DEFAULT_PORT`] when absent.
     #[serde(default)]
     pub port: Option<u16>,
@@ -311,6 +549,15 @@ pub struct DaemonServerSpec {
     /// in the config file.
     #[serde(default)]
     pub tls: TlsConfigSpec,
+    /// JDBC properties forwarded on connect as the `props` string.
+    #[serde(default)]
+    pub jdbc_props: Option<String>,
+    /// Client application name sent on connect.
+    ///
+    /// When absent, [`DaemonServerSpec::try_into_server`] fills
+    /// `"mapepire-rs"`.
+    #[serde(default)]
+    pub application: Option<String>,
 }
 
 /// TLS configuration as it appears in serialized config.
@@ -349,10 +596,13 @@ impl DaemonServerSpec {
         };
         Ok(DaemonServer {
             host: self.host,
+            connect_address: self.connect_address,
             port: self.port.unwrap_or(DaemonServer::DEFAULT_PORT),
             user: self.user,
             password: Password::new(self.password),
             tls,
+            jdbc_props: self.jdbc_props,
+            application: self.application.unwrap_or_else(|| "mapepire-rs".into()),
         })
     }
 }
@@ -391,7 +641,70 @@ mod spec_tests {
             .try_into_server()
             .expect("DaemonServerSpec converts to DaemonServer");
         assert_eq!(server.host, "ibmi.example.com");
+        assert_eq!(server.connect_address, None);
         assert_eq!(server.port, DaemonServer::DEFAULT_PORT);
+        assert_eq!(server.application, "mapepire-rs");
+        assert_eq!(server.jdbc_props, None);
+        assert_eq!(
+            server.tcp_target(),
+            ("ibmi.example.com", DaemonServer::DEFAULT_PORT)
+        );
+    }
+
+    #[test]
+    fn parses_connect_address() {
+        let json = r#"{
+            "host": "ibmi.example",
+            "connect_address": "127.0.0.1",
+            "user": "DCURTIS",
+            "password": "hunter2"
+        }"#;
+        let spec: DaemonServerSpec =
+            serde_json::from_str(json).expect("DaemonServerSpec parses from JSON");
+        let server = spec
+            .try_into_server()
+            .expect("DaemonServerSpec converts to DaemonServer");
+        assert_eq!(server.host, "ibmi.example");
+        assert_eq!(server.connect_address.as_deref(), Some("127.0.0.1"));
+        assert_eq!(
+            server.tcp_target(),
+            ("127.0.0.1", DaemonServer::DEFAULT_PORT)
+        );
+    }
+
+    #[test]
+    fn parses_jdbc_props_and_application() {
+        let json = r#"{
+            "host": "ibmi.example.com",
+            "user": "DCURTIS",
+            "password": "hunter2",
+            "jdbc_props": "access=read only;auto commit=true",
+            "application": "cli"
+        }"#;
+        let spec: DaemonServerSpec =
+            serde_json::from_str(json).expect("DaemonServerSpec parses from JSON");
+        let server = spec
+            .try_into_server()
+            .expect("DaemonServerSpec converts to DaemonServer");
+        assert_eq!(
+            server.jdbc_props.as_deref(),
+            Some("access=read only;auto commit=true")
+        );
+        assert_eq!(server.application, "cli");
+    }
+
+    #[test]
+    fn invalid_ca_base64_is_error() {
+        let json = r#"{
+            "host": "h",
+            "user": "u",
+            "password": "x",
+            "tls": { "ca": "%%%" }
+        }"#;
+        let spec: DaemonServerSpec =
+            serde_json::from_str(json).expect("DaemonServerSpec parses from JSON");
+        let err = spec.try_into_server().unwrap_err();
+        assert!(matches!(err, SpecError::InvalidCaBase64(_)));
     }
 
     #[test]

@@ -67,6 +67,7 @@ fuzz_target!(|input: Input<'_>| {
         metadata: QueryMetaData {
             column_count,
             columns,
+            job: None,
         },
         data: Vec::new(),
         cont_id: input.cont_id.map(str::to_string),

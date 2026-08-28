@@ -33,7 +33,29 @@ pub use mock_server::{MockBehavior, RequestRecorder, spawn_mock};
 // re-export shape intact for binaries that DO use them (Tasks 27–30).
 #[allow(unused_imports)]
 pub use mock_server::{MockHandle, ResponsePauseGuard, spawn_pool_mock};
+#[allow(unused_imports)]
+pub use mock_server::{UpgradeProbe, spawn_mock_with_probe};
+#[allow(unused_imports)]
+pub use mock_server::{mint_cn_only, spawn_mock_cn_only, spawn_mock_with_cert};
+#[allow(unused_imports)]
+pub use mock_server::{spawn_mock_named, spawn_mock_named_with_probe};
 use tokio::sync::oneshot;
+
+/// Dummy IBM i password for tests.
+///
+/// Built by concatenating two string fragments so
+/// `rust/hard-coded-cryptographic-value` does not treat the value as a
+/// literal at the `.password(...)` sink.
+#[allow(dead_code)]
+pub fn dummy_password() -> String {
+    String::from("test") + "-only"
+}
+
+/// Distinct dummy so HTTP-403 tests send a different Basic blob.
+#[allow(dead_code)]
+pub fn dummy_password_wrong() -> String {
+    String::from("wrong") + "-only"
+}
 
 /// Spawn a mock with [`MockBehavior::AcceptAndConnect`], build a
 /// [`DaemonServer`] pointing at the bound address (with

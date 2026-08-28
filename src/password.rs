@@ -32,7 +32,7 @@ impl Password {
         Self(Zeroizing::new(value.into_boxed_str()))
     }
 
-    /// Borrow the plaintext for wire serialization.
+    /// Borrow the plaintext for the WebSocket upgrade's HTTP Basic header.
     ///
     /// This is the only escape hatch out of the `Zeroize` guarantee.
     /// Returning `&str` keeps the borrow tied to `self`'s lifetime, so
@@ -42,14 +42,11 @@ impl Password {
     /// returned slice creates a non-zeroizing copy on the heap that
     /// outlives the source `Password`.
     ///
-    /// The only call site in v0.2 is `transport::handshake::connect`,
-    /// which clones the bytes into the `Connect` wire request via
-    /// `.to_string()`. The cloned `String` lives until the request is
-    /// serialized into outgoing JSON and dropped. The bytes sit in
-    /// unreclaimed heap memory until the allocator reuses the page.
-    /// This is an accepted tradeoff at the wire-protocol boundary,
-    /// documented in `SECURITY.md`. A future revision could thread
-    /// `Zeroizing<String>` through `Request::Connect` to close the gap.
+    /// The remaining call site is the handshake's HTTP Basic
+    /// `Authorization` header, **not** [`Request::Connect`](crate::Request).
+    /// `Connect` matches mapepire-js and carries no credentials. The
+    /// `user:pass` concatenation is a [`zeroize::Zeroizing<String>`] and
+    /// is dropped after Base64 encoding; the header value is not logged.
     pub(crate) fn expose(&self) -> &str {
         &self.0
     }

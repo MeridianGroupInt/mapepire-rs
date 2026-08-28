@@ -313,15 +313,19 @@ Regressions on any of these are P0.
 
 ## 8. Wire protocol invariants
 
-- `Request` and `Response` enums are `#[serde(tag = "type",
-  rename_all = "snake_case")]`. Every variant maps 1:1 to a Mapepire
-  protocol operation. Don't add variants that aren't on the wire.
+- `Request` is `#[serde(tag = "type", rename_all = "snake_case")]`.
+  `Response` **serialize** stays internally tagged (snapshot-friendly).
+  `Response` **deserialize** is untagged-with-tagged-fallback: live
+  daemons emit `{id, success, ...}` without `type`; tagged mock frames
+  are still accepted. Every variant maps 1:1 to a Mapepire protocol
+  operation. Don't add variants that aren't on the wire.
 - Both enums are `#[non_exhaustive]`.
 - Optional fields on the wire use `#[serde(skip_serializing_if =
   "Option::is_none")]` so we don't emit `null` for absent values.
-- New wire variants require a `tests/wire_snapshots.rs` entry. The
-  reviewer reads the generated `.snap` to verify the shape matches what
-  the daemon actually expects.
+- New wire variants require a `tests/wire_snapshots.rs` entry (tagged
+  serialize shape). Live untagged fixtures (`snapshot_decode_live_*`)
+  are required as well. The reviewer reads the generated `.snap` to
+  verify the shape matches what the daemon actually emits.
 
 ---
 

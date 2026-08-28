@@ -27,6 +27,7 @@ fn dml_qr(id: &str, count: i64) -> mapepire::QueryResult {
         metadata: QueryMetaData {
             column_count: 0,
             columns: vec![],
+            job: None,
         },
         data: vec![],
         cont_id: None,

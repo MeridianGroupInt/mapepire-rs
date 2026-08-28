@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Discriminated union of all response types the server may send.
 #[non_exhaustive]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
     /// Successful authentication.
@@ -12,6 +12,9 @@ pub enum Response {
         /// Echoes request id.
         id: String,
         /// Reported daemon version string.
+        ///
+        /// Empty when the daemon omits `version` (live connect frames).
+        #[serde(default)]
         version: String,
         /// Initial Db2 job name on the server.
         job: String,
@@ -170,6 +173,9 @@ pub struct QueryMetaData {
     /// Per-column metadata.
     #[serde(default)]
     pub columns: Vec<Column>,
+    /// IBM i job that produced the result set, when the daemon reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
 }
 
 /// Metadata for one result-set column.
@@ -216,10 +222,10 @@ pub struct ErrorResponse {
     /// Always `false`.
     pub success: bool,
     /// Five-character SQLSTATE.
-    #[serde(default)]
+    #[serde(default, alias = "sql_state")]
     pub sqlstate: Option<String>,
     /// Db2-native code.
-    #[serde(default)]
+    #[serde(default, alias = "sql_rc")]
     pub sqlcode: Option<i32>,
     /// Human-readable text.
     #[serde(default)]
@@ -283,6 +289,7 @@ mod tests {
                     precision: Some(10),
                     scale: Some(0),
                 }],
+                job: None,
             },
             data: vec![{
                 let mut m = serde_json::Map::new();
@@ -374,6 +381,36 @@ mod tests {
                 assert_eq!(e.sqlcode, Some(-803));
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_error_response_sql_state_and_sql_rc_aliases() {
+        let json = r#"{"id":"x","success":false,"error":"nope","sql_rc":-803,"sql_state":"23505"}"#;
+        let e: ErrorResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(e.sqlcode, Some(-803));
+        assert_eq!(e.sqlstate.as_deref(), Some("23505"));
+    }
+
+    #[test]
+    fn test_query_metadata_omits_absent_job_on_serialize() {
+        let m = QueryMetaData::default();
+        let json = serde_json::to_value(&m).unwrap();
+        assert!(
+            json.get("job").is_none(),
+            "absent job must be omitted: {json}"
+        );
+        let back: QueryMetaData = serde_json::from_value(json).unwrap();
+        assert!(back.job.is_none());
+    }
+
+    #[test]
+    fn test_connected_version_defaults_when_absent() {
+        let json = r#"{"type":"connected","id":"2","job":"QZDASOINIT/QUSER/123456"}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::Connected { .. }));
+        if let Response::Connected { version, .. } = r {
+            assert_eq!(version, "");
         }
     }
 }

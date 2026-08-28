@@ -311,8 +311,9 @@ mod tests {
         let cases: &[Request] = &[
             Request::Connect {
                 id: id.clone(),
-                user: "u".into(),
-                password: "p".into(),
+                technique: "tcp".into(),
+                application: "mapepire-rs".into(),
+                props: None,
             },
             Request::Sql {
                 id: id.clone(),
@@ -383,6 +384,7 @@ mod tests {
             metadata: QueryMetaData {
                 column_count: 0,
                 columns: vec![],
+                job: None,
             },
             data: vec![],
             execution_time: 0.0,

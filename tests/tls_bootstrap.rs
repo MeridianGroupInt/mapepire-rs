@@ -40,3 +40,22 @@ async fn test_fetch_certificate_returns_mock_cert_bytes() {
         "fetch_certificate should return the mock's leaf cert DER bytes byte-for-byte"
     );
 }
+
+#[cfg(all(feature = "insecure-tls", feature = "rustls-tls"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_fetch_certificate_from_splits_sni_from_tcp() {
+    use mapepire::DaemonServer;
+
+    let (addr, mock_cert_der) =
+        common::spawn_mock_named("ibmi.example", common::MockBehavior::AcceptAndConnect);
+
+    let fetched_der =
+        DaemonServer::fetch_certificate_from("ibmi.example", "127.0.0.1", addr.port())
+            .await
+            .expect("fetch_certificate_from against tunneled mock");
+
+    assert_eq!(
+        fetched_der, mock_cert_der,
+        "fetch_certificate_from should return the mock's leaf cert DER bytes byte-for-byte"
+    );
+}

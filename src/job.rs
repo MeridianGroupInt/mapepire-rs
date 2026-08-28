@@ -129,6 +129,7 @@ impl Job {
     ///     .expect("missing required field");
     ///
     /// let job = Job::connect(&server).await?;
+    /// // `version()` is often empty on a live connect; use `server_version()`.
     /// println!("connected: {} ({})", job.version(), job.initial_job());
     /// # Ok(())
     /// # }
@@ -155,6 +156,10 @@ impl Job {
     }
 
     /// Daemon-reported version string from the `Connected` response.
+    ///
+    /// Live Mapepire daemons often omit `version` on connect, so this may
+    /// be empty. Call [`Job::server_version`] (the `getversion` operation)
+    /// for the daemon version string.
     #[must_use]
     pub fn version(&self) -> &str {
         &self.inner.version
@@ -392,6 +397,9 @@ impl Job {
     }
 
     /// Retrieve the daemon's reported version string.
+    ///
+    /// Sends `getversion`. Prefer this over [`Job::version`], which is
+    /// filled from the connect response and is often empty on a live daemon.
     ///
     /// # Errors
     ///

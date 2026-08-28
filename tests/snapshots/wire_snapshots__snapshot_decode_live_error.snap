@@ -1,0 +1,21 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 368
+expression: r
+---
+Error(
+    ErrorResponse {
+        id: "x",
+        success: false,
+        sqlstate: Some(
+            "23505",
+        ),
+        sqlcode: Some(
+            -803,
+        ),
+        error: Some(
+            "nope",
+        ),
+        job: None,
+    },
+)

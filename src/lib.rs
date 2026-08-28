@@ -19,6 +19,24 @@
 //! assert_eq!(server.port, DaemonServer::DEFAULT_PORT);
 //! ```
 //!
+//! `host` is SNI, HTTP `Host`, and the certificate name. TCP uses
+//! `connect_address` when set (otherwise `host`):
+//!
+//! ```
+//! use mapepire::DaemonServer;
+//!
+//! let server = DaemonServer::builder()
+//!     .host("ibmi.example")
+//!     .connect_address("127.0.0.1")
+//!     .user("DCURTIS")
+//!     .password("hunter2".to_string())
+//!     .build()
+//!     .expect("missing required field");
+//!
+//! assert_eq!(server.host, "ibmi.example");
+//! assert_eq!(server.connect_address.as_deref(), Some("127.0.0.1"));
+//! ```
+//!
 //! ## Encoding a request
 //!
 //! ```
@@ -33,6 +51,10 @@
 //! let json = serde_json::to_string(&r).expect("Request serializes to JSON");
 //! assert!(json.contains(r#""type":"sql""#));
 //! ```
+//!
+//! On a live daemon, [`crate::Job::version`] may be empty after connect
+//! (the connect frame often omits it). Call [`crate::Job::server_version`]
+//! (`getversion`) for the version string.
 
 #[cfg(not(any(feature = "rustls-tls", feature = "native-tls")))]
 compile_error!(

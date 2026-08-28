@@ -8,11 +8,15 @@
 //!
 //! Run:
 //! ```text
-//! MAPEPIRE_HOST=ibmi.example.com \
+//! MAPEPIRE_HOST=ibmi.example \
 //! MAPEPIRE_USER=YOURUSER \
 //! MAPEPIRE_PASSWORD=secret \
 //!     cargo run --example prepared
 //! ```
+//!
+//! Optional tunnel / pin / JDBC vars are documented on
+//! [`examples/one_shot.rs`](one_shot.rs): `MAPEPIRE_CONNECT_ADDRESS`,
+//! `MAPEPIRE_PORT`, `MAPEPIRE_PROPS`, `MAPEPIRE_CA`.
 
 use mapepire::{DaemonServer, Pool, TlsConfig};
 
