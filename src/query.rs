@@ -96,7 +96,8 @@ impl Drop for StreamState {
         // If the stream was dropped mid-iteration with the cursor still
         // open, fire a best-effort sqlclose. `done` is set when the
         // server reports `is_done = true` (see `unfold` body), so we
-        // skip the close in the natural-exhaustion path.
+        // skip the close in the natural-exhaustion path. `cont_id` here
+        // is the opening request id.
         if !self.done
             && let Some(cont_id) = self.cont_id.take()
         {
@@ -497,17 +498,65 @@ pub struct Rows {
     handle: DispatcherHandle,
     /// Page size used on the opening execute; reused for `sqlmore`.
     page_size: u32,
+    /// Cursor for `sqlmore` / `sqlclose`. Opening request `id` per
+    /// PROTOCOL.md; `None` when the first page is already done or after
+    /// ownership moves into [`Rows::stream`].
+    cursor: Option<String>,
 }
 
 impl Rows {
     /// Create a new `Rows` from the initial [`QueryResult`] and a clone of
     /// the connection's [`DispatcherHandle`].
     pub(crate) fn new(inner: QueryResult, handle: DispatcherHandle, page_size: u32) -> Self {
+        let cursor = if inner.is_done {
+            None
+        } else {
+            inner.cursor_handle().map(str::to_owned)
+        };
         Self {
             inner,
             handle,
             page_size,
+            cursor,
         }
+    }
+
+    /// `true` when the daemon reported the cursor is exhausted.
+    ///
+    /// This is the first-page flag. Additional pages may still arrive via
+    /// [`Rows::stream`] when this is `false`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job.execute("SELECT 1 FROM SYSIBM.SYSDUMMY1").await?;
+    /// assert!(rows.is_done());
+    /// assert_eq!(rows.first_page_len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.inner.is_done
+    }
+
+    /// Number of rows already buffered from the opening execute.
+    ///
+    /// This is **not** the full result size. When [`Self::is_done`] is
+    /// `false`, [`Rows::stream`] fetches further pages via `sqlmore`.
+    #[must_use]
+    pub fn first_page_len(&self) -> usize {
+        self.inner.data.len()
     }
 
     /// Number of rows affected for INSERT/UPDATE/DELETE; `None` for SELECT.
@@ -699,11 +748,11 @@ impl Rows {
     ///
     /// Each `Rows::stream` call creates a **fresh [`IdAllocator`]** scoped to
     /// the stream — this avoids contention with the [`crate::Job`]-level
-    /// allocator. The `cont_id` is the only persistent server-side identifier;
-    /// the per-stream id sequence is safe as long as each call's ids are
-    /// unique within that stream, which the allocator guarantees.
+    /// allocator. The cursor handle is the opening request `id` (PROTOCOL.md
+    /// §6 / mapepire-js `correlationId = s.id`); live sql replies omit
+    /// `cont_id`. The per-stream id sequence is only for `sqlmore` frames.
     /// Follow-up `sqlmore` uses the same page size as the opening execute.
-    /// `sqlmore` is skipped when `is_done` is set or there is no cursor.
+    /// `sqlmore` is skipped when `is_done` is set.
     ///
     /// Dropping the stream mid-fetch cancels the in-flight `sqlmore` future.
     /// The dispatcher will silently discard the response when it arrives —
@@ -745,14 +794,13 @@ impl Rows {
     pub fn stream(mut self) -> impl futures::Stream<Item = crate::Result<Row>> {
         use futures::stream::unfold;
 
-        // We own the cursor through `self.inner.cont_id`, but we cannot move
-        // fields out of `self` because `Rows` has a `Drop` impl. Instead:
-        //  * `take()` the cont_id (leaves `None`) so `Drop for Rows` no-ops when `self` drops at
-        //    the end of this function — the cursor ownership has transferred to `StreamState`
-        //    cleanly.
+        // We own the cursor through `self.cursor`, but we cannot move fields
+        // out of `self` because `Rows` has a `Drop` impl. Instead:
+        //  * `take()` the cursor (leaves `None`) so `Drop for Rows` no-ops when `self` drops at the
+        //    end of this function — ownership has transferred to `StreamState`.
         //  * `take()` the data Vec (leaves an empty Vec) so we don't clone the first page.
         //  * `clone()` the dispatcher handle (cheap — Arc<…> internally).
-        let cont_id = self.inner.cont_id.take();
+        let cursor = self.cursor.take();
         let data = std::mem::take(&mut self.inner.data);
         let handle = self.handle.clone();
         let ids = Arc::new(IdAllocator::new());
@@ -760,7 +808,7 @@ impl Rows {
         unfold(
             StreamState {
                 rows: data.into_iter(),
-                cont_id,
+                cont_id: cursor,
                 done: self.inner.is_done,
                 handle,
                 ids,
@@ -790,7 +838,8 @@ impl Rows {
                     Ok(Response::QueryResult(q)) if q.id == id => {
                         state.rows = q.data.into_iter();
                         state.done = q.is_done;
-                        state.cont_id = q.cont_id;
+                        // Keep the opening request id. sqlmore replies echo
+                        // the *new* request id, which is not the cursor.
                         if let Some(row_data) = state.rows.next() {
                             Some((Ok(Row::from_map(row_data)), state))
                         } else if state.done {
@@ -985,14 +1034,10 @@ impl Drop for Rows {
         // `into_typed()` / `into_dynamic()` (each of which transfers
         // ownership of the cursor into a `StreamState`).
         //
-        // Skip when the result set was fully delivered in the first
-        // page (`is_done == true`) — the server has already released
-        // the cursor and there's nothing to close. Skip when
-        // `cont_id` is `None` for the same reason, including the
-        // post-`stream()` case where `stream` already `take()`d it.
-        if !self.inner.is_done
-            && let Some(cont_id) = self.inner.cont_id.take()
-        {
+        // Skip when the first page was already done (`cursor` is `None`)
+        // — the server released the cursor. Skip after `stream()` which
+        // `take()`s `cursor`.
+        if let Some(cont_id) = self.cursor.take() {
             spawn_close(self.handle.clone(), cont_id);
         }
     }

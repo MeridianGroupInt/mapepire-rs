@@ -309,6 +309,23 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_live_query_result_omitted_is_done_and_cont_id() {
+        let json = r#"{
+            "id":"q1","has_results":true,"update_count":-1,
+            "metadata":{"column_count":1,"columns":[{"name":"n"}]},
+            "data":[{"n":1},{"n":2}],"success":true,"execution_time":1
+        }"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        let Response::QueryResult(q) = r else {
+            panic!("expected QueryResult, got {r:?}");
+        };
+        assert!(!q.is_done);
+        assert!(q.cont_id.is_none());
+        assert_eq!(q.cursor_handle(), Some("q1"));
+        assert_eq!(q.data.len(), 2);
+    }
+
+    #[test]
     fn test_decode_live_query_result_without_type() {
         let json = r#"{
             "id":"query3","has_results":true,"update_count":-1,

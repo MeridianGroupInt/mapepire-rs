@@ -269,26 +269,43 @@ const MOCK_JOB: &str = "MOCK/QUSER/000001";
 /// Serialize a [`QueryResult`]. When `terse` is `Some(true)`, rewrite
 /// object rows as arrays in `metadata.columns` order so the client
 /// exercises array-row decode (live daemon `terse: true`).
+///
+/// Live Jetty sql replies omit `cont_id` and may omit `is_done`. Strip
+/// null/empty `cont_id` and `is_done: false` so mock paging tests cover
+/// that dialect.
 fn encode_query_result_maybe_terse(q: &QueryResult, terse: Option<bool>) -> String {
-    if terse != Some(true) {
-        return serde_json::to_string(q).expect("serialize QueryResult");
-    }
     let mut v = serde_json::to_value(q).expect("serialize QueryResult");
-    let names: Vec<String> = q.metadata.columns.iter().map(|c| c.name.clone()).collect();
-    if let Some(data) = v.get("data").and_then(serde_json::Value::as_array) {
-        let arrays: Vec<serde_json::Value> = data
-            .iter()
-            .map(|row| match row {
-                serde_json::Value::Object(map) => serde_json::Value::Array(
-                    names
-                        .iter()
-                        .map(|n| map.get(n).cloned().unwrap_or(serde_json::Value::Null))
-                        .collect(),
-                ),
-                other => other.clone(),
-            })
-            .collect();
-        v["data"] = serde_json::Value::Array(arrays);
+    if terse == Some(true) {
+        let names: Vec<String> = q.metadata.columns.iter().map(|c| c.name.clone()).collect();
+        if let Some(data) = v.get("data").and_then(serde_json::Value::as_array) {
+            let arrays: Vec<serde_json::Value> = data
+                .iter()
+                .map(|row| match row {
+                    serde_json::Value::Object(map) => serde_json::Value::Array(
+                        names
+                            .iter()
+                            .map(|n| map.get(n).cloned().unwrap_or(serde_json::Value::Null))
+                            .collect(),
+                    ),
+                    other => other.clone(),
+                })
+                .collect();
+            v["data"] = serde_json::Value::Array(arrays);
+        }
+    }
+    if let Some(obj) = v.as_object_mut() {
+        match obj.get("cont_id") {
+            Some(serde_json::Value::Null) => {
+                obj.remove("cont_id");
+            }
+            Some(serde_json::Value::String(s)) if s.is_empty() => {
+                obj.remove("cont_id");
+            }
+            _ => {}
+        }
+        if obj.get("is_done") == Some(&serde_json::Value::Bool(false)) {
+            obj.remove("is_done");
+        }
     }
     v.to_string()
 }

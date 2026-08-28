@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-08-28
+
+Live paging: `Rows::stream` never issued `sqlmore` on stock Mapepire
+because sql replies omit `cont_id` and may omit `is_done`. Patch versus
+0.7.0 (decode / cursor handle, not a breaking cut).
+
+### Fixed
+
+- **`Rows::stream` pages until `is_done`.** PROTOCOL.md §6 and
+  mapepire-js use the opening request `id` as the cursor
+  (`sqlmore.cont_id` / `sqlclose.cont_id`). 0.7.0 required a non-empty
+  `QueryResult.cont_id` and stopped after the first page of 100.
+- **Omitted `is_done` on a result set is not done.** JS treats missing
+  as falsy (`RUN_MORE_DATA_AVAILABLE`). DML frames that omit both
+  `is_done` and `data` still count as done so we do not `sqlmore` /
+  `sqlclose` a non-cursor (SQLSTATE 24000 / OSS-7).
+- **`sqlmore` keeps the opening handle.** Follow-up replies echo the
+  new request `id`; that is not the cursor.
+
+### Added
+
+- **`Rows::is_done` and `Rows::first_page_len`** for first-page cursor
+  state so callers need not infer paging from `n == 100`.
+
 ## [0.7.0] — 2026-08-28
 
 Live-daemon leftover after 0.6.1: CL job log, bind page size, terse
@@ -719,7 +743,8 @@ harness used to validate them.
 - README badges (CI, Audit, deps.rs, MSRV from Cargo.toml, License).
 - PR template, issue templates, CODEOWNERS.
 
-[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.1...v0.6.0
