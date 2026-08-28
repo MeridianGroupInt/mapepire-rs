@@ -358,6 +358,156 @@ impl Pool {
         Job::execute_with(&obj, sql, params).await
     }
 
+    /// Execute a SQL statement with explicit [`crate::ExecuteOptions`].
+    ///
+    /// Routes identically to [`Pool::execute`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Pool::execute`], plus [`crate::Error::Protocol`] when
+    /// [`crate::ExecuteOptions::rows`] is `Some(0)`.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip(self, opts),
+            fields(sql = %sql, rows = ?opts.rows, tier = tracing::field::Empty)
+        )
+    )]
+    pub async fn execute_opts(
+        &self,
+        sql: &str,
+        opts: crate::ExecuteOptions,
+    ) -> crate::Result<crate::query::Rows> {
+        use crate::Job;
+
+        #[cfg(feature = "metrics")]
+        emit_pool_status_gauges(&self.inner.status());
+
+        if let Some(arc) = self.registry.peek_idle() {
+            #[cfg(feature = "tracing")]
+            tracing::Span::current().record("tier", "try_idle");
+            #[cfg(feature = "metrics")]
+            metrics::counter!(
+                crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+                "tier" => "try_idle",
+            )
+            .increment(1);
+            return Job::execute_opts(&arc, sql, opts).await;
+        }
+
+        if let Some(arc) = self.pick_unsaturated() {
+            #[cfg(feature = "tracing")]
+            tracing::Span::current().record("tier", "least_busy_scan");
+            #[cfg(feature = "metrics")]
+            metrics::counter!(
+                crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+                "tier" => "least_busy_scan",
+            )
+            .increment(1);
+            return Job::execute_opts(&arc, sql, opts).await;
+        }
+
+        #[cfg(feature = "tracing")]
+        tracing::Span::current().record("tier", "fair_queue");
+        #[cfg(feature = "metrics")]
+        metrics::counter!(
+            crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+            "tier" => "fair_queue",
+        )
+        .increment(1);
+        let obj = self.get_or_timeout().await?;
+        Job::execute_opts(&obj, sql, opts).await
+    }
+
+    /// Parameterized variant of [`Pool::execute_opts`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Pool::execute_with`], plus [`crate::Error::Protocol`] when
+    /// [`crate::ExecuteOptions::rows`] is `Some(0)`.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip(self, params, opts),
+            fields(
+                sql = %sql,
+                param_count = params.len(),
+                rows = ?opts.rows,
+                tier = tracing::field::Empty,
+                param_types = tracing::field::Empty,
+                params = tracing::field::Empty,
+            ),
+        )
+    )]
+    pub async fn execute_with_opts(
+        &self,
+        sql: &str,
+        params: &[serde_json::Value],
+        opts: crate::ExecuteOptions,
+    ) -> crate::Result<crate::query::Rows> {
+        use crate::Job;
+
+        #[cfg(feature = "tracing")]
+        match self.parameter_logging {
+            ParameterLogging::None => {}
+            ParameterLogging::TypesAndCount => {
+                let types: Vec<&'static str> = params
+                    .iter()
+                    .map(|v| match v {
+                        serde_json::Value::String(_) => "String",
+                        serde_json::Value::Number(_) => "Number",
+                        serde_json::Value::Bool(_) => "Bool",
+                        serde_json::Value::Null => "Null",
+                        serde_json::Value::Array(_) => "Array",
+                        serde_json::Value::Object(_) => "Object",
+                    })
+                    .collect();
+                tracing::Span::current().record("param_types", tracing::field::debug(&types));
+            }
+            ParameterLogging::Full => {
+                tracing::Span::current().record("params", tracing::field::debug(params));
+            }
+        }
+
+        #[cfg(feature = "metrics")]
+        emit_pool_status_gauges(&self.inner.status());
+
+        if let Some(arc) = self.registry.peek_idle() {
+            #[cfg(feature = "tracing")]
+            tracing::Span::current().record("tier", "try_idle");
+            #[cfg(feature = "metrics")]
+            metrics::counter!(
+                crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+                "tier" => "try_idle",
+            )
+            .increment(1);
+            return Job::execute_with_opts(&arc, sql, params, opts).await;
+        }
+
+        if let Some(arc) = self.pick_unsaturated() {
+            #[cfg(feature = "tracing")]
+            tracing::Span::current().record("tier", "least_busy_scan");
+            #[cfg(feature = "metrics")]
+            metrics::counter!(
+                crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+                "tier" => "least_busy_scan",
+            )
+            .increment(1);
+            return Job::execute_with_opts(&arc, sql, params, opts).await;
+        }
+
+        #[cfg(feature = "tracing")]
+        tracing::Span::current().record("tier", "fair_queue");
+        #[cfg(feature = "metrics")]
+        metrics::counter!(
+            crate::observability::POOL_ROUTING_TIER_WINS_TOTAL,
+            "tier" => "fair_queue",
+        )
+        .increment(1);
+        let obj = self.get_or_timeout().await?;
+        Job::execute_with_opts(&obj, sql, params, opts).await
+    }
+
     /// Reserve a single connection. The returned [`crate::Reserved`] holds the
     /// connection until drop — `BEGIN`/`COMMIT` are guaranteed to land on
     /// the same Db2 job (spec §7.4).

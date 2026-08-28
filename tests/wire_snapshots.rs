@@ -74,6 +74,18 @@ fn snapshot_request_execute() {
         id: "test".into(),
         cont_id: "stmt-7".into(),
         parameters: Some(vec![serde_json::json!("hello")]),
+        rows: None,
+    };
+    insta::assert_json_snapshot!(r);
+}
+
+#[test]
+fn snapshot_request_prepare_sql_execute_single() {
+    let r = Request::PrepareSqlExecute {
+        id: "test".into(),
+        sql: "VALUES (CAST(? AS INTEGER))".into(),
+        parameters: Some(vec![vec![serde_json::json!(7)]]),
+        rows: Some(100),
     };
     insta::assert_json_snapshot!(r);
 }

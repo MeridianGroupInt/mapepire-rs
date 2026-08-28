@@ -195,7 +195,8 @@ fn pending_kind(request: &Request) -> PendingKind {
 
 /// Live untagged `{id, success, job}` is `Connected`. After handshake the
 /// same shape is `getdbjob`. Untagged `{id, success}` is `Pong`; remap
-/// when the outstanding request is sqlclose/setconfig/exit.
+/// when the outstanding request is sqlclose/setconfig/exit/`prepare_sql`.
+/// Ping stays `Pong`.
 fn remap_response(kind: PendingKind, response: Response) -> Response {
     match (kind, response) {
         (PendingKind::GetDbJob, Response::Connected { id, job, .. }) => Response::DbJob {
@@ -208,6 +209,16 @@ fn remap_response(kind: PendingKind, response: Response) -> Response {
         }
         (PendingKind::SqlClose, Response::Pong { id }) => Response::SqlClosed { id, success: true },
         (PendingKind::Exit, Response::Pong { id }) => Response::Exited { id },
+        // Live `prepare_sql` success is `{id, success:true}` with no `cont_id`
+        // (PROTOCOL.md: the request id *is* the handle). Decode lands on
+        // Pong; remap to a prepared ack with an empty handle so `Job::prepare`
+        // can keep a client-side SQL cache and send `prepare_sql_execute`.
+        (PendingKind::PrepareSql, Response::Pong { id }) => Response::PreparedStatement {
+            id,
+            success: true,
+            cont_id: String::new(),
+            execution_time: 0.0,
+        },
         (_, other) => other,
     }
 }
@@ -404,6 +415,7 @@ mod tests {
                 id: id.clone(),
                 cont_id: "c".into(),
                 parameters: None,
+                rows: None,
             },
             Request::SqlMore {
                 id: id.clone(),
@@ -574,8 +586,13 @@ mod tests {
             Response::Exited { id } if id == "x"
         ));
         assert!(matches!(
-            remap_response(PendingKind::Ping, pong),
+            remap_response(PendingKind::Ping, pong.clone()),
             Response::Pong { id } if id == "x"
+        ));
+        assert!(matches!(
+            remap_response(PendingKind::PrepareSql, pong),
+            Response::PreparedStatement { id, success, cont_id, .. }
+                if id == "x" && success && cont_id.is_empty()
         ));
     }
 

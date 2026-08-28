@@ -94,4 +94,4 @@ pub use crate::protocol::{
     ClMessage, Column, ErrorResponse, IdAllocator, JobLogEntry, QueryMetaData, QueryResult,
     Request, RequestId, Response,
 };
-pub use crate::query::{Query, Row, Rows};
+pub use crate::query::{ExecuteOptions, Query, Row, Rows};

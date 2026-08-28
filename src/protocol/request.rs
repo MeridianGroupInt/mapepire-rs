@@ -86,9 +86,17 @@ pub enum Request {
         id: String,
         /// SQL text.
         sql: String,
-        /// One or more parameter sets. A vector of vectors yields one
-        /// execution per inner set.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        /// One or more parameter sets.
+        ///
+        /// In memory this is always a vector of sets. On the wire a single
+        /// set serializes as a flat JSON array (`[7]`, matching mapepire-js
+        /// and PROTOCOL.md); two or more sets stay nested
+        /// (`[[1,"a"],[2,"b"]]`).
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "parameter_sets"
+        )]
         parameters: Option<Vec<Vec<serde_json::Value>>>,
         /// Initial page size for the resulting cursor (per execution).
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -104,6 +112,9 @@ pub enum Request {
         /// Parameter set for this execution.
         #[serde(skip_serializing_if = "Option::is_none")]
         parameters: Option<Vec<serde_json::Value>>,
+        /// Page size for this execution; `None` lets the server pick.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rows: Option<u32>,
     },
 
     /// Fetch the next page of rows from an open cursor.
@@ -243,11 +254,13 @@ impl fmt::Debug for Request {
                 id,
                 cont_id,
                 parameters,
+                rows,
             } => f
                 .debug_struct("Execute")
                 .field("id", id)
                 .field("cont_id", cont_id)
                 .field("parameters", parameters)
+                .field("rows", rows)
                 .finish(),
             Self::SqlMore { id, cont_id, rows } => f
                 .debug_struct("SqlMore")
@@ -285,6 +298,59 @@ impl fmt::Debug for Request {
                 .finish(),
             Self::Ping { id } => f.debug_struct("Ping").field("id", id).finish(),
             Self::Exit { id } => f.debug_struct("Exit").field("id", id).finish(),
+        }
+    }
+}
+
+/// Wire shape for `prepare_sql_execute.parameters`.
+///
+/// PROTOCOL.md / mapepire-js: one set is a JSON array of values (`[7]`);
+/// a batch is an array of those arrays (`[[1,"a"],[2,"b"]]`). The in-memory
+/// type stays `Vec<Vec<Value>>` so `Job` / `Query` can treat every call as
+/// a list of sets.
+mod parameter_sets {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value;
+
+    // serde `serialize_with` receives `&FieldType`; the field is `Option<_>`.
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S>(sets: &Option<Vec<Vec<Value>>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match sets {
+            None => serializer.serialize_none(),
+            Some(sets) if sets.len() == 1 => sets[0].serialize(serializer),
+            Some(sets) => sets.serialize(serializer),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<Vec<Value>>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let Some(value) = Option::<Value>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        match value {
+            Value::Null => Ok(None),
+            Value::Array(items) => {
+                if items.iter().all(Value::is_array) {
+                    Ok(Some(
+                        items
+                            .into_iter()
+                            .filter_map(|v| match v {
+                                Value::Array(inner) => Some(inner),
+                                _ => None,
+                            })
+                            .collect(),
+                    ))
+                } else {
+                    Ok(Some(vec![items]))
+                }
+            }
+            _ => Err(D::Error::custom("parameters must be a JSON array")),
         }
     }
 }
@@ -409,8 +475,9 @@ mod tests {
                     id: "4".into(),
                     cont_id: "cur-1".into(),
                     parameters: Some(vec![serde_json::Value::from("x")]),
+                    rows: None,
                 },
-                r#"Execute { id: "4", cont_id: "cur-1", parameters: Some([String("x")]) }"#,
+                r#"Execute { id: "4", cont_id: "cur-1", parameters: Some([String("x")]), rows: None }"#,
             ),
             (
                 Request::SqlMore {
@@ -548,10 +615,53 @@ mod tests {
             id: "14".into(),
             cont_id: "stmt-7".into(),
             parameters: Some(vec![serde_json::json!("hello")]),
+            rows: Some(100),
         };
         let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"execute","id":"14","cont_id":"stmt-7","parameters":["hello"],"rows":100}"#
+        );
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, Request::Execute { cont_id, .. } if cont_id == "stmt-7"));
+    }
+
+    #[test]
+    fn prepare_sql_execute_single_set_flattens_on_wire() {
+        let r = Request::PrepareSqlExecute {
+            id: "13".into(),
+            sql: "VALUES (CAST(? AS INTEGER))".into(),
+            parameters: Some(vec![vec![serde_json::json!(7)]]),
+            rows: Some(100),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"prepare_sql_execute","id":"13","sql":"VALUES (CAST(? AS INTEGER))","parameters":[7],"rows":100}"#
+        );
+        let back: Request = serde_json::from_str(&json).unwrap();
+        match back {
+            Request::PrepareSqlExecute {
+                parameters, rows, ..
+            } => {
+                assert_eq!(parameters, Some(vec![vec![serde_json::json!(7)]]));
+                assert_eq!(rows, Some(100));
+            }
+            other => panic!("expected PrepareSqlExecute, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prepare_sql_execute_accepts_nested_single_set() {
+        let json =
+            r#"{"type":"prepare_sql_execute","id":"13","sql":"VALUES (?)","parameters":[[7]]}"#;
+        let back: Request = serde_json::from_str(json).unwrap();
+        match back {
+            Request::PrepareSqlExecute { parameters, .. } => {
+                assert_eq!(parameters, Some(vec![vec![serde_json::json!(7)]]));
+            }
+            other => panic!("expected PrepareSqlExecute, got {other:?}"),
+        }
     }
 
     #[test]

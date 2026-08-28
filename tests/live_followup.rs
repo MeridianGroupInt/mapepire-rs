@@ -70,13 +70,27 @@ async fn test_execute_with_sends_prepare_sql_execute() {
     assert_eq!(bound.len(), 1, "full trace: {observed:?}");
     match bound[0] {
         Request::PrepareSqlExecute {
-            sql, parameters, ..
+            sql,
+            parameters,
+            rows,
+            ..
         } => {
             assert!(sql.contains('?'));
             assert_eq!(parameters.as_ref(), Some(&vec![vec![json!(7)]]));
+            assert_eq!(*rows, Some(100), "JS-parity default page size");
         }
         other => panic!("expected PrepareSqlExecute, got {other:?}"),
     }
+    let json = serde_json::to_string(bound[0]).expect("serialize bound request");
+    assert!(
+        json.contains(r#""parameters":[7]"#),
+        "single-set parameters must flatten to [7], got {json}"
+    );
+    assert!(
+        !json.contains(r#""parameters":[[7]]"#),
+        "single-set must not nest as [[7]], got {json}"
+    );
+    assert!(json.contains(r#""rows":100"#), "missing rows:100 in {json}");
 }
 
 #[cfg(feature = "rustls-tls")]
@@ -158,4 +172,145 @@ async fn test_unknown_frame_does_not_kill_dispatcher() {
         .await
         .expect("sql after decode miss");
     drop(rows);
+}
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_execute_sends_rows_100() {
+    use mapepire::protocol::Request;
+
+    let (job, recorder) =
+        common::connect_to_mock_with_recorder(vec![int_row("placeholder", 1)]).await;
+
+    let rows = job
+        .execute("SELECT 1 FROM SYSIBM.SYSDUMMY1")
+        .await
+        .expect("execute");
+    drop(rows);
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    let sql: Vec<&Request> = observed
+        .iter()
+        .filter(|r| matches!(r, Request::Sql { .. }))
+        .collect();
+    assert_eq!(sql.len(), 1, "full trace: {observed:?}");
+    match sql[0] {
+        Request::Sql { rows, .. } => assert_eq!(*rows, Some(100)),
+        other => panic!("expected Sql, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_execute_opts_rows_zero_rejected() {
+    use mapepire::{Error, ExecuteOptions, ProtocolError};
+
+    let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;
+    let err = job
+        .execute_opts(
+            "SELECT 1 FROM SYSIBM.SYSDUMMY1",
+            ExecuteOptions {
+                rows: Some(0),
+                terse: false,
+            },
+        )
+        .await
+        .expect_err("rows: 0 must not be sent");
+    assert!(
+        matches!(err, Error::Protocol(ProtocolError::ZeroPageSize)),
+        "unexpected error: {err}"
+    );
+}
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_execute_with_opts_rows_zero_rejected() {
+    use mapepire::{Error, ExecuteOptions, ProtocolError};
+
+    let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;
+    let err = job
+        .execute_with_opts(
+            "VALUES (CAST(? AS INTEGER))",
+            &[json!(7)],
+            ExecuteOptions {
+                rows: Some(0),
+                terse: false,
+            },
+        )
+        .await
+        .expect_err("rows: 0 must not be sent");
+    assert!(
+        matches!(err, Error::Protocol(ProtocolError::ZeroPageSize)),
+        "unexpected error: {err}"
+    );
+}
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_prepare_without_cont_id_then_two_execute_with() {
+    use mapepire::protocol::Request;
+
+    let (job, recorder) = common::connect_to_mock_with_recorder(vec![
+        int_row("placeholder", 7),
+        int_row("placeholder", 11),
+    ])
+    .await;
+
+    let query = job
+        .prepare("VALUES (CAST(? AS INTEGER))")
+        .await
+        .expect("prepare ack without cont_id must succeed");
+    let first = query
+        .execute_with(job.ids(), &[json!(7)])
+        .await
+        .expect("execute 7");
+    let second = query
+        .execute_with(job.ids(), &[json!(11)])
+        .await
+        .expect("execute 11");
+
+    let a = first.into_dynamic().await.expect("first");
+    let b = second.into_dynamic().await.expect("second");
+    let v7: i64 = a[0].get("1").expect("7");
+    let v11: i64 = b[0].get("1").expect("11");
+    assert_eq!(v7, 7);
+    assert_eq!(v11, 11);
+
+    drop(query);
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    assert!(
+        observed
+            .iter()
+            .any(|r| matches!(r, Request::PrepareSql { .. })),
+        "expected prepare_sql, full trace: {observed:?}"
+    );
+    let bound: Vec<&Request> = observed
+        .iter()
+        .filter(|r| matches!(r, Request::PrepareSqlExecute { .. }))
+        .collect();
+    assert_eq!(bound.len(), 2, "two client-side executes, got {observed:?}");
+    for req in &bound {
+        match req {
+            Request::PrepareSqlExecute {
+                rows, parameters, ..
+            } => {
+                assert_eq!(*rows, Some(100));
+                assert!(parameters.is_some());
+            }
+            other => panic!("expected PrepareSqlExecute, got {other:?}"),
+        }
+    }
+    assert!(
+        !observed
+            .iter()
+            .any(|r| matches!(r, Request::Execute { .. })),
+        "no server handle, so no execute opcode: {observed:?}"
+    );
+    assert!(
+        !observed
+            .iter()
+            .any(|r| matches!(r, Request::SqlClose { .. })),
+        "no cursor to close: {observed:?}"
+    );
 }

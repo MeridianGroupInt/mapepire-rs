@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Page size and live leftover after 0.6.1 `execute_with` / `prepare`.
+
+### Changed
+
+- **`Job::execute` and `Job::execute_with` send `rows: 100`.** 0.6.1 omitted
+  `rows` (daemon default **1000**). The crate now matches mapepire-js
+  `rowsToFetch = 100`. Follow-up `sqlmore` uses the same page size as the
+  opening execute.
+- **Single-set `prepare_sql_execute.parameters` serialize as `[7]`**, not
+  `[[7]]`. Batches stay `[[a],[b]]`.
+- **`Job::prepare` on a live `{id,success:true}` ack (no `cont_id`)
+  succeeds** as a client-side `Query`. Each `Query::execute_with` then
+  sends `prepare_sql_execute` (mapepire-js). A real `cont_id` still uses
+  the `execute` opcode. Ping `{id,success}` remains `Pong`.
+
+### Added
+
+- **`ExecuteOptions`** (`rows: Option<u32>`, `terse: bool` unused until
+  terse decode). `Job` / `Query` / `Pool` / `Reserved` /
+  `Executor::{execute_opts, execute_with_opts}`. `rows: 0` is
+  `Error::Protocol(ProtocolError::ZeroPageSize)` and is not sent.
+
+### Fixed
+
+- **`execute_with` SQLSTATE 24000** from omitted `rows` on
+  `prepare_sql_execute` and from `sqlclose`/`sqlmore` when the cursor
+  was already done or had no handle.
+- **`prepare` decoded as `Pong`.** Outstanding `PrepareSql` remaps the
+  untagged success ack to a prepared statement with no server handle.
+
 ## [0.6.2] — 2026-08-28
 
 Live-daemon leftover after 0.6.1: CL commands.

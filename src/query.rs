@@ -5,9 +5,68 @@
 
 use std::sync::Arc;
 
-use crate::error::Error;
+use crate::error::{Error, ProtocolError};
 use crate::protocol::{IdAllocator, QueryResult, Request, Response};
 use crate::transport::DispatcherHandle;
+
+/// Options for [`crate::Job::execute_opts`] / [`Query::execute_with_opts`].
+///
+/// `rows` is the first-page size sent on `sql` / `prepare_sql_execute` /
+/// `execute`. [`ExecuteOptions::rows`] `None` uses
+/// [`ExecuteOptions::DEFAULT_ROWS`] (100, matching mapepire-js). `Some(0)`
+/// is rejected before a request is sent.
+///
+/// `terse` is reserved for array-shaped `data` decode; it is not written
+/// on the wire yet.
+///
+/// # Example
+///
+/// ```
+/// use mapepire::ExecuteOptions;
+///
+/// let opts = ExecuteOptions {
+///     rows: Some(50),
+///     terse: false,
+/// };
+/// assert_eq!(opts.resolved_rows().expect("non-zero"), 50);
+///
+/// let err = ExecuteOptions {
+///     rows: Some(0),
+///     terse: false,
+/// }
+/// .resolved_rows()
+/// .expect_err("zero page size");
+/// assert!(matches!(err, mapepire::Error::Protocol(_)));
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExecuteOptions {
+    /// First-page size. `None` means the crate default of 100.
+    pub rows: Option<u32>,
+    /// Request terse array-shaped rows. Unused until terse decode lands;
+    /// omitted on the wire while `false`.
+    pub terse: bool,
+}
+
+impl ExecuteOptions {
+    /// mapepire-js `rowsToFetch` default, sent whenever [`Self::rows`] is
+    /// `None`. PROTOCOL.md's daemon default of 1000 applies only when the
+    /// client omits `rows`; this crate always sends a positive page size.
+    pub const DEFAULT_ROWS: u32 = 100;
+
+    /// Page size that will be sent on the wire.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Protocol`] with [`ProtocolError::ZeroPageSize`] when
+    /// [`Self::rows`] is `Some(0)`.
+    pub fn resolved_rows(self) -> crate::Result<u32> {
+        match self.rows {
+            Some(0) => Err(Error::from(ProtocolError::ZeroPageSize)),
+            Some(n) => Ok(n),
+            None => Ok(Self::DEFAULT_ROWS),
+        }
+    }
+}
 
 /// Internal state machine for [`Rows::stream`].
 ///
@@ -19,6 +78,7 @@ struct StreamState {
     done: bool,
     handle: DispatcherHandle,
     ids: Arc<IdAllocator>,
+    page_size: u32,
 }
 
 impl Drop for StreamState {
@@ -35,14 +95,18 @@ impl Drop for StreamState {
     }
 }
 
-/// Server-side prepared-statement handle.
+/// Prepared-statement handle.
 ///
-/// Constructed by [`crate::Job::prepare`]. Holds the `cont_id` assigned by
-/// the daemon so that subsequent `execute` and `execute_batch` calls can
-/// reference the same server-side cursor.
+/// Constructed by [`crate::Job::prepare`]. Live daemons often ack
+/// `prepare_sql` as `{id, success:true}` with **no** `cont_id` (the
+/// request id *is* the handle per PROTOCOL.md). In that case `Query`
+/// caches the SQL on the client and each [`Query::execute_with`] sends
+/// `prepare_sql_execute` (mapepire-js). When the daemon does return a
+/// `cont_id`, subsequent executes use the `execute` opcode with that
+/// handle.
 ///
-/// Drop sends a best-effort `sqlclose` to release the server-side cursor
-/// (Task 18).
+/// Drop sends a best-effort `sqlclose` only when a server-side handle
+/// exists.
 ///
 /// `Query` is deliberately `!Clone` — ownership is exclusive. Wrap in
 /// `Arc<Mutex<Query>>` or use a separate prepared statement per task if you
@@ -71,17 +135,33 @@ impl Drop for StreamState {
 /// ```
 #[derive(Debug)]
 pub struct Query {
-    /// Server-assigned continuation id for this prepared statement.
-    cont_id: String,
+    /// Server-assigned continuation id, when the daemon returned one.
+    /// `None` (or empty) means execute via `prepare_sql_execute` with
+    /// [`Self::sql`].
+    cont_id: Option<String>,
+    /// SQL text from [`crate::Job::prepare`]. Used when `cont_id` is
+    /// absent so execute can send `prepare_sql_execute`.
+    sql: String,
     /// Cloned dispatcher handle for issuing follow-up requests.
     handle: DispatcherHandle,
 }
 
 impl Query {
-    /// Create a new `Query` from a `cont_id` returned by a `PrepareSql`
-    /// response and a clone of the connection's [`DispatcherHandle`].
-    pub(crate) fn new(cont_id: String, handle: DispatcherHandle) -> Self {
-        Self { cont_id, handle }
+    /// Create a new `Query` from a prepare ack and a clone of the
+    /// connection's [`DispatcherHandle`].
+    ///
+    /// `cont_id` is `None` when the live daemon acked prepare without a
+    /// server handle; execute then sends `prepare_sql_execute`.
+    pub(crate) fn new(cont_id: Option<String>, sql: String, handle: DispatcherHandle) -> Self {
+        Self {
+            cont_id,
+            sql,
+            handle,
+        }
+    }
+
+    fn server_handle(&self) -> Option<&str> {
+        self.cont_id.as_deref().filter(|c| !c.is_empty())
     }
 
     /// Execute the prepared statement with no parameters.
@@ -111,7 +191,51 @@ impl Query {
     /// # }
     /// ```
     pub async fn execute(&self, ids: &IdAllocator) -> crate::Result<Rows> {
-        self.execute_inner(ids, None).await
+        self.execute_inner(ids, None, ExecuteOptions::default())
+            .await
+    }
+
+    /// Execute the prepared statement with no parameters and explicit
+    /// [`ExecuteOptions`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Query::execute`], plus [`Error::Protocol`] when
+    /// [`ExecuteOptions::rows`] is `Some(0)`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, ExecuteOptions, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let query = job.prepare("SELECT 1 FROM SYSIBM.SYSDUMMY1").await?;
+    /// let rows = query
+    ///     .execute_opts(
+    ///         job.ids(),
+    ///         ExecuteOptions {
+    ///             rows: Some(50),
+    ///             terse: false,
+    ///         },
+    ///     )
+    ///     .await?;
+    /// drop(rows);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn execute_opts(
+        &self,
+        ids: &IdAllocator,
+        opts: ExecuteOptions,
+    ) -> crate::Result<Rows> {
+        self.execute_inner(ids, None, opts).await
     }
 
     /// Execute the prepared statement with a single parameter set.
@@ -147,23 +271,84 @@ impl Query {
         ids: &IdAllocator,
         params: &[serde_json::Value],
     ) -> crate::Result<Rows> {
-        self.execute_inner(ids, Some(params.to_vec())).await
+        self.execute_inner(ids, Some(params.to_vec()), ExecuteOptions::default())
+            .await
+    }
+
+    /// Execute the prepared statement with a single parameter set and
+    /// explicit [`ExecuteOptions`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Query::execute_with`], plus [`Error::Protocol`] when
+    /// [`ExecuteOptions::rows`] is `Some(0)`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, ExecuteOptions, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let query = job.prepare("SELECT * FROM ORDERS WHERE CUSTNO = ?").await?;
+    /// let rows = query
+    ///     .execute_with_opts(
+    ///         job.ids(),
+    ///         &[serde_json::json!(42)],
+    ///         ExecuteOptions {
+    ///             rows: Some(50),
+    ///             terse: false,
+    ///         },
+    ///     )
+    ///     .await?;
+    /// drop(rows);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn execute_with_opts(
+        &self,
+        ids: &IdAllocator,
+        params: &[serde_json::Value],
+        opts: ExecuteOptions,
+    ) -> crate::Result<Rows> {
+        self.execute_inner(ids, Some(params.to_vec()), opts).await
     }
 
     async fn execute_inner(
         &self,
         ids: &IdAllocator,
         params: Option<Vec<serde_json::Value>>,
+        opts: ExecuteOptions,
     ) -> crate::Result<Rows> {
+        let page_size = opts.resolved_rows()?;
+        // `terse` is reserved for array-shaped `data` decode; not on the wire yet.
+        let _ = opts.terse;
         let id = ids.next();
-        let request = Request::Execute {
-            id: id.clone(),
-            cont_id: self.cont_id.clone(),
-            parameters: params,
+        let request = match self.server_handle() {
+            Some(cont_id) => Request::Execute {
+                id: id.clone(),
+                cont_id: cont_id.to_owned(),
+                parameters: params,
+                rows: Some(page_size),
+            },
+            None => Request::PrepareSqlExecute {
+                id: id.clone(),
+                sql: self.sql.clone(),
+                parameters: params.map(|p| vec![p]),
+                rows: Some(page_size),
+            },
         };
         let resp = self.handle.send(request).await?;
         match resp {
-            Response::QueryResult(q) if q.id == id => Ok(Rows::new(q, self.handle.clone())),
+            Response::QueryResult(q) if q.id == id => {
+                Ok(Rows::new(q, self.handle.clone(), page_size))
+            }
             Response::Error(e) => Err(crate::job_helpers::server_error(e)),
             ref other => Err(crate::job_helpers::unexpected(other)),
         }
@@ -218,10 +403,11 @@ impl Query {
 
 impl Drop for Query {
     fn drop(&mut self) {
-        // Best-effort sqlclose — share the helper with `Drop for Rows`
-        // and the inner `StreamState` so all three call sites use the
-        // same semantics (id format, runtime guard, error swallowing).
-        spawn_close(self.handle.clone(), self.cont_id.clone());
+        // Best-effort sqlclose only when the daemon gave us a handle.
+        // Live prepare acks with no `cont_id` never opened a cursor.
+        if let Some(cont_id) = self.cont_id.take().filter(|c| !c.is_empty()) {
+            spawn_close(self.handle.clone(), cont_id);
+        }
     }
 }
 
@@ -298,13 +484,19 @@ pub struct Rows {
     inner: QueryResult,
     /// Cloned dispatcher handle for issuing `sqlmore` / `sqlclose`.
     handle: DispatcherHandle,
+    /// Page size used on the opening execute; reused for `sqlmore`.
+    page_size: u32,
 }
 
 impl Rows {
     /// Create a new `Rows` from the initial [`QueryResult`] and a clone of
     /// the connection's [`DispatcherHandle`].
-    pub(crate) fn new(inner: QueryResult, handle: DispatcherHandle) -> Self {
-        Self { inner, handle }
+    pub(crate) fn new(inner: QueryResult, handle: DispatcherHandle, page_size: u32) -> Self {
+        Self {
+            inner,
+            handle,
+            page_size,
+        }
     }
 
     /// Number of rows affected for INSERT/UPDATE/DELETE; `None` for SELECT.
@@ -374,13 +566,16 @@ impl Rows {
     ///
     /// Yields rows from the in-memory first page first. When the first page is
     /// exhausted and `is_done` is `false`, sends a `sqlmore` request for the
-    /// next page (100 rows per fetch) and continues. Repeats until `is_done`.
+    /// next page (same size as the opening execute) and continues. Repeats
+    /// until `is_done`.
     ///
     /// Each `Rows::stream` call creates a **fresh [`IdAllocator`]** scoped to
     /// the stream — this avoids contention with the [`crate::Job`]-level
     /// allocator. The `cont_id` is the only persistent server-side identifier;
     /// the per-stream id sequence is safe as long as each call's ids are
     /// unique within that stream, which the allocator guarantees.
+    /// Follow-up `sqlmore` uses the same page size as the opening execute.
+    /// `sqlmore` is skipped when `is_done` is set or there is no cursor.
     ///
     /// Dropping the stream mid-fetch cancels the in-flight `sqlmore` future.
     /// The dispatcher will silently discard the response when it arrives —
@@ -441,6 +636,7 @@ impl Rows {
                 done: self.inner.is_done,
                 handle,
                 ids,
+                page_size: self.page_size,
             },
             |mut state| async move {
                 if let Some(row_data) = state.rows.next() {
@@ -450,8 +646,8 @@ impl Rows {
                     return None;
                 }
                 let cont_id = match &state.cont_id {
-                    Some(c) => c.clone(),
-                    None => return None,
+                    Some(c) if !c.is_empty() => c.clone(),
+                    _ => return None,
                 };
                 let id = state.ids.next();
                 let resp = state
@@ -459,7 +655,7 @@ impl Rows {
                     .send(Request::SqlMore {
                         id: id.clone(),
                         cont_id,
-                        rows: 100,
+                        rows: state.page_size,
                     })
                     .await;
                 match resp {
@@ -822,5 +1018,43 @@ impl Row {
     /// build rows without going through the wire pipeline.
     pub(crate) fn from_map(data: serde_json::Map<String, serde_json::Value>) -> Self {
         Self { data }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+    use crate::error::ProtocolError;
+
+    #[test]
+    fn test_execute_options_default_rows_is_100() {
+        assert_eq!(
+            ExecuteOptions::default()
+                .resolved_rows()
+                .expect("default is non-zero"),
+            100
+        );
+        assert_eq!(
+            ExecuteOptions {
+                rows: Some(50),
+                terse: false
+            }
+            .resolved_rows()
+            .expect("50 is non-zero"),
+            50
+        );
+    }
+
+    #[test]
+    fn test_execute_options_rows_zero_is_err() {
+        let err = ExecuteOptions {
+            rows: Some(0),
+            terse: false,
+        }
+        .resolved_rows()
+        .expect_err("zero page size");
+        assert!(matches!(err, Error::Protocol(ProtocolError::ZeroPageSize)));
     }
 }

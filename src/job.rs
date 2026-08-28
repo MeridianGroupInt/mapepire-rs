@@ -28,6 +28,7 @@ use std::sync::atomic::AtomicU32;
 use crate::config::DaemonServer;
 use crate::error::Error;
 use crate::protocol::{ClMessage, IdAllocator, JobLogEntry, QueryResult, Request, Response};
+use crate::query::ExecuteOptions;
 use crate::transport::{self, ConnectedDispatcher, Dispatcher, DispatcherHandle};
 
 /// Trace level for the daemon. Maps to the `setconfig.tracelevel` key.
@@ -241,9 +242,60 @@ impl Job {
         tracing::instrument(skip(self), fields(job_id = %self.inner.initial_job, sql = %sql))
     )]
     pub async fn execute(&self, sql: &str) -> crate::Result<crate::query::Rows> {
+        self.execute_opts(sql, ExecuteOptions::default()).await
+    }
+
+    /// Execute a SQL statement with explicit [`ExecuteOptions`].
+    ///
+    /// Sends `rows` on the `sql` request. [`ExecuteOptions::rows`] `None`
+    /// uses 100 (mapepire-js). `Some(0)` is rejected before send.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::execute`], plus [`Error::Protocol`] when
+    /// [`ExecuteOptions::rows`] is `Some(0)`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, ExecuteOptions, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job
+    ///     .execute_opts(
+    ///         "SELECT * FROM CORPDATA.EMPLOYEE",
+    ///         ExecuteOptions {
+    ///             rows: Some(50),
+    ///             terse: false,
+    ///         },
+    ///     )
+    ///     .await?;
+    /// drop(rows);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip(self, opts),
+            fields(job_id = %self.inner.initial_job, sql = %sql, rows = ?opts.rows)
+        )
+    )]
+    pub async fn execute_opts(
+        &self,
+        sql: &str,
+        opts: ExecuteOptions,
+    ) -> crate::Result<crate::query::Rows> {
         #[cfg(feature = "metrics")]
         let start = std::time::Instant::now();
-        let result = self.execute_inner(sql, None).await;
+        let result = self.execute_inner(sql, None, opts).await;
         #[cfg(feature = "metrics")]
         record_execute_latency(start);
         result
@@ -294,9 +346,68 @@ impl Job {
         sql: &str,
         params: &[serde_json::Value],
     ) -> crate::Result<crate::query::Rows> {
+        self.execute_with_opts(sql, params, ExecuteOptions::default())
+            .await
+    }
+
+    /// Execute a parameterized SQL statement with explicit [`ExecuteOptions`].
+    ///
+    /// Always sends `rows` on `prepare_sql_execute` so the default path
+    /// does not hit SQLSTATE 24000 from an omitted page size.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::execute_with`], plus [`Error::Protocol`] when
+    /// [`ExecuteOptions::rows`] is `Some(0)`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, ExecuteOptions, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job
+    ///     .execute_with_opts(
+    ///         "SELECT * FROM ORDERS WHERE CUSTNO = ?",
+    ///         &[serde_json::json!(42)],
+    ///         ExecuteOptions {
+    ///             rows: Some(50),
+    ///             terse: false,
+    ///         },
+    ///     )
+    ///     .await?;
+    /// drop(rows);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip(self, params, opts),
+            fields(
+                job_id = %self.inner.initial_job,
+                sql = %sql,
+                param_count = params.len(),
+                rows = ?opts.rows,
+            )
+        )
+    )]
+    pub async fn execute_with_opts(
+        &self,
+        sql: &str,
+        params: &[serde_json::Value],
+        opts: ExecuteOptions,
+    ) -> crate::Result<crate::query::Rows> {
         #[cfg(feature = "metrics")]
         let start = std::time::Instant::now();
-        let result = self.execute_inner(sql, Some(params.to_vec())).await;
+        let result = self.execute_inner(sql, Some(params.to_vec()), opts).await;
         #[cfg(feature = "metrics")]
         record_execute_latency(start);
         result
@@ -306,33 +417,45 @@ impl Job {
         &self,
         sql: &str,
         params: Option<Vec<serde_json::Value>>,
+        opts: ExecuteOptions,
     ) -> crate::Result<crate::query::Rows> {
+        let page_size = opts.resolved_rows()?;
+        // `terse` is reserved for array-shaped `data` decode; not on the wire yet.
+        let _ = opts.terse;
         let id = self.inner.ids.next();
         let request = match params {
             None => Request::Sql {
                 id: id.clone(),
                 sql: sql.to_owned(),
-                rows: None,
+                rows: Some(page_size),
                 parameters: None,
             },
             Some(params) => Request::PrepareSqlExecute {
                 id: id.clone(),
                 sql: sql.to_owned(),
                 parameters: Some(vec![params]),
-                rows: None,
+                rows: Some(page_size),
             },
         };
         let resp = self.send(request).await?;
         match resp {
-            Response::QueryResult(q) if q.id == id => {
-                Ok(crate::query::Rows::new(q, self.inner.handle.clone()))
-            }
+            Response::QueryResult(q) if q.id == id => Ok(crate::query::Rows::new(
+                q,
+                self.inner.handle.clone(),
+                page_size,
+            )),
             Response::Error(e) => Err(crate::job_helpers::server_error(e)),
             ref other => Err(crate::job_helpers::unexpected(other)),
         }
     }
 
     /// Prepare a SQL statement for repeated execution.
+    ///
+    /// Live daemons often reply `{id, success:true}` with no `cont_id`.
+    /// That is not a failure: the returned [`crate::query::Query`] caches
+    /// `sql` on the client and [`crate::query::Query::execute_with`] sends
+    /// `prepare_sql_execute`. When the daemon does return a `cont_id`,
+    /// execute uses that handle.
     ///
     /// # Errors
     ///
@@ -371,7 +494,26 @@ impl Job {
         match resp {
             Response::PreparedStatement {
                 id: got, cont_id, ..
-            } if got == id => Ok(crate::query::Query::new(cont_id, self.inner.handle.clone())),
+            } if got == id => {
+                let handle = if cont_id.is_empty() {
+                    None
+                } else {
+                    Some(cont_id)
+                };
+                Ok(crate::query::Query::new(
+                    handle,
+                    sql.to_owned(),
+                    self.inner.handle.clone(),
+                ))
+            }
+            // Dispatcher remaps PrepareSql + Pong to PreparedStatement with
+            // an empty handle; keep Pong as a fallback so a missed remap
+            // still succeeds as a client-side Query.
+            Response::Pong { id: got } if got == id => Ok(crate::query::Query::new(
+                None,
+                sql.to_owned(),
+                self.inner.handle.clone(),
+            )),
             Response::Error(e) => Err(crate::job_helpers::server_error(e)),
             ref other => Err(crate::job_helpers::unexpected(other)),
         }
