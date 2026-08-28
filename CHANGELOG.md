@@ -7,86 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Page size, terse rows, CALL/OUT parameters, `setconfig` dest, and live leftover
-after 0.6.1 `execute_with` / `prepare`.
+## [0.7.0] — 2026-08-28
+
+Live-daemon leftover after 0.6.1: CL job log, bind page size, terse
+rows, CALL/OUT, and trace dest. Breaking versus 0.6.1. 0.6.2 was never
+published; this is the cut of OSS-2 through OSS-7.
+
+### Breaking
+
+- **`Job::cl` returns `ClOutcome`** instead of the first `ClMessage`
+  (OSS-2). Failed CL is `Ok` with `success: false` and the full job
+  log; it is no longer `Err(Error::Server)` that dropped `data`.
+- **Default page size is 100** (OSS-4 / OSS-7). `Job::execute` and
+  `Job::execute_with` send `rows: 100` (mapepire-js `rowsToFetch`).
+  0.6.1 omitted `rows` (daemon default **1000**). Follow-up `sqlmore`
+  reuses the opening page size. `rows: 0` is
+  `Error::Protocol(ProtocolError::ZeroPageSize)` and is not sent.
+- **`Job::prepare` without a server `cont_id` is a client-side `Query`**
+  (OSS-7). A live `{id,success:true}` ack (no `cont_id`) succeeds;
+  each `Query::execute_with` then sends `prepare_sql_execute`. A real
+  `cont_id` still uses the `execute` opcode. Ping `{id,success}` remains
+  `Pong`.
+- **`Job::set_trace` dest is `IN_MEM`, never `""`** (OSS-6). Empty dest
+  is invalid on the wire (Jetty/Gson `No enum constant Tracer.Dest`).
+  `TraceDest::{File, InMem}` serialize as `FILE` / `IN_MEM`.
+- **`QueryResult` / `QueryMetaData` grow optional CALL/OUT fields**
+  (OSS-5). `parameter_count`, `output_parms`, and `parameters`
+  (`ParameterDetail` / `ParameterResult`). Extra JSON fields on
+  existing result types; empty values omit on serialize.
 
 ### Changed
 
-- **`Job::execute` and `Job::execute_with` send `rows: 100`.** 0.6.1 omitted
-  `rows` (daemon default **1000**). The crate now matches mapepire-js
-  `rowsToFetch = 100`. Follow-up `sqlmore` uses the same page size as the
-  opening execute.
 - **Single-set `prepare_sql_execute.parameters` serialize as `[7]`**, not
   `[[7]]`. Batches stay `[[a],[b]]`.
-- **`Job::prepare` on a live `{id,success:true}` ack (no `cont_id`)
-  succeeds** as a client-side `Query`. Each `Query::execute_with` then
-  sends `prepare_sql_execute` (mapepire-js). A real `cont_id` still uses
-  the `execute` opcode. Ping `{id,success}` remains `Pong`.
 - **`TraceLevel::All` sends `"ON"`** (mapepire-js `ServerTraceLevel`). The
   daemon has no `ALL` constant.
 
 ### Added
 
-- **`ExecuteOptions`** (`rows: Option<u32>`, `terse: bool`). `Job` /
-  `Query` / `Pool` / `Reserved` /
-  `Executor::{execute_opts, execute_with_opts}`. `rows: 0` is
-  `Error::Protocol(ProtocolError::ZeroPageSize)` and is not sent.
-  `terse: true` sends `terse: true` on `sql` / `prepare_sql_execute` /
-  `execute`; default `false` omits the field (object rows).
+- **`ClOutcome` and `JobLogEntry`** (OSS-2). Protocol column names;
+  `SEVERITY` accepts a JSON number or string.
+- **`ExecuteOptions`** (`rows: Option<u32>`, `terse: bool`) (OSS-3 /
+  OSS-4). `Job` / `Query` / `Pool` / `Reserved` /
+  `Executor::{execute_opts, execute_with_opts}`. `terse: true` sends
+  `terse: true` on `sql` / `prepare_sql_execute` / `execute`; default
+  `false` omits the field (object rows).
 - **`terse: Option<bool>`** on `Request::{Sql, PrepareSql,
   PrepareSqlExecute, Execute, Cl, Dove}` (`skip_serializing_if` none).
   `Job::cl` always omits it so job-log rows stay named objects.
-- **`CALL` / OUT parameters.** `QueryResult` keeps `parameter_count` and
-  `output_parms`; `QueryMetaData` keeps `parameters`
-  (`ParameterDetail` / `ParameterResult`, PROTOCOL.md / mapepire-js).
-  `Rows::{output_parms, parameter_count, parameter_metadata}` surface
-  them. Same `prepare_sql_execute` opcode; no CALL type and no QCMDEXC
-  helper. Empty `output_parms` / `parameters` omit on serialize.
-- **`TraceDest::{File, InMem}`** (`FILE` / `IN_MEM`). `Job::set_trace(level)`
-  defaults dest to `IN_MEM` so `fetch_trace` can read the buffer.
-  `Job::set_trace_config(dest, level)` matches JS `setTraceConfig`. Empty
-  `tracedest` / `tracelevel` omit on serialize (leave current).
+- **`CALL` / OUT parameters** (OSS-5). `QueryResult` keeps
+  `parameter_count` and `output_parms`; `QueryMetaData` keeps
+  `parameters`. `Rows::{output_parms, parameter_count,
+  parameter_metadata}` surface them. Same `prepare_sql_execute`
+  opcode; no CALL type and no QCMDEXC helper.
+- **`TraceDest::{File, InMem}`** (`FILE` / `IN_MEM`) (OSS-6).
+  `Job::set_trace(level)` defaults dest to `IN_MEM` so `fetch_trace`
+  can read the buffer. `Job::set_trace_config(dest, level)` matches JS
+  `setTraceConfig`. Empty `tracedest` / `tracelevel` omit on serialize
+  (leave current).
 
 ### Fixed
 
+- **Untagged `success: false` with `data` / `has_results` decodes as
+  `QueryResult`** (OSS-2). Live `type: cl` replies are QueryResult-shaped
+  job-log rows (`MESSAGE_ID`, `SEVERITY`, …). Bare `success: false`
+  without those keys remains `Error`.
+- **`QueryResult` keeps `error` / `sqlcode` / `sqlstate`** (`sql_rc` /
+  `sql_state` aliases) so CPF0006 frames (`sql_rc=-443`,
+  `sql_state=38501`) are not stripped.
 - **`execute_with` SQLSTATE 24000** from omitted `rows` on
   `prepare_sql_execute` and from `sqlclose`/`sqlmore` when the cursor
   was already done or had no handle.
 - **`prepare` decoded as `Pong`.** Outstanding `PrepareSql` remaps the
   untagged success ack to a prepared statement with no server handle.
-- **Terse array-shaped `QueryResult.data` decodes.** Live `[[7]]` plus
-  `metadata.columns[0].name == "1"` becomes a named map so
+- **Terse array-shaped `QueryResult.data` decodes** (OSS-3). Live
+  `[[7]]` plus `metadata.columns[0].name == "1"` becomes a named map so
   `Row::get("1")` works. Array rows with no `metadata.columns` are
   `ProtocolError::TerseRowsWithoutColumns` (no panic). Object rows still
   decode.
-- **`Job::set_trace` sent `tracedest: ""`.** Live Jetty/Gson
-  `No enum constant Tracer.Dest`. Dest is now `IN_MEM` (or `FILE` via
-  `set_trace_config`); empty string is never serialized.
-
-## [0.6.2] — 2026-08-28
-
-Live-daemon leftover after 0.6.1: CL commands.
-
-### Breaking
-
-- **`Job::cl` returns `ClOutcome`** instead of the first `ClMessage`.
-  Failed CL is `Ok` with `success: false` and the full job log; it is
-  no longer `Err(Error::Server)` that dropped `data`.
-
-### Fixed
-
-- **Untagged `success: false` with `data` / `has_results` decodes as
-  `QueryResult`.** Live `type: cl` replies are QueryResult-shaped job-log
-  rows (`MESSAGE_ID`, `SEVERITY`, …). Bare `success: false` without those
-  keys remains `Error`.
-- **`QueryResult` keeps `error` / `sqlcode` / `sqlstate`** (`sql_rc` /
-  `sql_state` aliases) so CPF0006 frames (`sql_rc=-443`,
-  `sql_state=38501`) are not stripped.
-
-### Added
-
-- `ClOutcome` and `JobLogEntry` (protocol column names; `SEVERITY`
-  accepts a JSON number or string).
+- **`Job::set_trace` sent `tracedest: ""`.** Dest is now `IN_MEM` (or
+  `FILE` via `set_trace_config`); empty string is never serialized.
 
 ## [0.6.1] — 2026-08-28
 
@@ -719,8 +719,8 @@ harness used to validate them.
 - README badges (CI, Audit, deps.rs, MSRV from Cargo.toml, License).
 - PR template, issue templates, CODEOWNERS.
 
-[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.2...HEAD
-[0.6.2]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.1...v0.6.2
+[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.5.0...v0.5.1
