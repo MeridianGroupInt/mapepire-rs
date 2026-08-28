@@ -169,6 +169,9 @@ fn snapshot_response_query_result_select() {
             m
         }],
         execution_time: 1.23,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
     };
     insta::assert_json_snapshot!(Response::QueryResult(q));
 }
@@ -185,6 +188,9 @@ fn snapshot_response_query_result_dml() {
         metadata: QueryMetaData::default(),
         data: vec![],
         execution_time: 0.5,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
     };
     insta::assert_json_snapshot!(Response::QueryResult(q));
 }
@@ -386,6 +392,52 @@ fn snapshot_decode_live_error() {
         "error": "nope",
         "sql_rc": -803,
         "sql_state": "23505"
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_cl_success() {
+    let json = serde_json::json!({
+        "id": "cl1",
+        "success": true,
+        "has_results": true,
+        "is_done": true,
+        "data": [{
+            "MESSAGE_ID": "CPC2102",
+            "SEVERITY": "0",
+            "MESSAGE_TIMESTAMP": "2026-08-27-12.00.00.000000",
+            "FROM_LIBRARY": "QSYS",
+            "FROM_PROGRAM": "QCAEXEC",
+            "MESSAGE_TYPE": "COMPLETION",
+            "MESSAGE_TEXT": "Library QGPL displayed.",
+            "MESSAGE_SECOND_LEVEL_TEXT": ""
+        }]
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_cl_failure() {
+    let json = serde_json::json!({
+        "id": "cl2",
+        "success": false,
+        "is_done": true,
+        "error": "[CPF0006] Errors occurred in command.",
+        "sql_rc": -443,
+        "sql_state": "38501",
+        "data": [{
+            "MESSAGE_ID": "CPF0006",
+            "SEVERITY": 40,
+            "MESSAGE_TIMESTAMP": "2026-08-27-12.00.00.000000",
+            "FROM_LIBRARY": "QSYS",
+            "FROM_PROGRAM": "QCAEXEC",
+            "MESSAGE_TYPE": "ESCAPE",
+            "MESSAGE_TEXT": "[CPF0006] Errors occurred in command.",
+            "MESSAGE_SECOND_LEVEL_TEXT": "Cause . . . . :   Errors occurred."
+        }]
     });
     let r: Response = serde_json::from_value(json).unwrap();
     insta::assert_debug_snapshot!(r);

@@ -1,0 +1,42 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 443
+expression: r
+---
+QueryResult(
+    QueryResult {
+        id: "cl2",
+        success: false,
+        has_results: false,
+        update_count: 0,
+        cont_id: None,
+        is_done: true,
+        metadata: QueryMetaData {
+            column_count: 0,
+            columns: [],
+            job: None,
+        },
+        data: [
+            {
+                "FROM_LIBRARY": String("QSYS"),
+                "FROM_PROGRAM": String("QCAEXEC"),
+                "MESSAGE_ID": String("CPF0006"),
+                "MESSAGE_SECOND_LEVEL_TEXT": String("Cause . . . . :   Errors occurred."),
+                "MESSAGE_TEXT": String("[CPF0006] Errors occurred in command."),
+                "MESSAGE_TIMESTAMP": String("2026-08-27-12.00.00.000000"),
+                "MESSAGE_TYPE": String("ESCAPE"),
+                "SEVERITY": Number(40),
+            },
+        ],
+        execution_time: 0.0,
+        error: Some(
+            "[CPF0006] Errors occurred in command.",
+        ),
+        sqlcode: Some(
+            -443,
+        ),
+        sqlstate: Some(
+            "38501",
+        ),
+    },
+)

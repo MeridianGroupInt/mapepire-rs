@@ -39,6 +39,9 @@ fn int_row(id: &str, value: i64) -> QueryResult {
         cont_id: None,
         is_done: true,
         execution_time: 1.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
     }
 }
 

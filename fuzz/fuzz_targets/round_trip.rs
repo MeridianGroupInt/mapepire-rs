@@ -72,6 +72,9 @@ fuzz_target!(|input: Input<'_>| {
         data: Vec::new(),
         cont_id: input.cont_id.map(str::to_string),
         is_done: input.is_done,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
     };
     let r = Response::QueryResult(qr);
 

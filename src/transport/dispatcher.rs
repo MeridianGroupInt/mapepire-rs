@@ -457,6 +457,9 @@ mod tests {
             },
             data: vec![],
             execution_time: 0.0,
+            error: None,
+            sqlcode: None,
+            sqlstate: None,
         };
         let err = ErrorResponse {
             id: id.clone(),

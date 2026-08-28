@@ -1,6 +1,8 @@
 //! Response messages — incoming wire types.
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 /// Discriminated union of all response types the server may send.
 #[non_exhaustive]
@@ -156,11 +158,25 @@ pub struct QueryResult {
     #[serde(default)]
     pub metadata: QueryMetaData,
     /// Row data — each row is a map of column name to JSON value.
+    ///
+    /// For `type: cl` this is the job log (`MESSAGE_ID`, `SEVERITY`, …).
     #[serde(default)]
     pub data: Vec<serde_json::Map<String, serde_json::Value>>,
     /// Wall-clock execution time on the server, in milliseconds.
     #[serde(default)]
     pub execution_time: f64,
+    /// Human-readable error when `success` is false (CL / SQL failures).
+    ///
+    /// Live failed-CL frames keep this alongside `data` rather than as a
+    /// bare [`ErrorResponse`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Db2-native SQL code. Live frames send `sql_rc`.
+    #[serde(default, alias = "sql_rc", skip_serializing_if = "Option::is_none")]
+    pub sqlcode: Option<i32>,
+    /// Five-character SQLSTATE. Live frames send `sql_state`.
+    #[serde(default, alias = "sql_state", skip_serializing_if = "Option::is_none")]
+    pub sqlstate: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -203,7 +219,11 @@ pub struct Column {
     pub scale: Option<u32>,
 }
 
-/// One CPF / Db2 message returned by a `cl` request.
+/// One CPF / Db2 message returned by a tagged `cl_result` frame.
+///
+/// Live daemons emit job-log rows as [`JobLogEntry`] objects in
+/// [`QueryResult::data`], not this shape. [`ClMessage`] is kept so tagged
+/// mock frames still deserialize.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClMessage {
     /// e.g., `CPF1234`.
@@ -215,6 +235,107 @@ pub struct ClMessage {
     /// Message text.
     #[serde(default)]
     pub text: Option<String>,
+}
+
+/// One job-log row from a live `cl` reply ([`QueryResult::data`]).
+///
+/// Wire names are the IBM i column names. `SEVERITY` may be a JSON number
+/// or a string (JS types it as string; the protocol describes an integer).
+///
+/// # Example
+///
+/// ```
+/// use mapepire::JobLogEntry;
+///
+/// let json = r#"{"MESSAGE_ID":"CPF0006","SEVERITY":40}"#;
+/// let e: JobLogEntry = serde_json::from_str(json).expect("job-log row");
+/// assert_eq!(e.message_id.as_deref(), Some("CPF0006"));
+/// assert_eq!(e.severity.as_deref(), Some("40"));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobLogEntry {
+    /// CPF / SQL message identifier (e.g. `CPF0006`).
+    #[serde(
+        default,
+        rename = "MESSAGE_ID",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub message_id: Option<String>,
+    /// Severity. Protocol may send an integer or a string.
+    #[serde(
+        default,
+        rename = "SEVERITY",
+        deserialize_with = "deserialize_optional_string_or_number",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub severity: Option<String>,
+    /// Timestamp when the message was generated.
+    #[serde(
+        default,
+        rename = "MESSAGE_TIMESTAMP",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub message_timestamp: Option<String>,
+    /// Library from which the message originated.
+    #[serde(
+        default,
+        rename = "FROM_LIBRARY",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub from_library: Option<String>,
+    /// Program from which the message originated.
+    #[serde(
+        default,
+        rename = "FROM_PROGRAM",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub from_program: Option<String>,
+    /// Message type (e.g. `ESCAPE`, `COMPLETION`).
+    #[serde(
+        default,
+        rename = "MESSAGE_TYPE",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub message_type: Option<String>,
+    /// First-level message text.
+    #[serde(
+        default,
+        rename = "MESSAGE_TEXT",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub message_text: Option<String>,
+    /// Second-level message text, when present.
+    #[serde(
+        default,
+        rename = "MESSAGE_SECOND_LEVEL_TEXT",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub message_second_level_text: Option<String>,
+}
+
+/// Accept `SEVERITY` as a JSON string, number, or null.
+fn deserialize_optional_string_or_number<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<Value>::deserialize(deserializer)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Some(i.to_string()))
+            } else if let Some(u) = n.as_u64() {
+                Ok(Some(u.to_string()))
+            } else {
+                Ok(Some(n.to_string()))
+            }
+        }
+        Some(other) => Err(D::Error::custom(format!(
+            "SEVERITY must be a string or number, got {other}"
+        ))),
+    }
 }
 
 /// Error response body.
@@ -300,6 +421,9 @@ mod tests {
                 m
             }],
             execution_time: 1.23,
+            error: None,
+            sqlcode: None,
+            sqlstate: None,
         };
         let r = Response::QueryResult(q);
         let json = serde_json::to_string(&r).unwrap();
@@ -326,6 +450,9 @@ mod tests {
             metadata: QueryMetaData::default(),
             data: vec![],
             execution_time: 0.5,
+            error: None,
+            sqlcode: None,
+            sqlstate: None,
         };
         let r = Response::QueryResult(q);
         let json = serde_json::to_string(&r).unwrap();
@@ -405,6 +532,28 @@ mod tests {
         );
         let back: QueryMetaData = serde_json::from_value(json).unwrap();
         assert!(back.job.is_none());
+    }
+
+    #[test]
+    fn test_query_result_sql_rc_and_sql_state_aliases() {
+        let json = r#"{"id":"cl1","success":false,"data":[],"sql_rc":-443,"sql_state":"38501","error":"CPF0006"}"#;
+        let q: QueryResult = serde_json::from_str(json).unwrap();
+        assert!(!q.success);
+        assert_eq!(q.sqlcode, Some(-443));
+        assert_eq!(q.sqlstate.as_deref(), Some("38501"));
+        assert_eq!(q.error.as_deref(), Some("CPF0006"));
+    }
+
+    #[test]
+    fn test_job_log_entry_severity_number_or_string() {
+        let as_number: JobLogEntry =
+            serde_json::from_str(r#"{"MESSAGE_ID":"CPF0006","SEVERITY":40}"#).unwrap();
+        assert_eq!(as_number.message_id.as_deref(), Some("CPF0006"));
+        assert_eq!(as_number.severity.as_deref(), Some("40"));
+
+        let as_string: JobLogEntry =
+            serde_json::from_str(r#"{"MESSAGE_ID":"CPC2102","SEVERITY":"0"}"#).unwrap();
+        assert_eq!(as_string.severity.as_deref(), Some("0"));
     }
 
     #[test]

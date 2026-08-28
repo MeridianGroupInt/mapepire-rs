@@ -103,6 +103,9 @@ fn arb_query_result() -> impl Strategy<Value = QueryResult> {
                     metadata: QueryMetaData::default(),
                     data: vec![],
                     execution_time,
+                    error: None,
+                    sqlcode: None,
+                    sqlstate: None,
                 }
             },
         )

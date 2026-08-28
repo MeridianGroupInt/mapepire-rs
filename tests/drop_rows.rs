@@ -57,6 +57,9 @@ fn page(cont_id: Option<&str>, is_done: bool) -> QueryResult {
         data: vec![row],
         cont_id: cont_id.map(str::to_string),
         is_done,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
     }
 }
 

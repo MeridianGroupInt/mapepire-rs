@@ -1,6 +1,6 @@
 ---
 source: tests/wire_snapshots.rs
-assertion_line: 355
+assertion_line: 361
 expression: r
 ---
 QueryResult(
@@ -43,5 +43,8 @@ QueryResult(
             },
         ],
         execution_time: 215.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
     },
 )

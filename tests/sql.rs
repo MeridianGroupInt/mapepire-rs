@@ -55,6 +55,9 @@ fn select_query_result(id: &str) -> mapepire::QueryResult {
         cont_id: None,
         is_done: true,
         execution_time: 5.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
     }
 }
 
@@ -76,6 +79,9 @@ fn dml_query_result(id: &str, count: i64) -> mapepire::QueryResult {
         cont_id: None,
         is_done: true,
         execution_time: 2.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
     }
 }
 

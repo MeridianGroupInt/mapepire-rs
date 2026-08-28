@@ -31,13 +31,19 @@ pub(crate) fn decode_value(value: Value) -> Result<Response, String> {
     }
 
     let success = obj.get("success").and_then(Value::as_bool);
+    let has_data = obj.contains_key("data");
+    let has_results_key = obj.contains_key("has_results");
     if success == Some(false) {
+        // Live `cl` (and any result-shaped failure) still carries `data`
+        // or `has_results`. Classifying those as `Error` dropped the job
+        // log. Bare `{success:false}` without those keys stays `Error`.
+        if has_data || has_results_key {
+            let q: QueryResult = serde_json::from_value(value).map_err(|e| e.to_string())?;
+            return Ok(Response::QueryResult(q));
+        }
         let err: ErrorResponse = serde_json::from_value(value).map_err(|e| e.to_string())?;
         return Ok(Response::Error(err));
     }
-
-    let has_data = obj.contains_key("data");
-    let has_results_key = obj.contains_key("has_results");
     // Live `prepare_sql` success is untagged `{id, success, cont_id, execution_time}`
     // and often `is_done`/`metadata` without `has_results` or `data`. Those keys
     // used to take the QueryResult branch and fail serde.
@@ -329,6 +335,48 @@ mod tests {
             assert_eq!(e.sqlcode, Some(-803));
             assert_eq!(e.sqlstate.as_deref(), Some("23505"));
         }
+    }
+
+    #[test]
+    fn test_decode_live_failed_cl_with_data_is_query_result() {
+        let json = r#"{
+            "id":"cl1","success":false,"sql_rc":-443,"sql_state":"38501",
+            "error":"[CPF0006] Errors occurred in command.",
+            "data":[{"MESSAGE_ID":"CPF0006","SEVERITY":40,"MESSAGE_TEXT":"Errors occurred in command."}],
+            "is_done":true
+        }"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::QueryResult(_)));
+        if let Response::QueryResult(q) = r {
+            assert!(!q.success);
+            assert_eq!(q.sqlcode, Some(-443));
+            assert_eq!(q.sqlstate.as_deref(), Some("38501"));
+            assert_eq!(
+                q.error.as_deref(),
+                Some("[CPF0006] Errors occurred in command.")
+            );
+            assert_eq!(q.data.len(), 1);
+            assert_eq!(q.data[0]["MESSAGE_ID"], "CPF0006");
+        }
+    }
+
+    #[test]
+    fn test_decode_live_failed_with_has_results_is_query_result() {
+        let json = r#"{"id":"cl2","success":false,"has_results":true,"data":[]}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::QueryResult(_)));
+        if let Response::QueryResult(q) = r {
+            assert!(!q.success);
+            assert!(q.has_results);
+            assert!(q.data.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_decode_live_failed_without_data_stays_error() {
+        let json = r#"{"id":"x","success":false,"error":"nope","sql_rc":-803,"sql_state":"23505"}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(r, Response::Error(_)));
     }
 
     #[test]

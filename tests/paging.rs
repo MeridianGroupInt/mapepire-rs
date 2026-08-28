@@ -50,6 +50,9 @@ fn page(start: i64, count: i64, cont_id: Option<&str>, is_done: bool) -> mapepir
         data,
         cont_id: cont_id.map(str::to_string),
         is_done,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
     }
 }
 

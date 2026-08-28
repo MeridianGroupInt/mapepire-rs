@@ -234,6 +234,15 @@ pub enum MockBehavior {
         pages: Vec<QueryResult>,
     },
 
+    /// Accept connect, then reply to every [`Request::Cl`] with an untagged
+    /// [`QueryResult`]-shaped job-log frame (live daemon dialect). Later
+    /// requests are acked like [`MockBehavior::AcceptAndConnect`] so the
+    /// dispatcher can be probed with ping after a failed CL.
+    ClThen {
+        /// Canned CL reply. `id` is overwritten from the inbound request.
+        result: QueryResult,
+    },
+
     /// Accept connect with success, then respond to the protocol sequence for
     /// prepared statements:
     /// - The next [`Request::PrepareSql`] request: emit [`Response::PreparedStatement`] with
@@ -259,8 +268,10 @@ const MOCK_JOB: &str = "MOCK/QUSER/000001";
 
 /// Encode a [`Response`] as the live daemon would.
 ///
-/// Success frames omit `"type"`. Tagged serde is kept only for variants
-/// the live daemon has not been observed to send untagged (CL, dove, trace).
+/// Success frames omit `"type"`. Live `cl` replies are untagged
+/// [`QueryResult`] job-log frames (see [`MockBehavior::ClThen`]). Tagged
+/// serde is kept for variants the live daemon has not been observed to
+/// send untagged (tagged `cl_result`, dove, trace).
 fn encode_live_response(response: &Response) -> String {
     match response {
         Response::Connected { id, version, job } => {
@@ -826,6 +837,31 @@ where
                     Some(req) => {
                         let id = request_id(&req);
                         send_response!(Response::Pong { id });
+                    }
+                }
+            }
+        }
+
+        MockBehavior::ClThen { mut result } => {
+            send_response!(Response::Connected {
+                id: connect_id,
+                version: MOCK_VERSION.into(),
+                job: MOCK_JOB.into(),
+            });
+            loop {
+                match recv_request!() {
+                    None => break,
+                    Some(Request::Exit { id }) => {
+                        send_response!(Response::Exited { id });
+                        let _ = sink.send(Message::Close(None)).await;
+                        break;
+                    }
+                    Some(Request::Cl { id, .. }) => {
+                        result.id = id;
+                        send_response!(Response::QueryResult(result.clone()));
+                    }
+                    Some(req) => {
+                        send_response!(live_ack(&req));
                     }
                 }
             }
@@ -1403,5 +1439,8 @@ fn canned_empty_query_result(id: String) -> QueryResult {
         },
         data: Vec::new(),
         execution_time: 0.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
     }
 }

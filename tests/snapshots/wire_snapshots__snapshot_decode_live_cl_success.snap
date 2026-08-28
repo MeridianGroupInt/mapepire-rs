@@ -1,0 +1,36 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 419
+expression: r
+---
+QueryResult(
+    QueryResult {
+        id: "cl1",
+        success: true,
+        has_results: true,
+        update_count: 0,
+        cont_id: None,
+        is_done: true,
+        metadata: QueryMetaData {
+            column_count: 0,
+            columns: [],
+            job: None,
+        },
+        data: [
+            {
+                "FROM_LIBRARY": String("QSYS"),
+                "FROM_PROGRAM": String("QCAEXEC"),
+                "MESSAGE_ID": String("CPC2102"),
+                "MESSAGE_SECOND_LEVEL_TEXT": String(""),
+                "MESSAGE_TEXT": String("Library QGPL displayed."),
+                "MESSAGE_TIMESTAMP": String("2026-08-27-12.00.00.000000"),
+                "MESSAGE_TYPE": String("COMPLETION"),
+                "SEVERITY": String("0"),
+            },
+        ],
+        execution_time: 0.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+    },
+)
