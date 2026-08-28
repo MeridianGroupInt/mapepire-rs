@@ -1,13 +1,13 @@
 ---
 source: tests/wire_snapshots.rs
-assertion_line: 295
+assertion_line: 450
 expression: r
 ---
 {
   "type": "dove_result",
   "id": "test",
   "success": true,
-  "result": {
+  "vedata": {
     "estimated_rows": 1000,
     "operator": "TableScan",
     "table": "ORDERS"

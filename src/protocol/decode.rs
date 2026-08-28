@@ -33,7 +33,14 @@ pub(crate) fn decode_value(value: Value) -> Result<Response, String> {
     let success = obj.get("success").and_then(Value::as_bool);
     let has_data = obj.contains_key("data");
     let has_results_key = obj.contains_key("has_results");
+    let has_dove = obj.contains_key("vedata") || obj.contains_key("vemetadata");
     if success == Some(false) {
+        // Live dove 42505 is `{success:false, error, sql_state}` with no
+        // vedata — keep that as Error. A failed frame that still carries
+        // the explain tree is DoveResult.
+        if has_dove {
+            return decode_dove(value);
+        }
         // Live `cl` (and any result-shaped failure) still carries `data`
         // or `has_results`. Classifying those as `Error` dropped the job
         // log. Bare `{success:false}` without those keys stays `Error`.
@@ -56,6 +63,13 @@ pub(crate) fn decode_value(value: Value) -> Result<Response, String> {
             cont_id: body.cont_id,
             execution_time: body.execution_time,
         });
+    }
+
+    // Live dove: `{id, success, vemetadata, vedata}` and, when run=true,
+    // also `data` / `is_done`. Classify as DoveResult first so vedata is
+    // not dropped into QueryResult.
+    if has_dove {
+        return decode_dove(value);
     }
 
     let looks_like_result = has_data || has_results_key;
@@ -103,9 +117,26 @@ pub(crate) fn decode_value(value: Value) -> Result<Response, String> {
         });
     }
 
+    // Live gettracedata: `{id, success, tracedata, jtopentracedata?}`.
+    // Either key (including `""` / `null`) is enough — do not drop the
+    // buffer by classifying as Pong. Ping `{id, success}` with neither
+    // key stays Pong.
+    if obj.contains_key("tracedata") || obj.contains_key("jtopentracedata") {
+        let id = obj
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        return Ok(Response::TraceData {
+            id,
+            success: success.unwrap_or(true),
+            tracedata: json_string_or_empty(obj.get("tracedata")),
+        });
+    }
+
     // Live ping (and other acks) is `{id, success:true}` with no discriminant.
-    // Dispatcher remaps this to SqlClosed/ConfigSet/Exited when the outstanding
-    // request is not ping.
+    // Dispatcher remaps this to SqlClosed/ConfigSet/Exited/TraceData when the
+    // outstanding request is not ping.
     if success == Some(true) {
         let id = obj
             .get("id")
@@ -201,11 +232,7 @@ fn decode_tagged(value: Value) -> Result<Response, String> {
         }
         "dove_result" => {
             let body: DoveResultBody = payload(value)?;
-            Ok(Response::DoveResult {
-                id: body.id,
-                success: body.success,
-                result: body.result,
-            })
+            Ok(dove_from_body(body))
         }
         "error" => {
             let e: ErrorResponse = payload(value)?;
@@ -217,6 +244,29 @@ fn decode_tagged(value: Value) -> Result<Response, String> {
 
 fn payload<T: DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(strip_type(value)).map_err(|e| e.to_string())
+}
+
+/// `tracedata` / similar: missing, JSON null, or non-string → empty.
+fn json_string_or_empty(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(s)) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+fn decode_dove(value: Value) -> Result<Response, String> {
+    let body: DoveResultBody = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    Ok(dove_from_body(body))
+}
+
+fn dove_from_body(body: DoveResultBody) -> Response {
+    let vedata = body.vedata.or(body.result).unwrap_or(Value::Null);
+    Response::DoveResult {
+        id: body.id,
+        success: body.success,
+        vedata,
+        vemetadata: body.vemetadata,
+    }
 }
 
 fn strip_type(mut value: Value) -> Value {
@@ -279,14 +329,30 @@ struct DbJobBody {
 struct TraceDataBody {
     id: String,
     success: bool,
+    /// Live / tagged frames may omit the field, send `""`, or send JSON
+    /// `null`. Extra `jtopentracedata` is ignored (unknown-field default).
+    #[serde(default, deserialize_with = "deserialize_null_as_empty")]
     tracedata: String,
+}
+
+fn deserialize_null_as_empty<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Deserialize)]
 struct DoveResultBody {
     id: String,
     success: bool,
-    result: Value,
+    #[serde(default)]
+    vedata: Option<Value>,
+    #[serde(default)]
+    vemetadata: Option<Value>,
+    /// Tagged mock dialect (`type: dove_result`).
+    #[serde(default)]
+    result: Option<Value>,
 }
 
 #[cfg(test)]
@@ -467,6 +533,7 @@ mod tests {
             r#"{"type":"config_set","id":"1","success":true}"#,
             r#"{"type":"trace_data","id":"1","success":true,"tracedata":"t"}"#,
             r#"{"type":"dove_result","id":"1","success":true,"result":{}}"#,
+            r#"{"type":"dove_result","id":"1","success":true,"vedata":[]}"#,
             r#"{"type":"error","id":"1","success":false,"error":"nope"}"#,
         ];
         for json in samples {
@@ -507,6 +574,132 @@ mod tests {
         let json = r#"{"id":"p1","success":true}"#;
         let r: Response = serde_json::from_str(json).unwrap();
         assert!(matches!(r, Response::Pong { id } if id == "p1"));
+    }
+
+    #[test]
+    fn test_decode_live_dove_vedata_without_data() {
+        let json = r#"{"id":"d1","success":true,"vemetadata":{"v":1},"vedata":[{"op":"TBSCAN"}]}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        match r {
+            Response::DoveResult {
+                id,
+                success,
+                vedata,
+                vemetadata,
+            } => {
+                assert_eq!(id, "d1");
+                assert!(success);
+                assert_eq!(vedata, serde_json::json!([{"op":"TBSCAN"}]));
+                assert_eq!(vemetadata, Some(serde_json::json!({"v":1})));
+            }
+            other => panic!("expected DoveResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_live_dove_with_data_is_not_query_result() {
+        let json = r#"{
+            "id":"d1","success":true,"is_done":true,
+            "vemetadata":{"v":1},"vedata":[{"op":"TBSCAN"}],
+            "data":[{"X":1}]
+        }"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(r, Response::DoveResult { .. }),
+            "run=true dove with data must not become QueryResult: {r:?}"
+        );
+        if let Response::DoveResult { vedata, .. } = r {
+            assert_eq!(vedata, serde_json::json!([{"op":"TBSCAN"}]));
+        }
+    }
+
+    #[test]
+    fn test_decode_dove_42505_without_vedata_is_error() {
+        let json = r#"{"id":"d1","success":false,"error":"not authorized","sql_state":"42505"}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        match r {
+            Response::Error(e) => {
+                assert_eq!(e.sqlstate.as_deref(), Some("42505"));
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_tagged_dove_result_still_accepts_result() {
+        let json = r#"{"type":"dove_result","id":"1","success":true,"result":{"operator":"scan"}}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        match r {
+            Response::DoveResult { vedata, .. } => {
+                assert_eq!(vedata, serde_json::json!({"operator":"scan"}));
+            }
+            other => panic!("expected DoveResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_live_gettracedata_keeps_tracedata() {
+        let json = r#"{"id":"t1","success":true,"tracedata":"hello","execution_time":0}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            r,
+            Response::TraceData {
+                id,
+                success: true,
+                tracedata,
+            } if id == "t1" && tracedata == "hello"
+        ));
+    }
+
+    #[test]
+    fn test_decode_live_gettracedata_empty_or_null_tracedata() {
+        let empty = r#"{"id":"t1","success":true,"tracedata":""}"#;
+        let r: Response = serde_json::from_str(empty).unwrap();
+        assert!(matches!(
+            r,
+            Response::TraceData {
+                tracedata,
+                ..
+            } if tracedata.is_empty()
+        ));
+
+        let null = r#"{"id":"t1","success":true,"tracedata":null}"#;
+        let r: Response = serde_json::from_str(null).unwrap();
+        assert!(matches!(
+            r,
+            Response::TraceData {
+                tracedata,
+                ..
+            } if tracedata.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_decode_live_gettracedata_jtopentracedata_does_not_fail() {
+        let json = r#"{"id":"t1","success":true,"tracedata":"buf","jtopentracedata":"jt"}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            r,
+            Response::TraceData {
+                tracedata,
+                ..
+            } if tracedata == "buf"
+        ));
+
+        let only_jt = r#"{"id":"t1","success":true,"jtopentracedata":""}"#;
+        let r: Response = serde_json::from_str(only_jt).unwrap();
+        assert!(matches!(
+            r,
+            Response::TraceData {
+                id,
+                tracedata,
+                ..
+            } if id == "t1" && tracedata.is_empty()
+        ));
+
+        let jt_null = r#"{"id":"t1","success":true,"jtopentracedata":null}"#;
+        let r: Response = serde_json::from_str(jt_null).unwrap();
+        assert!(matches!(r, Response::TraceData { .. }));
     }
 
     #[test]

@@ -37,6 +37,7 @@ enum PendingKind {
     SetConfig,
     SqlClose,
     Exit,
+    GetTraceData,
     Other,
 }
 
@@ -192,20 +193,22 @@ fn pending_kind(request: &Request) -> PendingKind {
         Request::SetConfig { .. } => PendingKind::SetConfig,
         Request::SqlClose { .. } => PendingKind::SqlClose,
         Request::Exit { .. } => PendingKind::Exit,
+        Request::GetTraceData { .. } => PendingKind::GetTraceData,
         Request::Sql { .. }
         | Request::PrepareSqlExecute { .. }
         | Request::Execute { .. }
         | Request::SqlMore { .. }
         | Request::Cl { .. }
-        | Request::GetTraceData { .. }
         | Request::Dove { .. } => PendingKind::Other,
     }
 }
 
 /// Live untagged `{id, success, job}` is `Connected`. After handshake the
 /// same shape is `getdbjob`. Untagged `{id, success}` is `Pong`; remap
-/// when the outstanding request is sqlclose/setconfig/exit/`prepare_sql`.
-/// Ping stays `Pong`.
+/// when the outstanding request is sqlclose/setconfig/exit/`prepare_sql`/
+/// `gettracedata`. Ping stays `Pong`. When `tracedata` is on the wire,
+/// decode already produced [`Response::TraceData`] — do not remap that
+/// into an empty buffer.
 fn remap_response(kind: PendingKind, response: Response) -> Response {
     match (kind, response) {
         (PendingKind::GetDbJob, Response::Connected { id, job, .. }) => Response::DbJob {
@@ -227,6 +230,14 @@ fn remap_response(kind: PendingKind, response: Response) -> Response {
             success: true,
             cont_id: String::new(),
             execution_time: 0.0,
+        },
+        // Live gettracedata may omit `tracedata` on an empty IN_MEM buffer.
+        // Decode then yields Pong; remap so `Job::fetch_trace` is not
+        // `unexpected`. A present `tracedata` key is already TraceData.
+        (PendingKind::GetTraceData, Response::Pong { id }) => Response::TraceData {
+            id,
+            success: true,
+            tracedata: String::new(),
         },
         (_, other) => other,
     }
@@ -455,6 +466,8 @@ mod tests {
             Request::Dove {
                 id: id.clone(),
                 sql: "SELECT 1".into(),
+                run: Some(true),
+                rows: None,
                 terse: None,
             },
             Request::Ping { id: id.clone() },
@@ -549,7 +562,8 @@ mod tests {
             Response::DoveResult {
                 id: id.clone(),
                 success: true,
-                result: serde_json::json!({}),
+                vedata: serde_json::json!({}),
+                vemetadata: None,
             },
             Response::Error(err),
         ];
@@ -608,9 +622,23 @@ mod tests {
             Response::Pong { id } if id == "x"
         ));
         assert!(matches!(
-            remap_response(PendingKind::PrepareSql, pong),
+            remap_response(PendingKind::PrepareSql, pong.clone()),
             Response::PreparedStatement { id, success, cont_id, .. }
                 if id == "x" && success && cont_id.is_empty()
+        ));
+        assert!(matches!(
+            remap_response(PendingKind::GetTraceData, pong.clone()),
+            Response::TraceData { id, success, tracedata }
+                if id == "x" && success && tracedata.is_empty()
+        ));
+        let hello = Response::TraceData {
+            id: "x".into(),
+            success: true,
+            tracedata: "hello".into(),
+        };
+        assert!(matches!(
+            remap_response(PendingKind::GetTraceData, hello),
+            Response::TraceData { tracedata, .. } if tracedata == "hello"
         ));
     }
 
@@ -633,6 +661,10 @@ mod tests {
                 props: None,
             }),
             PendingKind::Connect
+        );
+        assert_eq!(
+            pending_kind(&Request::GetTraceData { id: id.clone() }),
+            PendingKind::GetTraceData
         );
         assert_eq!(
             pending_kind(&Request::Sql {

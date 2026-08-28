@@ -1,0 +1,19 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 581
+expression: r
+---
+DoveResult {
+    id: "d1",
+    success: true,
+    vedata: Array [
+        Object {
+            "op": String("TBSCAN"),
+        },
+    ],
+    vemetadata: Some(
+        Object {
+            "version": Number(1),
+        },
+    ),
+}

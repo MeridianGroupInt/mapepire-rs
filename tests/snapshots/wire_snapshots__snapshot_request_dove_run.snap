@@ -1,0 +1,11 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 170
+expression: "Request::Dove\n{\n    id: \"test\".into(), sql: \"SELECT 1 FROM SYSIBM.SYSDUMMY1\".into(), run:\n    Some(true), rows: None, terse: None,\n}"
+---
+{
+  "type": "dove",
+  "id": "test",
+  "sql": "SELECT 1 FROM SYSIBM.SYSDUMMY1",
+  "run": true
+}

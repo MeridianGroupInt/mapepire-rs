@@ -106,14 +106,18 @@ pub enum Response {
         tracedata: String,
     },
 
-    /// Result of `dove` (Visual Explain). Inner shape is server-defined JSON.
+    /// Result of `dove` (Visual Explain). Live daemons send `vedata` /
+    /// `vemetadata`; tagged mocks may send `result` (decoded as `vedata`).
     DoveResult {
         /// Echoes request id.
         id: String,
         /// `true` on success.
         success: bool,
-        /// Plan tree as JSON.
-        result: serde_json::Value,
+        /// Explain tree. Live JSON field `vedata`.
+        vedata: serde_json::Value,
+        /// Optional VE metadata from the daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vemetadata: Option<serde_json::Value>,
     },
 
     /// Server-side error response.

@@ -158,9 +158,22 @@ fn snapshot_request_metadata_and_diagnostics() {
         Request::Dove {
             id: "test".into(),
             sql: "SELECT 1 FROM SYSIBM.SYSDUMMY1".into(),
+            run: None,
+            rows: None,
             terse: None,
         }
     );
+}
+
+#[test]
+fn snapshot_request_dove_run() {
+    insta::assert_json_snapshot!(Request::Dove {
+        id: "test".into(),
+        sql: "SELECT 1 FROM SYSIBM.SYSDUMMY1".into(),
+        run: Some(true),
+        rows: None,
+        terse: None,
+    });
 }
 
 #[test]
@@ -427,11 +440,12 @@ fn snapshot_response_dove_result() {
     let r = Response::DoveResult {
         id: "test".into(),
         success: true,
-        result: serde_json::json!({
+        vedata: serde_json::json!({
             "operator": "TableScan",
             "table": "ORDERS",
             "estimated_rows": 1000
         }),
+        vemetadata: None,
     };
     insta::assert_json_snapshot!(r);
 }
@@ -536,6 +550,47 @@ fn snapshot_decode_live_pong() {
     let json = serde_json::json!({
         "id": "p1",
         "success": true
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_gettracedata() {
+    let json = serde_json::json!({
+        "id": "t1",
+        "success": true,
+        "tracedata": "+++ trace start +++",
+        "jtopentracedata": "",
+        "execution_time": 0
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_dove() {
+    let json = serde_json::json!({
+        "id": "d1",
+        "success": true,
+        "vemetadata": {"version": 1},
+        "vedata": [{"op": "TBSCAN"}],
+        "execution_time": 1
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_dove_with_data() {
+    let json = serde_json::json!({
+        "id": "d1",
+        "success": true,
+        "is_done": true,
+        "vemetadata": {"version": 1},
+        "vedata": [{"op": "TBSCAN"}],
+        "data": [{"X": 1}],
+        "execution_time": 1
     });
     let r: Response = serde_json::from_value(json).unwrap();
     insta::assert_debug_snapshot!(r);

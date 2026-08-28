@@ -208,6 +208,15 @@ pub enum Request {
         id: String,
         /// SQL statement to explain.
         sql: String,
+        /// When `Some(true)`, run the statement while explaining (JS
+        /// `ExplainType.RUN`). Omitted leaves the daemon default.
+        /// [`crate::Job::visual_explain`] sends `true`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<bool>,
+        /// Page size for result rows when `run` is true. Omitted lets the
+        /// daemon pick.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rows: Option<u32>,
         /// When `Some(true)`, result rows (if `run` is set by the daemon)
         /// are arrays in column order. Omitted (`None`) keeps object rows.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,6 +245,7 @@ pub enum Request {
 /// `_ => ...` arm would silently print one. `Connect` currently has no
 /// secrets; print its fields faithfully.
 impl fmt::Debug for Request {
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Connect {
@@ -328,10 +338,18 @@ impl fmt::Debug for Request {
                 .field("tracelevel", tracelevel)
                 .field("tracedest", tracedest)
                 .finish(),
-            Self::Dove { id, sql, terse } => f
+            Self::Dove {
+                id,
+                sql,
+                run,
+                rows,
+                terse,
+            } => f
                 .debug_struct("Dove")
                 .field("id", id)
                 .field("sql", sql)
+                .field("run", run)
+                .field("rows", rows)
                 .field("terse", terse)
                 .finish(),
             Self::Ping { id } => f.debug_struct("Ping").field("id", id).finish(),
@@ -569,9 +587,11 @@ mod tests {
                 Request::Dove {
                     id: "11".into(),
                     sql: "SELECT 1".into(),
+                    run: None,
+                    rows: None,
                     terse: None,
                 },
-                r#"Dove { id: "11", sql: "SELECT 1", terse: None }"#,
+                r#"Dove { id: "11", sql: "SELECT 1", run: None, rows: None, terse: None }"#,
             ),
             (Request::Ping { id: "12".into() }, r#"Ping { id: "12" }"#),
             (Request::Exit { id: "13".into() }, r#"Exit { id: "13" }"#),
@@ -865,12 +885,41 @@ mod tests {
         let r = Request::Dove {
             id: "60".into(),
             sql: "SELECT * FROM T".into(),
+            run: None,
+            rows: None,
             terse: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         assert_eq!(json, r#"{"type":"dove","id":"60","sql":"SELECT * FROM T"}"#);
+        assert!(!json.contains(r#""run""#));
+        assert!(!json.contains(r#""rows""#));
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, Request::Dove { id, .. } if id == "60"));
+    }
+
+    #[test]
+    fn dove_serializes_run_true() {
+        let r = Request::Dove {
+            id: "60".into(),
+            sql: "SELECT * FROM T".into(),
+            run: Some(true),
+            rows: Some(100),
+            terse: None,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"dove","id":"60","sql":"SELECT * FROM T","run":true,"rows":100}"#
+        );
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back,
+            Request::Dove {
+                run: Some(true),
+                rows: Some(100),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -939,6 +988,8 @@ mod tests {
         let dove = Request::Dove {
             id: "60".into(),
             sql: "SELECT * FROM T".into(),
+            run: None,
+            rows: None,
             terse: Some(true),
         };
         let json = serde_json::to_string(&dove).unwrap();

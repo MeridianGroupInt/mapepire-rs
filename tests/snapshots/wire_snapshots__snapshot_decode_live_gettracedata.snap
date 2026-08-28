@@ -1,0 +1,10 @@
+---
+source: tests/wire_snapshots.rs
+assertion_line: 554
+expression: r
+---
+TraceData {
+    id: "t1",
+    success: true,
+    tracedata: "+++ trace start +++",
+}
