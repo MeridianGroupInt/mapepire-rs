@@ -13,9 +13,9 @@ a cloud-friendly access layer for **Db2 for IBM i** that exposes the
 database over TLS-secured `WebSockets`.
 
 > **Status:** v0.7 speaks a live Mapepire daemon (mapepire-js 0.6.x
-> handshake, CL, bind, terse, CALL/OUT, and trace dest). On
-> [crates.io](https://crates.io/crates/mapepire). Real-IBM-i CI lands in
-> v1.0.
+> handshake, CL, bind, terse, CALL/OUT, trace dest, and sqlmore paging).
+> On [crates.io](https://crates.io/crates/mapepire). Real-IBM-i CI lands
+> in v1.0.
 
 Sibling SDKs exist for [Node.js](https://github.com/Mapepire-IBMi/mapepire-js),
 [Python](https://github.com/Mapepire-IBMi/mapepire-python),

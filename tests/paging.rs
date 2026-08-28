@@ -1,9 +1,8 @@
 //! Phase 6 integration test: paging via sqlmore.
 //!
-//! Spawns a mock with two-page `QueryResult` data: 50 rows on the initial
-//! page (`is_done` = false, `cont_id` = Some), 50 more on the next, `is_done` = true
-//! on the second. Verifies `Rows::stream()` yields all 100 rows in order
-//! across the page boundary.
+//! Covers the tagged-mock two-page path and the live dialect (no
+//! `cont_id`, omitted/`false` `is_done`) where `sqlmore.cont_id` is the
+//! opening request id.
 
 #[cfg(feature = "rustls-tls")]
 mod common;
@@ -157,33 +156,197 @@ async fn test_sqlmore_uses_opening_page_size() {
     }
 }
 
-/// `is_done = false` with no cursor must not issue `sqlmore` (or `sqlclose`).
+/// Opening execute id from the recorder (PROTOCOL cursor handle).
+#[cfg(feature = "rustls-tls")]
+fn opening_sql_id(observed: &[mapepire::protocol::Request]) -> String {
+    use mapepire::protocol::Request;
+    observed
+        .iter()
+        .find_map(|r| match r {
+            Request::Sql { id, .. }
+            | Request::PrepareSqlExecute { id, .. }
+            | Request::Execute { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .expect("opening execute request")
+}
+
+/// Live dialect: first page 100 rows, no `cont_id`, `is_done` omitted/false.
+/// Stream must `sqlmore` with `cont_id` = opening request id and collect 101.
 #[cfg(feature = "rustls-tls")]
 #[tokio::test]
-async fn test_stream_skips_sqlmore_without_cursor() {
+async fn test_stream_sqlmore_without_cont_id_uses_request_id() {
+    use mapepire::ExecuteOptions;
     use mapepire::protocol::Request;
 
-    let pages = vec![page(0, 5, None, false)];
+    let pages = vec![page(0, 100, None, false), page(100, 1, None, true)];
     let (job, recorder) = common::connect_to_mock_with_recorder(pages).await;
 
     let rows = job
-        .execute("SELECT n FROM SCHEMA.NUMBERS")
+        .execute_opts(
+            "SELECT n FROM SCHEMA.NUMBERS",
+            ExecuteOptions {
+                rows: Some(100),
+                terse: false,
+            },
+        )
+        .await
+        .expect("execute_opts");
+    assert!(!rows.is_done());
+    assert_eq!(rows.first_page_len(), 100);
+
+    let all = rows.into_dynamic().await.expect("into_dynamic");
+    assert_eq!(all.len(), 101);
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    let sql_id = opening_sql_id(&observed);
+    let more: Vec<&Request> = observed
+        .iter()
+        .filter(|r| matches!(r, Request::SqlMore { .. }))
+        .collect();
+    assert_eq!(more.len(), 1, "expected one sqlmore, got {observed:?}");
+    match more[0] {
+        Request::SqlMore {
+            cont_id, rows: n, ..
+        } => {
+            assert_eq!(
+                cont_id, &sql_id,
+                "sqlmore.cont_id is the opening request id"
+            );
+            assert_eq!(*n, 100);
+        }
+        other => panic!("expected SqlMore, got {other:?}"),
+    }
+}
+
+/// Live dialect: two pages of 100 with no `cont_id` collect 200.
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_stream_two_pages_without_cont_id_collects_200() {
+    use mapepire::ExecuteOptions;
+
+    let pages = vec![page(0, 100, None, false), page(100, 100, None, true)];
+    let (job, recorder) = common::connect_to_mock_with_recorder(pages).await;
+
+    let rows = job
+        .execute_opts(
+            "SELECT n FROM SCHEMA.NUMBERS",
+            ExecuteOptions {
+                rows: Some(100),
+                terse: false,
+            },
+        )
+        .await
+        .expect("execute_opts");
+    let all = rows.into_dynamic().await.expect("into_dynamic");
+    assert_eq!(all.len(), 200);
+    let expected: Vec<i64> = (0..200).collect();
+    let got: Vec<i64> = all.iter().map(|r| r.get::<i64>("n").expect("n")).collect();
+    assert_eq!(got, expected);
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    let sql_id = opening_sql_id(&observed);
+    let more: Vec<_> = observed
+        .iter()
+        .filter(|r| matches!(r, mapepire::protocol::Request::SqlMore { .. }))
+        .collect();
+    assert_eq!(more.len(), 1, "expected one sqlmore, got {observed:?}");
+    match more[0] {
+        mapepire::protocol::Request::SqlMore { cont_id, .. } => {
+            assert_eq!(cont_id, &sql_id);
+        }
+        other => panic!("expected SqlMore, got {other:?}"),
+    }
+}
+
+/// `is_done: true` after one row (SYSDUMMY1) must not issue `sqlmore`.
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_stream_skips_sqlmore_when_is_done_after_one_row() {
+    use mapepire::protocol::Request;
+
+    let pages = vec![page(0, 1, None, true)];
+    let (job, recorder) = common::connect_to_mock_with_recorder(pages).await;
+
+    let rows = job
+        .execute("SELECT 1 FROM SYSIBM.SYSDUMMY1")
         .await
         .expect("execute");
+    assert!(rows.is_done());
+    assert_eq!(rows.first_page_len(), 1);
     let all = rows.into_dynamic().await.expect("into_dynamic");
-    assert_eq!(all.len(), 5);
+    assert_eq!(all.len(), 1);
 
     let observed = recorder.lock().expect("recorder mutex").clone();
     assert!(
         !observed
             .iter()
             .any(|r| matches!(r, Request::SqlMore { .. })),
-        "no cursor: sqlmore must be skipped, got {observed:?}"
+        "is_done: sqlmore must be skipped, got {observed:?}"
     );
     assert!(
         !observed
             .iter()
             .any(|r| matches!(r, Request::SqlClose { .. })),
-        "no cursor: sqlclose must be skipped, got {observed:?}"
+        "is_done: sqlclose must be skipped, got {observed:?}"
+    );
+}
+
+/// `is_done: true` after a full 3-row page (FETCH NEXT 3) must not `sqlmore`.
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_stream_skips_sqlmore_when_is_done_after_full_small_page() {
+    use mapepire::ExecuteOptions;
+    use mapepire::protocol::Request;
+
+    let pages = vec![page(0, 3, None, true)];
+    let (job, recorder) = common::connect_to_mock_with_recorder(pages).await;
+
+    let rows = job
+        .execute_opts(
+            "SELECT n FROM SCHEMA.NUMBERS FETCH NEXT 3 ROWS ONLY",
+            ExecuteOptions {
+                rows: Some(100),
+                terse: false,
+            },
+        )
+        .await
+        .expect("execute_opts");
+    let all = rows.into_dynamic().await.expect("into_dynamic");
+    assert_eq!(all.len(), 3);
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    assert!(
+        !observed
+            .iter()
+            .any(|r| matches!(r, Request::SqlMore { .. })),
+        "done after 3 rows: no sqlmore, got {observed:?}"
+    );
+}
+
+/// Empty follow-up page without `is_done` is `Error::Internal` (no infinite poll).
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_stream_empty_page_without_is_done_is_internal() {
+    let pages = vec![page(0, 1, None, false), page(0, 0, None, false)];
+    let job = common::connect_to_mock(common::MockBehavior::Pages {
+        pages,
+        recorder: None,
+    })
+    .await;
+
+    let rows = job
+        .execute("SELECT n FROM SCHEMA.NUMBERS")
+        .await
+        .expect("execute");
+    let err = rows.into_dynamic().await.expect_err("empty page");
+    assert!(
+        matches!(err, mapepire::Error::Internal(_)),
+        "expected Internal, got {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("empty page without is_done"),
+        "unexpected message: {msg}"
     );
 }

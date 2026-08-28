@@ -149,10 +149,20 @@ pub struct QueryResult {
     #[serde(default)]
     pub update_count: i64,
     /// Server-assigned cursor handle for paging via `sqlmore`.
+    ///
+    /// Live `sql` / `prepare_sql_execute` replies omit this field.
+    /// PROTOCOL.md and mapepire-js use the opening request [`Self::id`] as
+    /// the cursor (`sqlmore.cont_id`); [`crate::query::Rows`] does the
+    /// same and does not require this field.
     #[serde(default)]
     pub cont_id: Option<String>,
     /// `true` when no further pages remain.
-    #[serde(default = "default_true")]
+    ///
+    /// Omitted on a result set (`has_results` or non-empty `data`) is
+    /// **not** done — mapepire-js treats missing `is_done` as falsy
+    /// (`RUN_MORE_DATA_AVAILABLE`). Omitted on DML (no result set) is
+    /// done so we do not `sqlmore` / `sqlclose` a non-cursor (SQLSTATE
+    /// 24000).
     pub is_done: bool,
     /// Column metadata.
     #[serde(default)]
@@ -209,8 +219,8 @@ struct QueryResultDe {
     update_count: i64,
     #[serde(default)]
     cont_id: Option<String>,
-    #[serde(default = "default_true")]
-    is_done: bool,
+    #[serde(default)]
+    is_done: Option<bool>,
     #[serde(default)]
     metadata: QueryMetaData,
     #[serde(default)]
@@ -233,13 +243,21 @@ impl<'de> Deserialize<'de> for QueryResult {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = QueryResultDe::deserialize(deserializer)?;
         let data = named_rows_from_wire(&raw.metadata, raw.data).map_err(D::Error::custom)?;
+        let has_result_set = raw.has_results || !data.is_empty();
+        let is_done = match raw.is_done {
+            Some(flag) => flag,
+            // PROTOCOL: `is_done` is only added when `has_results`. Missing
+            // on a result set is JS-falsy (more pages). Missing on DML is
+            // done — do not page a non-cursor.
+            None => !has_result_set,
+        };
         Ok(Self {
             id: raw.id,
             success: raw.success,
             has_results: raw.has_results,
             update_count: raw.update_count,
             cont_id: raw.cont_id,
-            is_done: raw.is_done,
+            is_done,
             metadata: raw.metadata,
             data,
             execution_time: raw.execution_time,
@@ -249,6 +267,22 @@ impl<'de> Deserialize<'de> for QueryResult {
             parameter_count: raw.parameter_count,
             output_parms: raw.output_parms,
         })
+    }
+}
+
+impl QueryResult {
+    /// Cursor handle for `sqlmore` / `sqlclose`.
+    ///
+    /// PROTOCOL.md §6: the opening request `id` **is** the cursor. Live
+    /// Jetty omits `cont_id` on sql results. mapepire-js sets
+    /// `correlationId = s.id`. A non-empty `cont_id` is ignored in favour
+    /// of `id` unless `id` is empty (defensive).
+    pub(crate) fn cursor_handle(&self) -> Option<&str> {
+        if self.id.is_empty() {
+            self.cont_id.as_deref().filter(|c| !c.is_empty())
+        } else {
+            Some(self.id.as_str())
+        }
     }
 }
 
@@ -297,10 +331,6 @@ fn named_rows_from_wire(
         }
     }
     Ok(out)
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// Result-set column metadata.
@@ -776,6 +806,38 @@ mod tests {
         if let Response::Connected { version, .. } = r {
             assert_eq!(version, "");
         }
+    }
+
+    #[test]
+    fn test_query_result_omitted_is_done_with_data_is_not_done() {
+        let json = r#"{
+            "id":"q1","success":true,"has_results":true,
+            "metadata":{"column_count":1,"columns":[{"name":"n"}]},
+            "data":[{"n":1}]
+        }"#;
+        let q: QueryResult = serde_json::from_str(json).unwrap();
+        assert!(!q.is_done, "omitted is_done on a result set is not done");
+        assert_eq!(q.cursor_handle(), Some("q1"));
+        assert!(q.cont_id.is_none());
+    }
+
+    #[test]
+    fn test_query_result_omitted_is_done_dml_is_done() {
+        let json = r#"{"id":"u1","success":true,"has_results":false,"update_count":3,"data":[]}"#;
+        let q: QueryResult = serde_json::from_str(json).unwrap();
+        assert!(q.is_done, "omitted is_done on DML is done (no cursor)");
+        assert!(q.data.is_empty());
+    }
+
+    #[test]
+    fn test_query_result_explicit_is_done_false() {
+        let json = r#"{
+            "id":"q1","success":true,"has_results":true,"is_done":false,
+            "data":[{"n":1}]
+        }"#;
+        let q: QueryResult = serde_json::from_str(json).unwrap();
+        assert!(!q.is_done);
+        assert_eq!(q.cursor_handle(), Some("q1"));
     }
 
     #[test]

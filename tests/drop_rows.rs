@@ -4,11 +4,11 @@
 //! Three scenarios are exercised against the mock harness:
 //!
 //! 1. Dropping a `Rows` that was *never* streamed (cursor open, `is_done` = false) issues
-//!    `SqlClose`.
+//!    `SqlClose` with the opening request id.
 //! 2. Dropping the [`futures::Stream`] returned by `Rows::stream` mid-iteration (cursor open)
 //!    issues `SqlClose`.
-//! 3. Dropping a fully-delivered `Rows` (single page, `is_done` = true, `cont_id` = None) issues
-//!    *no* `SqlClose` — there is no cursor to close.
+//! 3. Dropping a fully-delivered `Rows` (single page, `is_done` = true) issues *no* `SqlClose` —
+//!    there is no cursor to close.
 //!
 //! `Drop for Rows` / `Drop for StreamState` use `spawn_best_effort` to
 //! fire-and-forget the close, so the assertion site sleeps briefly to let
@@ -105,28 +105,40 @@ fn count_sqlclose(observed: &[Request], cont_id: &str) -> usize {
         .count()
 }
 
+/// Opening execute id — PROTOCOL.md / mapepire-js cursor handle.
+#[cfg(feature = "rustls-tls")]
+fn opening_sql_id(observed: &[Request]) -> String {
+    observed
+        .iter()
+        .find_map(|r| match r {
+            Request::Sql { id, .. }
+            | Request::PrepareSqlExecute { id, .. }
+            | Request::Execute { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .expect("opening execute request")
+}
+
 /// Dropping a `Rows` that was never streamed (cursor open) must fire a
 /// best-effort `SqlClose` for the server-side cursor.
 #[cfg(feature = "rustls-tls")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_drop_rows_without_streaming_releases_cursor() {
-    let cont_id = "cur-close-1";
-
-    let (job, recorder) =
-        common::connect_to_mock_with_recorder(vec![page(Some(cont_id), false)]).await;
+    let (job, recorder) = common::connect_to_mock_with_recorder(vec![page(None, false)]).await;
 
     let rows = job.execute("SELECT n FROM T").await.expect("execute");
+    let cont_id = opening_sql_id(&recorder.lock().expect("recorder mutex"));
     // Drop the Rows immediately — cursor is open, is_done is false.
     drop(rows);
 
     wait_for(&recorder, "SqlClose for cursor", |observed| {
-        count_sqlclose(observed, cont_id) >= 1
+        count_sqlclose(observed, &cont_id) >= 1
     })
     .await;
 
     let observed = recorder.lock().expect("recorder mutex").clone();
     assert_eq!(
-        count_sqlclose(&observed, cont_id),
+        count_sqlclose(&observed, &cont_id),
         1,
         "expected exactly one SqlClose for cont_id={cont_id}; observed = {observed:?}"
     );
@@ -140,12 +152,10 @@ async fn test_drop_rows_without_streaming_releases_cursor() {
 async fn test_drop_stream_mid_iteration_releases_cursor() {
     use futures::{StreamExt, pin_mut};
 
-    let cont_id = "cur-close-2";
-
-    let (job, recorder) =
-        common::connect_to_mock_with_recorder(vec![page(Some(cont_id), false)]).await;
+    let (job, recorder) = common::connect_to_mock_with_recorder(vec![page(None, false)]).await;
 
     let rows = job.execute("SELECT n FROM T").await.expect("execute");
+    let cont_id = opening_sql_id(&recorder.lock().expect("recorder mutex"));
 
     {
         let stream = rows.stream();
@@ -163,13 +173,13 @@ async fn test_drop_stream_mid_iteration_releases_cursor() {
     }
 
     wait_for(&recorder, "SqlClose for mid-iteration cursor", |observed| {
-        count_sqlclose(observed, cont_id) >= 1
+        count_sqlclose(observed, &cont_id) >= 1
     })
     .await;
 
     let observed = recorder.lock().expect("recorder mutex").clone();
     assert_eq!(
-        count_sqlclose(&observed, cont_id),
+        count_sqlclose(&observed, &cont_id),
         1,
         "expected exactly one SqlClose for cont_id={cont_id}; observed = {observed:?}"
     );
