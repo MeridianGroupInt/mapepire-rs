@@ -68,6 +68,7 @@ fuzz_target!(|input: Input<'_>| {
             column_count,
             columns,
             job: None,
+            parameters: Vec::new(),
         },
         data: Vec::new(),
         cont_id: input.cont_id.map(str::to_string),
@@ -75,6 +76,8 @@ fuzz_target!(|input: Input<'_>| {
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: Vec::new(),
     };
     let r = Response::QueryResult(qr);
 

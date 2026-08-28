@@ -6,7 +6,9 @@
 use std::sync::Arc;
 
 use crate::error::{Error, ProtocolError};
-use crate::protocol::{IdAllocator, QueryResult, Request, Response};
+use crate::protocol::{
+    IdAllocator, ParameterDetail, ParameterResult, QueryResult, Request, Response,
+};
 use crate::transport::DispatcherHandle;
 
 /// Options for [`crate::Job::execute_opts`] / [`Query::execute_with_opts`].
@@ -560,6 +562,123 @@ impl Rows {
         } else {
             None
         }
+    }
+
+    /// Output parameter values from a stored-procedure `CALL`.
+    ///
+    /// Empty when the statement is not a procedure or the daemon omitted
+    /// `output_parms`. `IN` entries typically have
+    /// [`ParameterResult::value`] `None`. There is no separate CALL
+    /// opcode — use [`crate::Job::execute_with`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job
+    ///     .execute_with(
+    ///         "CALL SCHEMA.PROCEDURE_TEST(?, ?, ?)",
+    ///         &[
+    ///             serde_json::json!(6),
+    ///             serde_json::json!(4),
+    ///             serde_json::json!(0),
+    ///         ],
+    ///     )
+    ///     .await?;
+    /// assert_eq!(rows.parameter_count(), Some(3));
+    /// let out = rows.output_parms();
+    /// assert_eq!(out.len(), 3);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn output_parms(&self) -> &[ParameterResult] {
+        &self.inner.output_parms
+    }
+
+    /// Number of parameter markers, when the daemon reported `parameter_count`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job
+    ///     .execute_with(
+    ///         "CALL SCHEMA.PROCEDURE_TEST(?, ?, ?)",
+    ///         &[
+    ///             serde_json::json!(6),
+    ///             serde_json::json!(4),
+    ///             serde_json::json!(0),
+    ///         ],
+    ///     )
+    ///     .await?;
+    /// assert_eq!(rows.parameter_count(), Some(3));
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn parameter_count(&self) -> Option<u32> {
+        self.inner.parameter_count
+    }
+
+    /// Parameter-marker metadata from `metadata.parameters`.
+    ///
+    /// Empty on ordinary SELECT/DML. For `CALL`, entries include `IN` /
+    /// `INOUT` / `OUT` and names such as `P1`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password("s3cret".to_string())
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let rows = job
+    ///     .execute_with(
+    ///         "CALL SCHEMA.PROCEDURE_TEST(?, ?, ?)",
+    ///         &[
+    ///             serde_json::json!(6),
+    ///             serde_json::json!(4),
+    ///             serde_json::json!(0),
+    ///         ],
+    ///     )
+    ///     .await?;
+    /// let names: Vec<&str> = rows
+    ///     .parameter_metadata()
+    ///     .iter()
+    ///     .map(|p| p.name.as_str())
+    ///     .collect();
+    /// assert_eq!(names, ["P1", "P2", "P3"]);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn parameter_metadata(&self) -> &[ParameterDetail] {
+        &self.inner.metadata.parameters
     }
 
     /// Wall-clock execution time on the server.

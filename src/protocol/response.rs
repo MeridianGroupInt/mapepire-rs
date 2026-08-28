@@ -182,6 +182,19 @@ pub struct QueryResult {
     /// Five-character SQLSTATE. Live frames send `sql_state`.
     #[serde(default, alias = "sql_state", skip_serializing_if = "Option::is_none")]
     pub sqlstate: Option<String>,
+    /// Number of parameter markers, when the daemon reports it.
+    ///
+    /// Present on `prepare_sql` / `prepare_sql_execute` / CALL responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter_count: Option<u32>,
+    /// OUT / INOUT values from a stored-procedure `CALL`.
+    ///
+    /// Empty when the statement is not a procedure or the daemon omitted
+    /// the field. `IN` entries typically have [`ParameterResult::value`]
+    /// `None`. There is no separate CALL opcode — use
+    /// [`crate::Job::execute_with`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_parms: Vec<ParameterResult>,
 }
 
 /// Wire DTO: `data` is objects or arrays. Normalized in [`QueryResult`]'s
@@ -210,6 +223,10 @@ struct QueryResultDe {
     sqlcode: Option<i32>,
     #[serde(default, alias = "sql_state")]
     sqlstate: Option<String>,
+    #[serde(default)]
+    parameter_count: Option<u32>,
+    #[serde(default)]
+    output_parms: Vec<ParameterResult>,
 }
 
 impl<'de> Deserialize<'de> for QueryResult {
@@ -229,6 +246,8 @@ impl<'de> Deserialize<'de> for QueryResult {
             error: raw.error,
             sqlcode: raw.sqlcode,
             sqlstate: raw.sqlstate,
+            parameter_count: raw.parameter_count,
+            output_parms: raw.output_parms,
         })
     }
 }
@@ -296,6 +315,11 @@ pub struct QueryMetaData {
     /// IBM i job that produced the result set, when the daemon reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
+    /// Parameter-marker metadata (`IN` / `OUT` / `INOUT`).
+    ///
+    /// Empty on ordinary SELECT/DML. Present on `prepare_sql` and CALL.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<ParameterDetail>,
 }
 
 /// Metadata for one result-set column.
@@ -318,6 +342,83 @@ pub struct Column {
     /// Scale, when reported.
     #[serde(default)]
     pub scale: Option<u32>,
+}
+
+/// Describes a parameter marker in a prepared statement or `CALL`.
+///
+/// Wire names follow PROTOCOL.md `ParameterDetail`. `mode` is `IN`, `OUT`,
+/// `INOUT`, or `UNKNOWN`.
+///
+/// # Example
+///
+/// ```
+/// use mapepire::ParameterDetail;
+///
+/// let json = r#"{"type":"INTEGER","mode":"IN","precision":10,"scale":0,"name":"P1"}"#;
+/// let p: ParameterDetail = serde_json::from_str(json).expect("parameter");
+/// assert_eq!(p.name, "P1");
+/// assert_eq!(p.mode, "IN");
+/// assert_eq!(p.type_name, "INTEGER");
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParameterDetail {
+    /// Db2 type name. JSON field `type`.
+    #[serde(rename = "type", default)]
+    pub type_name: String,
+    /// Direction: `IN`, `OUT`, `INOUT`, or `UNKNOWN`.
+    #[serde(default)]
+    pub mode: String,
+    /// Numeric precision or character length.
+    #[serde(default)]
+    pub precision: u32,
+    /// Digits after the decimal point, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<u32>,
+    /// Parameter name (may be empty).
+    #[serde(default)]
+    pub name: String,
+}
+
+/// Output parameter value from a stored-procedure `CALL`.
+///
+/// `index` is 1-based. `value` is `None` for `IN` parameters (the daemon
+/// omits it or sends `null`) and `Some` for `OUT` / `INOUT`.
+///
+/// # Example
+///
+/// ```
+/// use mapepire::ParameterResult;
+/// use serde_json::json;
+///
+/// let json = r#"{"index":3,"type":"INTEGER","precision":10,"scale":0,"name":"P3","value":10}"#;
+/// let p: ParameterResult = serde_json::from_str(json).expect("parm result");
+/// assert_eq!(p.index, 3);
+/// assert_eq!(p.name, "P3");
+/// assert_eq!(p.value, Some(json!(10)));
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParameterResult {
+    /// 1-based parameter index.
+    #[serde(default)]
+    pub index: u32,
+    /// Db2 type name. JSON field `type`.
+    #[serde(rename = "type", default)]
+    pub type_name: String,
+    /// Numeric precision or character length.
+    #[serde(default)]
+    pub precision: u32,
+    /// Digits after the decimal point, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<u32>,
+    /// Parameter name.
+    #[serde(default)]
+    pub name: String,
+    /// Character set ID, when reported for character types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ccsid: Option<u32>,
+    /// Output value. `None` for `IN` (omitted or JSON `null`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
 }
 
 /// One CPF / Db2 message returned by a tagged `cl_result` frame.
@@ -515,6 +616,7 @@ mod tests {
                     scale: Some(0),
                 }],
                 job: None,
+                parameters: vec![],
             },
             data: vec![{
                 let mut m = serde_json::Map::new();
@@ -525,6 +627,8 @@ mod tests {
             error: None,
             sqlcode: None,
             sqlstate: None,
+            parameter_count: None,
+            output_parms: vec![],
         };
         let r = Response::QueryResult(q);
         let json = serde_json::to_string(&r).unwrap();
@@ -554,6 +658,8 @@ mod tests {
             error: None,
             sqlcode: None,
             sqlstate: None,
+            parameter_count: None,
+            output_parms: vec![],
         };
         let r = Response::QueryResult(q);
         let json = serde_json::to_string(&r).unwrap();
@@ -631,8 +737,13 @@ mod tests {
             json.get("job").is_none(),
             "absent job must be omitted: {json}"
         );
+        assert!(
+            json.get("parameters").is_none(),
+            "empty parameters must be omitted: {json}"
+        );
         let back: QueryMetaData = serde_json::from_value(json).unwrap();
         assert!(back.job.is_none());
+        assert!(back.parameters.is_empty());
     }
 
     #[test]
@@ -687,6 +798,98 @@ mod tests {
             err.to_string()
                 .contains("terse row data requires metadata.columns"),
             "unexpected error: {err}"
+        );
+    }
+
+    /// JS `procedures.test.ts` integer IN/INOUT/OUT: CALL with `[6, 4, 0]`
+    /// returns `output_parms` values `[undefined, 0, 10]`.
+    const CALL_OUT_JSON: &str = r#"{
+        "id":"call1","success":true,"has_results":false,"update_count":0,
+        "is_done":true,"parameter_count":3,
+        "metadata":{
+            "column_count":0,"columns":[],
+            "parameters":[
+                {"type":"INTEGER","mode":"IN","precision":10,"scale":0,"name":"P1"},
+                {"type":"INTEGER","mode":"INOUT","precision":10,"scale":0,"name":"P2"},
+                {"type":"INTEGER","mode":"OUT","precision":10,"scale":0,"name":"P3"}
+            ]
+        },
+        "data":[],
+        "output_parms":[
+            {"index":1,"type":"INTEGER","precision":10,"scale":0,"name":"P1"},
+            {"index":2,"type":"INTEGER","precision":10,"scale":0,"name":"P2","value":0},
+            {"index":3,"type":"INTEGER","precision":10,"scale":0,"name":"P3","value":10}
+        ],
+        "execution_time":5
+    }"#;
+
+    #[test]
+    fn test_query_result_decodes_call_output_parms() {
+        let q: QueryResult = serde_json::from_str(CALL_OUT_JSON).unwrap();
+        assert!(!q.has_results);
+        assert_eq!(q.update_count, 0);
+        assert!(q.data.is_empty());
+        assert_eq!(q.parameter_count, Some(3));
+        assert_eq!(
+            q.metadata
+                .parameters
+                .iter()
+                .map(|p| (p.name.as_str(), p.mode.as_str(), p.type_name.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("P1", "IN", "INTEGER"),
+                ("P2", "INOUT", "INTEGER"),
+                ("P3", "OUT", "INTEGER")
+            ]
+        );
+        assert_eq!(q.output_parms.len(), 3);
+        assert_eq!(q.output_parms[0].value, None);
+        assert_eq!(q.output_parms[1].value, Some(serde_json::json!(0)));
+        assert_eq!(q.output_parms[2].value, Some(serde_json::json!(10)));
+        assert_eq!(q.output_parms[0].index, 1);
+        assert_eq!(q.output_parms[2].name, "P3");
+    }
+
+    #[test]
+    fn test_response_decodes_untagged_call_as_query_result() {
+        let r: Response = serde_json::from_str(CALL_OUT_JSON).unwrap();
+        match r {
+            Response::QueryResult(q) => {
+                assert_eq!(q.parameter_count, Some(3));
+                assert_eq!(q.output_parms[0].value, None);
+                assert_eq!(q.output_parms[1].value, Some(serde_json::json!(0)));
+                assert_eq!(q.output_parms[2].value, Some(serde_json::json!(10)));
+            }
+            other => panic!("expected QueryResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_query_result_omits_empty_output_parms_on_serialize() {
+        let q = QueryResult {
+            id: "q1".into(),
+            success: true,
+            has_results: false,
+            update_count: 0,
+            cont_id: None,
+            is_done: true,
+            metadata: QueryMetaData::default(),
+            data: vec![],
+            execution_time: 0.0,
+            error: None,
+            sqlcode: None,
+            sqlstate: None,
+            parameter_count: None,
+            output_parms: vec![],
+        };
+        let json = serde_json::to_value(&q).unwrap();
+        assert!(
+            json.get("output_parms").is_none(),
+            "empty output_parms must be omitted: {json}"
+        );
+        assert!(
+            json.get("parameter_count").is_none(),
+            "absent parameter_count must be omitted: {json}"
         );
     }
 }

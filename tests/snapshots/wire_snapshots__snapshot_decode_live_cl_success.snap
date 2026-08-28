@@ -1,6 +1,5 @@
 ---
 source: tests/wire_snapshots.rs
-assertion_line: 419
 expression: r
 ---
 QueryResult(
@@ -15,6 +14,7 @@ QueryResult(
             column_count: 0,
             columns: [],
             job: None,
+            parameters: [],
         },
         data: [
             {
@@ -32,5 +32,7 @@ QueryResult(
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: [],
     },
 )

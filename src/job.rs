@@ -305,6 +305,9 @@ impl Job {
 
     /// Execute a parameterized SQL statement.
     ///
+    /// Stored-procedure `CALL` uses this path (no separate opcode). OUT /
+    /// INOUT values are on [`crate::query::Rows::output_parms`].
+    ///
     /// # Errors
     ///
     /// As [`Job::execute`].
@@ -995,6 +998,8 @@ mod tests {
             },
             sqlcode: if success { None } else { Some(-443) },
             sqlstate: if success { None } else { Some("38501".into()) },
+            parameter_count: None,
+            output_parms: vec![],
         }
     }
 

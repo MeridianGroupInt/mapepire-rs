@@ -28,6 +28,7 @@ fn dml_qr(id: &str, count: i64) -> mapepire::QueryResult {
             column_count: 0,
             columns: vec![],
             job: None,
+            parameters: vec![],
         },
         data: vec![],
         cont_id: None,
@@ -35,6 +36,8 @@ fn dml_qr(id: &str, count: i64) -> mapepire::QueryResult {
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     }
 }
 

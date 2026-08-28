@@ -1472,11 +1472,14 @@ fn canned_empty_query_result(id: String) -> QueryResult {
             column_count: 0,
             columns: Vec::<Column>::new(),
             job: None,
+            parameters: Vec::new(),
         },
         data: Vec::new(),
         execution_time: 0.0,
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: Vec::new(),
     }
 }

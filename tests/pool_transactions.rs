@@ -53,6 +53,7 @@ async fn reserved_runs_begin_dml_commit_on_one_socket() {
             column_count: 0,
             columns: Vec::<Column>::new(),
             job: None,
+            parameters: vec![],
         },
         data: Vec::new(),
         cont_id: None,
@@ -60,6 +61,8 @@ async fn reserved_runs_begin_dml_commit_on_one_socket() {
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     };
     let pages = vec![canned(), canned(), canned()];
 
@@ -278,6 +281,7 @@ async fn drop_without_rollback_on_drop_does_not_send_rollback() {
             column_count: 0,
             columns: Vec::<Column>::new(),
             job: None,
+            parameters: vec![],
         },
         data: Vec::new(),
         cont_id: None,
@@ -285,6 +289,8 @@ async fn drop_without_rollback_on_drop_does_not_send_rollback() {
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     };
     let pages = vec![canned()]; // just the UPDATE; no ROLLBACK expected
 
@@ -343,6 +349,7 @@ async fn explicit_commit_suppresses_drop_rollback() {
             column_count: 0,
             columns: Vec::<Column>::new(),
             job: None,
+            parameters: vec![],
         },
         data: Vec::new(),
         cont_id: None,
@@ -350,6 +357,8 @@ async fn explicit_commit_suppresses_drop_rollback() {
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     };
     // Three canned responses: BEGIN, COMMIT, and the recycle ping that
     // fires when the connection returns to the pool. No post-drop ROLLBACK

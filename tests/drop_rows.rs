@@ -53,6 +53,7 @@ fn page(cont_id: Option<&str>, is_done: bool) -> QueryResult {
                 precision: Some(10),
             }],
             job: None,
+            parameters: vec![],
         },
         data: vec![row],
         cont_id: cont_id.map(str::to_string),
@@ -60,6 +61,8 @@ fn page(cont_id: Option<&str>, is_done: bool) -> QueryResult {
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     }
 }
 

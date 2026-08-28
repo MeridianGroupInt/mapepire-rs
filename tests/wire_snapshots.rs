@@ -9,7 +9,8 @@
 
 use mapepire::protocol::request::Request;
 use mapepire::protocol::response::{
-    ClMessage, Column, ErrorResponse, QueryMetaData, QueryResult, Response,
+    ClMessage, Column, ErrorResponse, ParameterDetail, ParameterResult, QueryMetaData, QueryResult,
+    Response,
 };
 
 #[test]
@@ -194,6 +195,7 @@ fn snapshot_response_query_result_select() {
                 scale: Some(0),
             }],
             job: None,
+            parameters: vec![],
         },
         data: vec![{
             let mut m = serde_json::Map::new();
@@ -204,6 +206,8 @@ fn snapshot_response_query_result_select() {
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     };
     insta::assert_json_snapshot!(Response::QueryResult(q));
 }
@@ -223,6 +227,84 @@ fn snapshot_response_query_result_dml() {
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
+    };
+    insta::assert_json_snapshot!(Response::QueryResult(q));
+}
+
+#[test]
+fn snapshot_response_query_result_call_out() {
+    let q = QueryResult {
+        id: "call1".into(),
+        success: true,
+        has_results: false,
+        update_count: 0,
+        cont_id: None,
+        is_done: true,
+        metadata: QueryMetaData {
+            column_count: 0,
+            columns: vec![],
+            job: None,
+            parameters: vec![
+                ParameterDetail {
+                    type_name: "INTEGER".into(),
+                    mode: "IN".into(),
+                    precision: 10,
+                    scale: Some(0),
+                    name: "P1".into(),
+                },
+                ParameterDetail {
+                    type_name: "INTEGER".into(),
+                    mode: "INOUT".into(),
+                    precision: 10,
+                    scale: Some(0),
+                    name: "P2".into(),
+                },
+                ParameterDetail {
+                    type_name: "INTEGER".into(),
+                    mode: "OUT".into(),
+                    precision: 10,
+                    scale: Some(0),
+                    name: "P3".into(),
+                },
+            ],
+        },
+        data: vec![],
+        execution_time: 5.0,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+        parameter_count: Some(3),
+        output_parms: vec![
+            ParameterResult {
+                index: 1,
+                type_name: "INTEGER".into(),
+                precision: 10,
+                scale: Some(0),
+                name: "P1".into(),
+                ccsid: None,
+                value: None,
+            },
+            ParameterResult {
+                index: 2,
+                type_name: "INTEGER".into(),
+                precision: 10,
+                scale: Some(0),
+                name: "P2".into(),
+                ccsid: None,
+                value: Some(serde_json::json!(0)),
+            },
+            ParameterResult {
+                index: 3,
+                type_name: "INTEGER".into(),
+                precision: 10,
+                scale: Some(0),
+                name: "P3".into(),
+                ccsid: None,
+                value: Some(serde_json::json!(10)),
+            },
+        ],
     };
     insta::assert_json_snapshot!(Response::QueryResult(q));
 }
@@ -414,6 +496,36 @@ fn snapshot_decode_live_query_result() {
         "is_done": true,
         "success": true,
         "execution_time": 215
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
+fn snapshot_decode_live_call_output_parms() {
+    let json = serde_json::json!({
+        "id": "call1",
+        "success": true,
+        "has_results": false,
+        "update_count": 0,
+        "is_done": true,
+        "parameter_count": 3,
+        "metadata": {
+            "column_count": 0,
+            "columns": [],
+            "parameters": [
+                {"type": "INTEGER", "mode": "IN", "precision": 10, "scale": 0, "name": "P1"},
+                {"type": "INTEGER", "mode": "INOUT", "precision": 10, "scale": 0, "name": "P2"},
+                {"type": "INTEGER", "mode": "OUT", "precision": 10, "scale": 0, "name": "P3"}
+            ]
+        },
+        "data": [],
+        "output_parms": [
+            {"index": 1, "type": "INTEGER", "precision": 10, "scale": 0, "name": "P1"},
+            {"index": 2, "type": "INTEGER", "precision": 10, "scale": 0, "name": "P2", "value": 0},
+            {"index": 3, "type": "INTEGER", "precision": 10, "scale": 0, "name": "P3", "value": 10}
+        ],
+        "execution_time": 5
     });
     let r: Response = serde_json::from_value(json).unwrap();
     insta::assert_debug_snapshot!(r);

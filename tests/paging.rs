@@ -46,6 +46,7 @@ fn page(start: i64, count: i64, cont_id: Option<&str>, is_done: bool) -> mapepir
                 precision: Some(10),
             }],
             job: None,
+            parameters: vec![],
         },
         data,
         cont_id: cont_id.map(str::to_string),
@@ -53,6 +54,8 @@ fn page(start: i64, count: i64, cont_id: Option<&str>, is_done: bool) -> mapepir
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     }
 }
 

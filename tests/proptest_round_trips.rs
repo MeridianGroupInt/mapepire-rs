@@ -107,6 +107,8 @@ fn arb_query_result() -> impl Strategy<Value = QueryResult> {
                     error: None,
                     sqlcode: None,
                     sqlstate: None,
+                    parameter_count: None,
+                    output_parms: vec![],
                 }
             },
         )

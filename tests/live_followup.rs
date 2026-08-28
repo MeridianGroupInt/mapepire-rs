@@ -34,6 +34,7 @@ fn int_row(id: &str, value: i64) -> QueryResult {
                 scale: Some(0),
             }],
             job: None,
+            parameters: vec![],
         },
         data: vec![row],
         cont_id: None,
@@ -42,6 +43,8 @@ fn int_row(id: &str, value: i64) -> QueryResult {
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     }
 }
 
@@ -272,6 +275,8 @@ async fn test_execute_opts_terse_missing_columns_is_protocol_error() {
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     };
     let job = common::connect_to_mock(common::MockBehavior::Pages {
         pages: vec![page],

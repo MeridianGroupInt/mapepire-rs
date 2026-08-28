@@ -55,6 +55,8 @@ fn cl_success_result() -> QueryResult {
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
     }
 }
 
@@ -78,6 +80,8 @@ fn cl_failure_result() -> QueryResult {
         error: Some("[CPF0006] Errors occurred in command.".into()),
         sqlcode: Some(-443),
         sqlstate: Some("38501".into()),
+        parameter_count: None,
+        output_parms: vec![],
     }
 }
 

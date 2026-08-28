@@ -1,6 +1,5 @@
 ---
 source: tests/wire_snapshots.rs
-assertion_line: 361
 expression: r
 ---
 QueryResult(
@@ -36,6 +35,7 @@ QueryResult(
             job: Some(
                 "123456/QUSER/QZDASOINIT",
             ),
+            parameters: [],
         },
         data: [
             {
@@ -46,5 +46,7 @@ QueryResult(
         error: None,
         sqlcode: None,
         sqlstate: None,
+        parameter_count: None,
+        output_parms: [],
     },
 )

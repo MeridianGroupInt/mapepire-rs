@@ -481,12 +481,15 @@ mod tests {
                 column_count: 0,
                 columns: vec![],
                 job: None,
+                parameters: vec![],
             },
             data: vec![],
             execution_time: 0.0,
             error: None,
             sqlcode: None,
             sqlstate: None,
+            parameter_count: None,
+            output_parms: vec![],
         };
         let err = ErrorResponse {
             id: id.clone(),

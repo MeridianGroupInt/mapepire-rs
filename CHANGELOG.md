@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Page size, terse rows, and live leftover after 0.6.1 `execute_with` / `prepare`.
+Page size, terse rows, CALL/OUT parameters, and live leftover after 0.6.1
+`execute_with` / `prepare`.
 
 ### Changed
 
@@ -33,6 +34,12 @@ Page size, terse rows, and live leftover after 0.6.1 `execute_with` / `prepare`.
 - **`terse: Option<bool>`** on `Request::{Sql, PrepareSql,
   PrepareSqlExecute, Execute, Cl, Dove}` (`skip_serializing_if` none).
   `Job::cl` always omits it so job-log rows stay named objects.
+- **`CALL` / OUT parameters.** `QueryResult` keeps `parameter_count` and
+  `output_parms`; `QueryMetaData` keeps `parameters`
+  (`ParameterDetail` / `ParameterResult`, PROTOCOL.md / mapepire-js).
+  `Rows::{output_parms, parameter_count, parameter_metadata}` surface
+  them. Same `prepare_sql_execute` opcode; no CALL type and no QCMDEXC
+  helper. Empty `output_parms` / `parameters` omit on serialize.
 
 ### Fixed
 
