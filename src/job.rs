@@ -228,8 +228,9 @@ impl Job {
     /// Return the [`IdAllocator`] shared by this connection.
     ///
     /// Consumers pass this to [`crate::Query::execute`] /
-    /// [`crate::Query::execute_with`] / [`crate::Query::execute_batch`] so
-    /// that correlation ids are unique across all requests on the same `Job`.
+    /// [`crate::Query::execute_with`] / [`crate::Query::execute_batch`] /
+    /// [`crate::Query::execute_sets`] so that correlation ids are unique
+    /// across all requests on the same `Job`.
     #[must_use]
     pub fn ids(&self) -> &IdAllocator {
         &self.inner.ids
@@ -499,6 +500,96 @@ impl Job {
             Response::Error(e) => Err(crate::job_helpers::server_error(e)),
             ref other => Err(crate::job_helpers::unexpected(other)),
         }
+    }
+
+    /// Execute every parameter set in **one** `prepare_sql_execute`.
+    ///
+    /// JS `addToBatch` / 2-D `parameters`. Two or more sets serialize
+    /// nested (`[[1,"a"],[2,"b"]]`). A single set still flattens (`[7]`,
+    /// same as [`Job::execute_with`]). [`crate::Query::execute_batch`]
+    /// stays sequential — this is the one-shot path.
+    ///
+    /// An empty outer list is [`Error::Protocol`]
+    /// ([`crate::ProtocolError::EmptyParameterSets`]) and is not sent.
+    /// Same [`ExecuteOptions`] `rows` / `terse` as [`Job::execute_with_opts`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::execute_with_opts`], plus [`Error::Protocol`] when `sets`
+    /// is empty.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, ExecuteOptions, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password(String::from("test") + "-only")
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let sets = vec![
+    ///     vec![serde_json::json!(1), serde_json::json!("a")],
+    ///     vec![serde_json::json!(2), serde_json::json!("b")],
+    /// ];
+    /// let rows = job
+    ///     .execute_sets(
+    ///         "INSERT INTO T VALUES(?,?)",
+    ///         &sets,
+    ///         ExecuteOptions::default(),
+    ///     )
+    ///     .await?;
+    /// assert_eq!(rows.update_count(), Some(2));
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip(self, sets, opts),
+            fields(
+                job_id = %self.inner.initial_job,
+                sql = %sql,
+                set_count = sets.len(),
+                rows = ?opts.rows,
+            )
+        )
+    )]
+    pub async fn execute_sets(
+        &self,
+        sql: &str,
+        sets: &[Vec<serde_json::Value>],
+        opts: ExecuteOptions,
+    ) -> crate::Result<crate::query::Rows> {
+        let parameters = crate::query::owned_parameter_sets(sets)?;
+        #[cfg(feature = "metrics")]
+        let start = std::time::Instant::now();
+        let page_size = opts.resolved_rows()?;
+        let terse = opts.terse_on_wire();
+        let id = self.inner.ids.next();
+        let request = Request::PrepareSqlExecute {
+            id: id.clone(),
+            sql: sql.to_owned(),
+            parameters: Some(parameters),
+            rows: Some(page_size),
+            terse,
+        };
+        let resp = self.send(request).await?;
+        let result = match resp {
+            Response::QueryResult(q) if q.id == id => Ok(crate::query::Rows::new(
+                q,
+                self.inner.handle.clone(),
+                page_size,
+            )),
+            Response::Error(e) => Err(crate::job_helpers::server_error(e)),
+            ref other => Err(crate::job_helpers::unexpected(other)),
+        };
+        #[cfg(feature = "metrics")]
+        record_execute_latency(start);
+        result
     }
 
     /// Prepare a SQL statement for repeated execution.

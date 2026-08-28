@@ -78,6 +78,21 @@ impl ExecuteOptions {
     }
 }
 
+/// Own a 2-D parameter batch for one `prepare_sql_execute`.
+///
+/// Rejects an empty outer list (invalid JSON batch). Does not flatten a
+/// 2-D input into one set; a single inner set still flattens on the wire
+/// via the serializer (`[7]`, not `[[7]]`).
+pub(crate) fn owned_parameter_sets(
+    sets: &[Vec<serde_json::Value>],
+) -> crate::Result<Vec<Vec<serde_json::Value>>> {
+    if sets.is_empty() {
+        Err(Error::from(ProtocolError::EmptyParameterSets))
+    } else {
+        Ok(sets.to_vec())
+    }
+}
+
 /// Internal state machine for [`Rows::stream`].
 ///
 /// Kept at module level so the closure in `unfold` doesn't define a struct
@@ -369,11 +384,13 @@ impl Query {
     /// Execute the prepared statement once per parameter set in `batches`.
     /// Returns one [`Rows`] per execution.
     ///
+    /// Sequential: N round-trips. For one `prepare_sql_execute` with 2-D
+    /// `parameters`, use [`Query::execute_sets`].
+    ///
     /// The first execution failure is returned as `Err`; results from
     /// previously-completed executions in this call are not returned
     /// (fail-fast). No transactional rollback is performed — use an explicit
-    /// SQL transaction if atomicity is required. A "best-effort all" mode may
-    /// be added in v0.3.
+    /// SQL transaction if atomicity is required.
     ///
     /// # Errors
     ///
@@ -410,6 +427,76 @@ impl Query {
             out.push(self.execute_with(ids, params).await?);
         }
         Ok(out)
+    }
+
+    /// Execute every parameter set in **one** `prepare_sql_execute`.
+    ///
+    /// JS `Query.addToBatch` / 2-D `parameters`. Two or more sets stay
+    /// nested (`[[1,"a"],[2,"b"]]`). A single set still flattens on the
+    /// wire (`[7]`). Does not use the `execute` opcode even when a server
+    /// handle exists.
+    ///
+    /// An empty outer list is [`Error::Protocol`]
+    /// ([`crate::ProtocolError::EmptyParameterSets`]) and is not sent.
+    ///
+    /// [`Query::execute_batch`] stays sequential (N round-trips, N
+    /// [`Rows`]). Do not use that for a one-shot batch.
+    ///
+    /// # Errors
+    ///
+    /// As [`Query::execute_with_opts`], plus [`Error::Protocol`] when
+    /// `sets` is empty.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mapepire::{DaemonServer, ExecuteOptions, Job, TlsConfig};
+    /// # async fn example() -> mapepire::Result<()> {
+    /// # let server = DaemonServer::builder()
+    /// #     .host("ibmi.example.com")
+    /// #     .user("MYUSER")
+    /// #     .password(String::from("test") + "-only")
+    /// #     .tls(TlsConfig::Verified)
+    /// #     .build()
+    /// #     .expect("missing required field");
+    /// let job = Job::connect(&server).await?;
+    /// let query = job.prepare("INSERT INTO T VALUES(?,?)").await?;
+    /// let sets = vec![
+    ///     vec![serde_json::json!(1), serde_json::json!("a")],
+    ///     vec![serde_json::json!(2), serde_json::json!("b")],
+    /// ];
+    /// let rows = query
+    ///     .execute_sets(job.ids(), &sets, ExecuteOptions::default())
+    ///     .await?;
+    /// drop(rows);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn execute_sets(
+        &self,
+        ids: &IdAllocator,
+        sets: &[Vec<serde_json::Value>],
+        opts: ExecuteOptions,
+    ) -> crate::Result<Rows> {
+        let parameters = owned_parameter_sets(sets)?;
+        let page_size = opts.resolved_rows()?;
+        let terse = opts.terse_on_wire();
+        let id = ids.next();
+        let request = Request::PrepareSqlExecute {
+            id: id.clone(),
+            sql: self.sql.clone(),
+            parameters: Some(parameters),
+            rows: Some(page_size),
+            terse,
+        };
+        let resp = self.handle.send(request).await?;
+        match resp {
+            Response::QueryResult(q) if q.id == id => {
+                Ok(Rows::new(q, self.handle.clone(), page_size))
+            }
+            Response::Error(e) => Err(crate::job_helpers::server_error(e)),
+            ref other => Err(crate::job_helpers::unexpected(other)),
+        }
     }
 }
 
@@ -1242,5 +1329,25 @@ mod tests {
             .terse_on_wire(),
             Some(true)
         );
+    }
+
+    #[test]
+    fn test_owned_parameter_sets_rejects_empty_outer() {
+        let err = owned_parameter_sets(&[]).expect_err("empty outer");
+        assert!(matches!(
+            err,
+            Error::Protocol(ProtocolError::EmptyParameterSets)
+        ));
+    }
+
+    #[test]
+    fn test_owned_parameter_sets_keeps_two_sets() {
+        let sets = vec![
+            vec![serde_json::json!(1), serde_json::json!("a")],
+            vec![serde_json::json!(2), serde_json::json!("b")],
+        ];
+        let owned = owned_parameter_sets(&sets).expect("non-empty");
+        assert_eq!(owned.len(), 2);
+        assert_eq!(owned[0], vec![serde_json::json!(1), serde_json::json!("a")]);
     }
 }

@@ -99,6 +99,12 @@ pub enum ProtocolError {
     /// name cells. Decoding must not panic; [`crate::Row::get`] needs names.
     #[error("terse row data requires metadata.columns")]
     TerseRowsWithoutColumns,
+
+    /// [`crate::Job::execute_sets`] / [`crate::Query::execute_sets`] was
+    /// called with an empty outer list. The daemon's `parameters` array
+    /// would be `[]`, which is not a valid batch of sets.
+    #[error("parameter sets must be non-empty")]
+    EmptyParameterSets,
 }
 
 /// Failures while decoding a row into a Rust type.
