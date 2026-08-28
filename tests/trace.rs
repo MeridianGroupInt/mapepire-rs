@@ -1,8 +1,8 @@
-//! OSS-6: `setconfig` dest is `FILE` | `IN_MEM`; `TraceLevel::All` is `ON`.
+//! OSS-6 dest tokens + OSS-9 live `gettracedata`.
 //!
 //! Live Jetty rejects `tracedest: ""` (`No enum constant Tracer.Dest`).
-//! `Job::set_trace(level)` defaults dest to `IN_MEM`. `fetch_trace` opcode
-//! is unchanged.
+//! `Job::set_trace(level)` defaults dest to `IN_MEM`. Live `gettracedata`
+//! is untagged `{id, success, tracedata}` — not Pong.
 
 #[cfg(feature = "rustls-tls")]
 mod common;
@@ -106,4 +106,29 @@ async fn test_set_trace_config_file() {
         other => panic!("expected SetConfig, got {other:?}"),
     }
     assert_setconfig_json(&req, "ERRORS", "FILE");
+}
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_fetch_trace_untagged_tracedata_hello() {
+    let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;
+    let trace = job.fetch_trace().await.expect("fetch_trace");
+    assert_eq!(trace, "hello");
+}
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_fetch_trace_omitted_tracedata_remaps_empty() {
+    let job = common::connect_to_mock(common::MockBehavior::GetTraceAsPong).await;
+    let trace = job.fetch_trace().await.expect("fetch_trace remap");
+    assert_eq!(trace, "");
+}
+
+#[cfg(feature = "rustls-tls")]
+#[tokio::test]
+async fn test_ping_untagged_without_tracedata_stays_pong() {
+    let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;
+    job.ping().await.expect("ping");
+    let trace = job.fetch_trace().await.expect("fetch_trace after ping");
+    assert_eq!(trace, "hello");
 }

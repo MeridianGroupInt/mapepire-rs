@@ -542,6 +542,19 @@ fn snapshot_decode_live_pong() {
 }
 
 #[test]
+fn snapshot_decode_live_gettracedata() {
+    let json = serde_json::json!({
+        "id": "t1",
+        "success": true,
+        "tracedata": "+++ trace start +++",
+        "jtopentracedata": "",
+        "execution_time": 0
+    });
+    let r: Response = serde_json::from_value(json).unwrap();
+    insta::assert_debug_snapshot!(r);
+}
+
+#[test]
 fn snapshot_decode_live_setconfig() {
     // Live `setconfig` success is untagged `{id, success, tracedest,
     // tracelevel}` (PROTOCOL.md §13). Decode is Pong; dispatcher remaps

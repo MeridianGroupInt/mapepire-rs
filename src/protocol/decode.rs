@@ -103,9 +103,26 @@ pub(crate) fn decode_value(value: Value) -> Result<Response, String> {
         });
     }
 
+    // Live gettracedata: `{id, success, tracedata, jtopentracedata?}`.
+    // Either key (including `""` / `null`) is enough — do not drop the
+    // buffer by classifying as Pong. Ping `{id, success}` with neither
+    // key stays Pong.
+    if obj.contains_key("tracedata") || obj.contains_key("jtopentracedata") {
+        let id = obj
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        return Ok(Response::TraceData {
+            id,
+            success: success.unwrap_or(true),
+            tracedata: json_string_or_empty(obj.get("tracedata")),
+        });
+    }
+
     // Live ping (and other acks) is `{id, success:true}` with no discriminant.
-    // Dispatcher remaps this to SqlClosed/ConfigSet/Exited when the outstanding
-    // request is not ping.
+    // Dispatcher remaps this to SqlClosed/ConfigSet/Exited/TraceData when the
+    // outstanding request is not ping.
     if success == Some(true) {
         let id = obj
             .get("id")
@@ -219,6 +236,14 @@ fn payload<T: DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(strip_type(value)).map_err(|e| e.to_string())
 }
 
+/// `tracedata` / similar: missing, JSON null, or non-string → empty.
+fn json_string_or_empty(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(s)) => s.clone(),
+        _ => String::new(),
+    }
+}
+
 fn strip_type(mut value: Value) -> Value {
     if let Some(obj) = value.as_object_mut() {
         obj.remove("type");
@@ -279,7 +304,17 @@ struct DbJobBody {
 struct TraceDataBody {
     id: String,
     success: bool,
+    /// Live / tagged frames may omit the field, send `""`, or send JSON
+    /// `null`. Extra `jtopentracedata` is ignored (unknown-field default).
+    #[serde(default, deserialize_with = "deserialize_null_as_empty")]
     tracedata: String,
+}
+
+fn deserialize_null_as_empty<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Deserialize)]
@@ -507,6 +542,71 @@ mod tests {
         let json = r#"{"id":"p1","success":true}"#;
         let r: Response = serde_json::from_str(json).unwrap();
         assert!(matches!(r, Response::Pong { id } if id == "p1"));
+    }
+
+    #[test]
+    fn test_decode_live_gettracedata_keeps_tracedata() {
+        let json = r#"{"id":"t1","success":true,"tracedata":"hello","execution_time":0}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            r,
+            Response::TraceData {
+                id,
+                success: true,
+                tracedata,
+            } if id == "t1" && tracedata == "hello"
+        ));
+    }
+
+    #[test]
+    fn test_decode_live_gettracedata_empty_or_null_tracedata() {
+        let empty = r#"{"id":"t1","success":true,"tracedata":""}"#;
+        let r: Response = serde_json::from_str(empty).unwrap();
+        assert!(matches!(
+            r,
+            Response::TraceData {
+                tracedata,
+                ..
+            } if tracedata.is_empty()
+        ));
+
+        let null = r#"{"id":"t1","success":true,"tracedata":null}"#;
+        let r: Response = serde_json::from_str(null).unwrap();
+        assert!(matches!(
+            r,
+            Response::TraceData {
+                tracedata,
+                ..
+            } if tracedata.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_decode_live_gettracedata_jtopentracedata_does_not_fail() {
+        let json = r#"{"id":"t1","success":true,"tracedata":"buf","jtopentracedata":"jt"}"#;
+        let r: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            r,
+            Response::TraceData {
+                tracedata,
+                ..
+            } if tracedata == "buf"
+        ));
+
+        let only_jt = r#"{"id":"t1","success":true,"jtopentracedata":""}"#;
+        let r: Response = serde_json::from_str(only_jt).unwrap();
+        assert!(matches!(
+            r,
+            Response::TraceData {
+                id,
+                tracedata,
+                ..
+            } if id == "t1" && tracedata.is_empty()
+        ));
+
+        let jt_null = r#"{"id":"t1","success":true,"jtopentracedata":null}"#;
+        let r: Response = serde_json::from_str(jt_null).unwrap();
+        assert!(matches!(r, Response::TraceData { .. }));
     }
 
     #[test]
