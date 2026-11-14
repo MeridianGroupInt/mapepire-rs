@@ -34,10 +34,14 @@ regressions are treated as **P0**:
 - **Wire-protocol boundary:** `Request::Connect` does **not** carry
   credentials. Live daemon authentication is HTTP Basic on the WebSocket
   upgrade. `Password::expose() -> &str` is used to build the
-  `Authorization: Basic` header. The `user:pass` concatenation is a
-  `Zeroizing<String>` and is dropped after Base64 encoding. The header
-  value is not logged. The password is not on the query string and is
-  not in connect JSON. The `Password` itself remains zeroize-on-drop.
+  `Authorization: Basic` header. The `user:pass` concatenation, the
+  intermediate Base64 string, and the `Basic …` header buffer are all
+  `Zeroizing<String>` values wiped on drop, and the HTTP `HeaderValue` is
+  marked `sensitive` so `http::Request` `Debug` output redacts it. Do not
+  enable `tungstenite=trace` in production log filters (upstream
+  `tungstenite` logs raw handshake wire bytes at `TRACE`). The password is
+  not on the query string and is not in connect JSON. The `Password` itself
+  remains zeroize-on-drop.
 - TLS is mandatory. There is no plaintext path to the daemon. The
   `TlsConfig::Insecure` variant must be opted into via the `insecure-tls`
   Cargo feature at compile time and emits a runtime warning when used.
@@ -45,11 +49,15 @@ regressions are treated as **P0**:
   name). TCP uses `connect_address` when set. Using the tunnel IP as
   `host` without a matching leaf pin fails closed.
 - Default TLS verification uses webpki roots (`TlsConfig::Verified`) and
-  never skips name checks. On rustls, `TlsConfig::Ca` treats an exact
-  leaf-DER match as a pin (SAN skipped); a non-matching leaf still uses
-  `WebPkiServerVerifier` with name checks. native-tls is unchanged
-  (OpenSSL CN fallback). `cargo deny check` enforces the supply-chain
-  policy on every PR.
+  never skips name checks. On rustls (`rustls-tls` / `rustls-ring` /
+  `rustls-aws-lc-rs`), `TlsConfig::Ca` treats an exact leaf-DER match as a
+  pin (SAN skipped); a non-matching leaf still uses
+  `WebPkiServerVerifier` with name checks. `ClientConfig` and
+  `WebPkiServerVerifier` bind an explicit `CryptoProvider` (honoring any
+  process-wide default installed by the application, or selecting
+  `aws-lc-rs` / `ring` per Cargo feature without mutating global state).
+  native-tls is unchanged (OpenSSL CN fallback). `cargo deny check`
+  enforces the supply-chain policy on every PR.
 - `IdAllocator` produces collision-free correlation ids across `Job`
   instances. Modifying its construction requires a regression test.
 - Parameter logging defaults to `ParameterLogging::None` and never logs

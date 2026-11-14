@@ -3,17 +3,17 @@
 //! `execute` / `execute_with`, which resolve to inherent methods and leave
 //! the trait impls and opts wrappers at 0% patch coverage.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::{ExecuteOptions, Executor};
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use serde_json::json;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn page() -> mapepire::QueryResult {
     use mapepire::{Column, QueryMetaData, QueryResult};
     use serde_json::{Map, Value};
@@ -50,7 +50,7 @@ fn page() -> mapepire::QueryResult {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn opts_ten() -> ExecuteOptions {
     ExecuteOptions {
         rows: Some(10),
@@ -59,7 +59,7 @@ fn opts_ten() -> ExecuteOptions {
 }
 
 /// Drive `execute_opts` through the trait (not `Job::execute_opts`).
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 async fn trait_execute_opts<E: Executor>(exe: &E, sql: &str) -> mapepire::Rows {
     exe.execute_opts(sql, opts_ten())
         .await
@@ -67,7 +67,7 @@ async fn trait_execute_opts<E: Executor>(exe: &E, sql: &str) -> mapepire::Rows {
 }
 
 /// Drive `execute_with_opts` through `&dyn Executor`.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 async fn dyn_execute_with_opts(
     exe: &dyn Executor,
     sql: &str,
@@ -78,7 +78,7 @@ async fn dyn_execute_with_opts(
         .expect("dyn Executor::execute_with_opts")
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_job_executor_opts_and_execute_with_opts() {
     use mapepire::protocol::Request;
@@ -117,7 +117,7 @@ async fn test_job_executor_opts_and_execute_with_opts() {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_pool_and_reserved_execute_opts() {
     use common::spawn_mock_pool;
@@ -161,7 +161,7 @@ async fn test_pool_and_reserved_execute_opts() {
 
 /// Pool `default_page_size` is the wire `rows` when opts omit it;
 /// `execute_opts(rows: Some(10))` still sends 10.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_pool_default_page_size_on_execute() {
     use common::spawn_mock_pool_with_recorder;

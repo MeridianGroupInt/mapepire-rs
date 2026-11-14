@@ -136,6 +136,8 @@ jobs:
         run: cargo test --all-features
       - name: Tests with rustls-tls only (default backend, explicit)
         run: cargo test --no-default-features --features rustls-tls
+      - name: Tests with rustls-aws-lc-rs only (aws-lc-rs provider)
+        run: cargo test --no-default-features --features rustls-aws-lc-rs
       - name: Tests with native-tls only (non-default backend)
         run: cargo test --no-default-features --features native-tls
       - name: Verify compile_error guard fires on missing TLS backend

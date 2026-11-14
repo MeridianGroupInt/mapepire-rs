@@ -14,12 +14,12 @@
 //! fire-and-forget the close, so the assertion site sleeps briefly to let
 //! the spawned task transit the wire before reading the recorder.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::protocol::{QueryResult, Request};
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
 
 /// Build a `QueryResult` page suitable for the drop-rows tests.
@@ -28,7 +28,7 @@ use pretty_assertions::assert_eq;
 /// follow), `is_done` signals that no further pages exist. `data` is a
 /// single dummy row so the stream-mid-iteration test can pull one row
 /// before dropping.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn page(cont_id: Option<&str>, is_done: bool) -> QueryResult {
     use mapepire::{Column, QueryMetaData};
     use serde_json::{Map, Value, json};
@@ -71,7 +71,7 @@ fn page(cont_id: Option<&str>, is_done: bool) -> QueryResult {
 /// inside `Drop`; the test thread reaches the assertion before that task
 /// has serialized + flushed its frame on most runs. Polling under a budget
 /// keeps the test fast in the common case and tolerant of scheduler jitter.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 async fn wait_for(
     recorder: &common::RequestRecorder,
     label: &str,
@@ -97,7 +97,7 @@ async fn wait_for(
 
 /// Helper: count how many `SqlClose` requests the recorder has observed
 /// for `cont_id`.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn count_sqlclose(observed: &[Request], cont_id: &str) -> usize {
     observed
         .iter()
@@ -106,7 +106,7 @@ fn count_sqlclose(observed: &[Request], cont_id: &str) -> usize {
 }
 
 /// Opening execute id — PROTOCOL.md / mapepire-js cursor handle.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn opening_sql_id(observed: &[Request]) -> String {
     observed
         .iter()
@@ -121,7 +121,7 @@ fn opening_sql_id(observed: &[Request]) -> String {
 
 /// Dropping a `Rows` that was never streamed (cursor open) must fire a
 /// best-effort `SqlClose` for the server-side cursor.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_drop_rows_without_streaming_releases_cursor() {
     let (job, recorder) = common::connect_to_mock_with_recorder(vec![page(None, false)]).await;
@@ -147,7 +147,7 @@ async fn test_drop_rows_without_streaming_releases_cursor() {
 /// Dropping the stream returned by `Rows::stream` mid-iteration (after
 /// pulling one row from the first page, cursor still open) must fire a
 /// best-effort `SqlClose`. This is the canonical PRO-424 scenario.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_drop_stream_mid_iteration_releases_cursor() {
     use futures::{StreamExt, pin_mut};
@@ -188,7 +188,7 @@ async fn test_drop_stream_mid_iteration_releases_cursor() {
 /// Dropping a fully-delivered `Rows` (server set `is_done = true`,
 /// `cont_id = None`) must NOT issue a `SqlClose` — the server has
 /// already released the cursor.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_drop_rows_done_does_not_send_close() {
     use std::time::Duration;

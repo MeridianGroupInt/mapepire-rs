@@ -303,8 +303,15 @@ async fn run(
                         in_flight.fetch_add(1, Ordering::Relaxed);
                         // Entries for cancelled futures (caller dropped reply_rx) remain
                         // here until the matching response arrives and is silently discarded
-                        // or shutdown drains. Acceptable for v0.2; revisit if leak grows.
-                        pending.insert(id, Pending { reply, kind });
+                        // or shutdown drains. If a duplicate correlation id ever arrives,
+                        // keep `in_flight` aligned with `pending.len()` and fail the
+                        // displaced waiter explicitly.
+                        if let Some(displaced) = pending.insert(id, Pending { reply, kind }) {
+                            in_flight.fetch_sub(1, Ordering::Relaxed);
+                            let _ = displaced.reply.send(Err(Error::Internal(
+                                "duplicate in-flight request correlation id".into(),
+                            )));
+                        }
                     }
                     None => {
                         // All handles dropped; exit cleanly.

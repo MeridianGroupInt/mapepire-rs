@@ -33,13 +33,13 @@
 //! which is independent evidence that the reaped slot was replaced by a
 //! fresh TCP accept rather than reusing the previous connection.
 //!
-//! Per-item `#[cfg(feature = "rustls-tls")]` gating since the mock harness
-//! is rustls-only test infrastructure.
+//! Per-item `#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]` gating since the
+//! mock harness is rustls-only test infrastructure.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn idle_timeout_reaps_connections() {
     use std::time::Duration;

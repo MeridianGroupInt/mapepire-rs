@@ -12,14 +12,14 @@
 //!   surfaces [`mapepire::Error::PoolExhausted`] with the configured `acquire_timeout` carried in
 //!   the variant.
 //!
-//! Per-item `#[cfg(feature = "rustls-tls")]` gates `mod common;` and each
-//! `#[tokio::test]`: the mock harness is rustls-only test infrastructure
+//! Per-item `#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]` gates `mod
+//! common;` and each `#[tokio::test]`: the mock harness is rustls-only test infrastructure
 //! (see `tests/common/mod.rs`).
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pool_create_then_drain() {
     use common::spawn_mock_pool;
@@ -47,7 +47,7 @@ async fn pool_create_then_drain() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pool_recycle_pings_on_checkout() {
     use common::spawn_mock_pool;
@@ -84,7 +84,7 @@ async fn pool_recycle_pings_on_checkout() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pool_acquire_timeout_returns_pool_exhausted() {
     use std::time::Duration;
@@ -119,4 +119,45 @@ async fn pool_acquire_timeout_returns_pool_exhausted() {
         }
         other => panic!("expected PoolExhausted, got {other:?}"),
     }
+}
+
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pool_starting_size_opens_distinct_connections_and_validates_bounds() {
+    use common::spawn_pool_mock_and_server;
+
+    let (server_arc, mock) = spawn_pool_mock_and_server();
+
+    let bad = Box::pin(
+        mapepire::Pool::builder(std::sync::Arc::clone(&server_arc))
+            .max_size(2)
+            .starting_size(3)
+            .build(),
+    )
+    .await;
+    assert!(
+        matches!(bad, Err(mapepire::Error::Internal(_))),
+        "starting_size > max_size must fail closed at build()"
+    );
+
+    let pool = Box::pin(
+        mapepire::Pool::builder(server_arc)
+            .max_size(4)
+            .starting_size(3)
+            .build(),
+    )
+    .await
+    .expect("pool builds with starting_size=3");
+
+    let status = pool.status();
+    assert_eq!(status.size, 3, "starting_size(3) must open 3 connections");
+    assert_eq!(
+        status.available, 3,
+        "all 3 eager connections must return to the idle list"
+    );
+    assert_eq!(
+        mock.open_socket_count(),
+        3,
+        "mock must observe 3 distinct TCP connections"
+    );
 }

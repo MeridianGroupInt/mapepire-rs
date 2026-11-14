@@ -39,7 +39,7 @@ fuzz_target!(|input: Input<'_>| {
     // serde config), so skip NaN to keep the structural-equality
     // assertion meaningful.
     let execution_time = f64::from_bits(input.execution_time_bits);
-    if execution_time.is_nan() {
+    if !execution_time.is_finite() {
         return;
     }
 

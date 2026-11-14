@@ -167,6 +167,13 @@ impl PoolBuilder {
         let starting_size = self.starting_size;
         let idle_timeout = self.idle_timeout;
 
+        if starting_size > self.max_size {
+            return Err(crate::Error::Internal(format!(
+                "pool builder: starting_size ({starting_size}) exceeds max_size ({})",
+                self.max_size
+            )));
+        }
+
         // ONE registry Arc shared between Pool and JobManager — the manager
         // clones it on `create()` to register new Jobs, and the Pool reads
         // from it during the §7.3 routing scan (Task 24 / PRO-454).
@@ -195,14 +202,18 @@ impl PoolBuilder {
             .build()
             .map_err(|e| crate::Error::Internal(format!("pool builder: {e}")))?;
 
-        // Eagerly create starting_size connections. Each pool.get() returns an
-        // Object<JobManager>; dropping it returns the connection to the pool's
-        // idle list (deadpool handles the lifecycle).
+        // Eagerly create `starting_size` distinct connections. Hold every
+        // checked-out `Object<JobManager>` until the loop completes so
+        // deadpool opens `starting_size` separate sockets instead of
+        // recycling the first connection repeatedly.
+        let mut eager = Vec::with_capacity(starting_size);
         for _ in 0..starting_size {
-            let _ = Box::pin(inner.get())
+            let obj = Box::pin(inner.get())
                 .await
                 .map_err(|e| crate::Error::Internal(format!("starting_size eager open: {e}")))?;
+            eager.push(obj);
         }
+        drop(eager);
 
         // Spawn the idle-connection reaper if `idle_timeout` is set. The
         // returned `JoinHandle` is owned by an `Arc<ReaperGuard>` on `Pool`

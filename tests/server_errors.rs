@@ -5,13 +5,13 @@
 //! SQLSTATE classification predicates (from v0.1's PR #13) correctly
 //! identify the error class.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn server_error_response(sqlstate: &str, message: &str) -> mapepire::ErrorResponse {
     mapepire::ErrorResponse {
         id: "placeholder".into(),
@@ -23,7 +23,7 @@ fn server_error_response(sqlstate: &str, message: &str) -> mapepire::ErrorRespon
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 async fn assert_execute_returns_classified_error<F>(sqlstate: &str, predicate: F)
 where
     F: FnOnce(&mapepire::ServerError) -> bool,
@@ -53,7 +53,7 @@ where
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_constraint_violation_classified() {
     assert_execute_returns_classified_error(
@@ -63,13 +63,13 @@ async fn test_constraint_violation_classified() {
     .await;
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_authorization_classified() {
     assert_execute_returns_classified_error("42501", mapepire::ServerError::is_authorization).await;
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_transient_classified() {
     assert_execute_returns_classified_error("08001", mapepire::ServerError::is_transient).await;

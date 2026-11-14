@@ -3,19 +3,19 @@
 //! [`mapepire::Query::execute_batch`] stays sequential. Single-set
 //! [`mapepire::Job::execute_with`] still flattens `[7]`.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::protocol::Request;
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::{Error, ExecuteOptions, ProtocolError, QueryMetaData, QueryResult};
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use serde_json::json;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn dml_qr(count: i64) -> QueryResult {
     QueryResult {
         id: "placeholder".into(),
@@ -40,7 +40,7 @@ fn dml_qr(count: i64) -> QueryResult {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn last_prepare_sql_execute(recorder: &common::RequestRecorder) -> Request {
     let observed = recorder.lock().expect("recorder mutex").clone();
     let bound: Vec<&Request> = observed
@@ -51,7 +51,7 @@ fn last_prepare_sql_execute(recorder: &common::RequestRecorder) -> Request {
     bound[0].clone()
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_execute_sets_one_prepare_sql_execute_nested() {
     let (job, recorder) = common::connect_to_mock_with_recorder(vec![dml_qr(2)]).await;
@@ -89,7 +89,7 @@ async fn test_execute_sets_one_prepare_sql_execute_nested() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_execute_sets_one_set_still_flattens() {
     let (job, recorder) = common::connect_to_mock_with_recorder(vec![dml_qr(1)]).await;
@@ -116,7 +116,7 @@ async fn test_execute_sets_one_set_still_flattens() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_execute_sets_empty_outer_is_protocol_error() {
     let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;
@@ -130,7 +130,7 @@ async fn test_execute_sets_empty_outer_is_protocol_error() {
     ));
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_query_execute_sets_one_shot() {
     let (job, recorder) = common::connect_to_mock_with_recorder(vec![dml_qr(2)]).await;
@@ -155,7 +155,7 @@ async fn test_query_execute_sets_one_shot() {
 
 /// Live prepare ack has no `cont_id`; `execute_sets` then gets a `Pong`
 /// from [`common::MockBehavior::AcceptAndConnect`] (unexpected variant).
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_query_execute_sets_unexpected_is_protocol() {
     let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;

@@ -17,10 +17,10 @@
 //!
 //! Each subtest pins one helper; failures are scoped to one assertion.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawn_mock_pool_observes_multiple_connections() {
     use std::time::Instant;
@@ -89,7 +89,7 @@ async fn spawn_mock_pool_observes_multiple_connections() {
     drop(pool);
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pause_responses_delays_mock_replies() {
     use std::time::{Duration, Instant};

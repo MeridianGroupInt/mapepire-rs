@@ -4,17 +4,17 @@
 //! `Job::set_trace(level)` defaults dest to `IN_MEM`. Live `gettracedata`
 //! is untagged `{id, success, tracedata}` — not Pong.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::protocol::Request;
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::{TraceDest, TraceLevel};
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn last_setconfig(recorder: &common::RequestRecorder) -> Request {
     let observed = recorder.lock().expect("recorder mutex").clone();
     let configs: Vec<&Request> = observed
@@ -25,7 +25,7 @@ fn last_setconfig(recorder: &common::RequestRecorder) -> Request {
     configs[0].clone()
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn assert_setconfig_json(req: &Request, level: &str, dest: &str) {
     let json = serde_json::to_string(req).expect("serialize SetConfig");
     assert!(
@@ -46,7 +46,7 @@ fn assert_setconfig_json(req: &Request, level: &str, dest: &str) {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_set_trace_sends_in_mem_never_empty_dest() {
     let (job, recorder) = common::connect_to_mock_with_recorder(vec![]).await;
@@ -66,7 +66,7 @@ async fn test_set_trace_sends_in_mem_never_empty_dest() {
     assert_setconfig_json(&req, "OFF", "IN_MEM");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_set_trace_all_sends_on_not_all() {
     let (job, recorder) = common::connect_to_mock_with_recorder(vec![]).await;
@@ -86,7 +86,7 @@ async fn test_set_trace_all_sends_on_not_all() {
     assert_setconfig_json(&req, "ON", "IN_MEM");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_set_trace_config_file() {
     let (job, recorder) = common::connect_to_mock_with_recorder(vec![]).await;
@@ -108,7 +108,7 @@ async fn test_set_trace_config_file() {
     assert_setconfig_json(&req, "ERRORS", "FILE");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_fetch_trace_untagged_tracedata_hello() {
     let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;
@@ -116,7 +116,7 @@ async fn test_fetch_trace_untagged_tracedata_hello() {
     assert_eq!(trace, "hello");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_fetch_trace_omitted_tracedata_remaps_empty() {
     let job = common::connect_to_mock(common::MockBehavior::GetTraceAsPong).await;
@@ -124,7 +124,7 @@ async fn test_fetch_trace_omitted_tracedata_remaps_empty() {
     assert_eq!(trace, "");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_ping_untagged_without_tracedata_stays_pong() {
     let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;

@@ -57,10 +57,16 @@
 //! (the connect frame often omits it). Call [`crate::Job::server_version`]
 //! (`getversion`) for the version string.
 
-#[cfg(not(any(feature = "rustls-tls", feature = "native-tls")))]
+#[cfg(not(any(
+    feature = "rustls-tls",
+    feature = "rustls-ring",
+    feature = "rustls-aws-lc-rs",
+    feature = "native-tls",
+)))]
 compile_error!(
-    "mapepire requires one of: feature `rustls-tls` (default) or feature `native-tls`. \
-     Disable default features only when explicitly enabling another TLS backend."
+    "mapepire requires one of: feature `rustls-tls` (default), `rustls-ring`, \
+     `rustls-aws-lc-rs`, or `native-tls`. Disable default features only when \
+     explicitly enabling another TLS backend."
 );
 
 pub(crate) mod config;

@@ -1,55 +1,80 @@
 //! Helpers for encoding/decoding wire frames and allocating request ids.
 
 use std::fmt::Write as _;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A correlation id assigned to one request/response pair.
 pub type RequestId = String;
 
-/// Allocates monotonically increasing request ids with a per-process random
-/// prefix. The prefix prevents collisions across separate `Job` instances and
-/// after the counter wraps.
+/// Process-wide monotonic instance counter mixed into every [`IdAllocator`]
+/// prefix so two allocators constructed in the same clock tick (for example
+/// back-to-back `Job`s or concurrent `Rows::stream` cursors sharing one
+/// dispatcher) never share a prefix.
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
+
+/// Allocates monotonically increasing request ids with a unique per-instance
+/// hex prefix. The prefix prevents collisions across separate `Job` /
+/// `Rows::stream` instances, and epoch rollover prevents collisions after
+/// `u64` counter wraparound.
 #[derive(Debug)]
 pub struct IdAllocator {
     prefix: String,
-    counter: AtomicU64,
+    state: Mutex<(u64, u64)>,
 }
 
 impl IdAllocator {
-    /// Construct an allocator with a fresh random prefix.
+    /// Construct an allocator with a fresh collision-free prefix.
     #[must_use]
     pub fn new() -> Self {
-        let mut bytes = [0u8; 6];
-        // Use std for entropy; v0.1 has no `rand` dep, and we only need a
-        // collision-avoidance tag (not cryptographic randomness).
+        Self::with_initial_counter(0)
+    }
+
+    fn with_initial_counter(initial: u64) -> Self {
+        let mut bytes = [0u8; 12];
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.subsec_nanos());
         let pid = std::process::id();
-        // Mix: 4 bytes nanos + 2 bytes pid → 6 bytes hex prefix.
-        // NOTE: prefix entropy is ~32 bits in practice (pid is constant
-        // within a process). Two `IdAllocator`s constructed in the same
-        // nanosecond would share a prefix; uniqueness from that point
-        // depends on the per-allocator counter. v0.1 has one `IdAllocator`
-        // per `Job`, so the only collision risk is two `Job`s constructed
-        // back-to-back in the same nanosecond — covered by the
-        // `two_allocators_have_distinct_prefixes` regression test.
-        bytes[..4].copy_from_slice(&nanos.to_le_bytes());
-        bytes[4..6].copy_from_slice(&pid.to_le_bytes()[..2]);
-        let prefix = bytes.iter().fold(String::with_capacity(12), |mut s, b| {
-            write!(s, "{b:02x}").expect("write to String is infallible");
-            s
-        });
+        let instance = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+        // Mix 4 bytes (nanos XOR rotated pid) + 8 verbatim bytes of the
+        // process-wide monotonic `instance` counter → 12 bytes (24 hex chars).
+        // Including all 64 bits of `instance` guarantees distinct prefixes
+        // across 2^64 allocators in the same process even when the system
+        // clock does not advance between calls.
+        let salt = nanos ^ pid.rotate_left(16);
+        bytes[..4].copy_from_slice(&salt.to_le_bytes());
+        bytes[4..12].copy_from_slice(&instance.to_le_bytes());
+        let mut prefix = String::with_capacity(24);
+        for b in bytes {
+            let _ = write!(prefix, "{b:02x}");
+        }
         Self {
             prefix,
-            counter: AtomicU64::new(0),
+            state: Mutex::new((0, initial)),
         }
     }
 
-    /// Issue the next id. Format: `<6-hex-prefix>-<u64>`.
+    /// Issue the next id. Format: `<hex-prefix>-<u64>`.
     pub fn next(&self) -> RequestId {
-        let n = self.counter.fetch_add(1, Ordering::Relaxed);
-        format!("{}-{n}", self.prefix)
+        let (e, c) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (epoch, counter) = *state;
+            if counter == u64::MAX {
+                *state = (epoch.wrapping_add(1), 0);
+            } else {
+                *state = (epoch, counter + 1);
+            }
+            (epoch, counter)
+        };
+        if e == 0 {
+            format!("{}-{c}", self.prefix)
+        } else {
+            format!("{}{e:x}-{c}", self.prefix)
+        }
     }
 }
 
@@ -77,16 +102,30 @@ mod tests {
 
     #[test]
     fn two_allocators_have_distinct_prefixes() {
-        // Best-effort assertion: with two allocators constructed back-to-back
-        // we *expect* different prefixes thanks to nanosecond resolution.
-        let a = IdAllocator::new();
-        std::thread::sleep(std::time::Duration::from_micros(1));
-        let b = IdAllocator::new();
-        assert_ne!(
-            a.next().split_once('-').unwrap().0,
-            b.next().split_once('-').unwrap().0,
-            "prefixes collided — flaky on systems without nanosecond resolution"
-        );
+        // Guaranteed deterministic without sleeping: `NEXT_INSTANCE` separates
+        // allocators constructed in the exact same clock tick.
+        let mut prefixes = HashSet::with_capacity(1_024);
+        for _ in 0..1_024 {
+            let alloc = IdAllocator::new();
+            let id = alloc.next();
+            let prefix = id.split_once('-').unwrap().0.to_owned();
+            assert!(prefixes.insert(prefix), "allocator prefix collided");
+        }
+    }
+
+    #[test]
+    fn ids_remain_unique_across_counter_wraparound() {
+        let alloc = IdAllocator::with_initial_counter(u64::MAX - 4);
+        let early_zero = format!("{}-0", alloc.prefix);
+        let mut seen = HashSet::new();
+        seen.insert(early_zero);
+        for _ in 0..10 {
+            let id = alloc.next();
+            assert!(
+                seen.insert(id.clone()),
+                "id collided across counter wraparound: {id}"
+            );
+        }
     }
 
     #[test]
@@ -97,5 +136,48 @@ mod tests {
         let an: u64 = a.split_once('-').unwrap().1.parse().unwrap();
         let bn: u64 = b.split_once('-').unwrap().1.parse().unwrap();
         assert_eq!(bn, an + 1);
+    }
+
+    #[test]
+    fn test_next_concurrent_counter_wraparound_has_no_duplicates() {
+        let alloc = IdAllocator::with_initial_counter(u64::MAX - 64);
+        let barrier = std::sync::Barrier::new(8);
+        let all_ids: Vec<RequestId> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        barrier.wait();
+                        (0..32).map(|_| alloc.next()).collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap())
+                .collect()
+        });
+
+        let seen: HashSet<RequestId> = all_ids.into_iter().collect();
+        pretty_assertions::assert_eq!(seen.len(), 256);
+
+        let epoch0_prefix = alloc.prefix.as_str();
+        let epoch1_prefix = format!("{}1", alloc.prefix);
+        let mut epoch0_count = 0usize;
+        let mut epoch1_count = 0usize;
+        for id in &seen {
+            let (pfx, counter_str) = id.split_once('-').unwrap();
+            let c: u64 = counter_str.parse().unwrap();
+            if pfx == epoch0_prefix {
+                assert!(c >= u64::MAX - 64, "unexpected epoch-0 counter value: {c}");
+                epoch0_count += 1;
+            } else if pfx == epoch1_prefix {
+                assert!(c < 191, "unexpected epoch-1 counter value: {c}");
+                epoch1_count += 1;
+            } else {
+                panic!("unexpected id prefix in {id}");
+            }
+        }
+        pretty_assertions::assert_eq!(epoch0_count, 65);
+        pretty_assertions::assert_eq!(epoch1_count, 191);
     }
 }

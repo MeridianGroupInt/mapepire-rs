@@ -1,12 +1,12 @@
 //! Routing tests for the §7.3 least-busy-job scan.
 //!
-//! Per-item `#[cfg(feature = "rustls-tls")]` gating since the mock harness
-//! is rustls-only test infrastructure.
+//! Per-item `#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]` gating since the
+//! mock harness is rustls-only test infrastructure.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn idle_job_preferred_over_busy() {
     use common::spawn_mock_pool;
@@ -89,7 +89,7 @@ async fn idle_job_preferred_over_busy() {
     drop(busy_reserved);
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn saturation_falls_back_to_fair_queue() {
     use std::time::Duration;
@@ -140,4 +140,70 @@ async fn saturation_falls_back_to_fair_queue() {
     for h in handles {
         let _ = h.await;
     }
+}
+
+/// Regression test: when a `Reserved` connection has an active request in
+/// flight (`in_flight == 1`), neither `peek_idle` nor `least_busy` may route
+/// unrelated `Pool::execute` calls onto that connection. Previously,
+/// `Reserved` stored `u32::MAX` in `in_flight` and the first in-flight request
+/// wrapped `u32::MAX.wrapping_add(1)` to `0`, tricking the router into sending
+/// one-shot queries onto an active transactional connection.
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reserved_with_inflight_query_is_never_routed() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use common::spawn_pool_mock_and_server;
+
+    let (server_arc, mock) = spawn_pool_mock_and_server();
+    let pool = Box::pin(
+        mapepire::Pool::builder(server_arc)
+            .max_size(1)
+            .acquire_timeout(Some(Duration::from_millis(80)))
+            .build(),
+    )
+    .await
+    .expect("pool builds");
+
+    let conn = Arc::new(Box::pin(pool.acquire()).await.expect("acquire"));
+    let pause = mock.pause_responses(Duration::from_millis(400));
+
+    let conn_task = {
+        let conn = Arc::clone(&conn);
+        tokio::spawn(async move {
+            Box::pin(conn.execute("SELECT TX_IN_FLIGHT FROM SYSIBM.SYSDUMMY1"))
+                .await
+                .expect("tx query succeeds once unpaused");
+        })
+    };
+
+    assert!(
+        mock.wait_for_sql("TX_IN_FLIGHT", Duration::from_secs(2))
+            .await,
+        "TX_IN_FLIGHT should reach the mock while paused"
+    );
+    assert_eq!(
+        conn.in_flight(),
+        1,
+        "Reserved must report accurate in_flight == 1 while 1 request is active"
+    );
+
+    // The single pool slot is exclusively held by `conn`; `pool.execute` must
+    // skip `conn` in both routing tiers, block on fair-queue checkout, and
+    // time out with `PoolExhausted` without ever sending `INTRUDER` on `conn`.
+    let err = Box::pin(pool.execute("SELECT INTRUDER FROM SYSIBM.SYSDUMMY1"))
+        .await
+        .expect_err("must not route onto active Reserved connection");
+    assert!(
+        matches!(err, mapepire::Error::PoolExhausted { .. }),
+        "expected PoolExhausted, got {err:?}"
+    );
+    assert!(
+        mock.last_socket_for_sql("INTRUDER").is_none(),
+        "INTRUDER SQL must never reach the Reserved socket"
+    );
+
+    drop(pause);
+    conn_task.await.expect("join tx task");
 }

@@ -19,10 +19,10 @@
 //! Under the v0.3 contract, the second call would have triggered a
 //! timed-out recycle ping → fresh checkout → 2 sockets.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fast_path_does_not_thrash_under_slow_response() {
     use std::time::Duration;

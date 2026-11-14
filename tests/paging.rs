@@ -4,10 +4,10 @@
 //! `cont_id`, omitted/`false` `is_done`) where `sqlmore.cont_id` is the
 //! opening request id.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
 
 /// Build a single `QueryResult` page for the paging test.
@@ -15,7 +15,7 @@ use pretty_assertions::assert_eq;
 /// `start` is the first row value, `count` is the number of rows on this page,
 /// `cont_id` is the server-side cursor handle (present if more pages follow),
 /// and `is_done` signals that no further pages exist.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn page(start: i64, count: i64, cont_id: Option<&str>, is_done: bool) -> mapepire::QueryResult {
     use mapepire::{Column, QueryMetaData, QueryResult};
     use serde_json::{Map, Value, json};
@@ -66,7 +66,7 @@ fn page(start: i64, count: i64, cont_id: Option<&str>, is_done: bool) -> mapepir
 /// - Two sqlmores → the mock's iterator exhausts and triggers its `expect("mock Pages ran out of
 ///   pre-baked pages")` panic → test failure.
 /// - Exactly one sqlmore → 100 rows total, which is what we assert.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_paging_across_two_pages() {
     use futures::{StreamExt, pin_mut};
@@ -113,7 +113,7 @@ async fn test_paging_across_two_pages() {
 }
 
 /// Opening `execute_opts(rows: 10)` must be reused on the follow-up `sqlmore`.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_sqlmore_uses_opening_page_size() {
     use mapepire::ExecuteOptions;
@@ -157,7 +157,7 @@ async fn test_sqlmore_uses_opening_page_size() {
 }
 
 /// Opening execute id from the recorder (PROTOCOL cursor handle).
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn opening_sql_id(observed: &[mapepire::protocol::Request]) -> String {
     use mapepire::protocol::Request;
     observed
@@ -173,7 +173,7 @@ fn opening_sql_id(observed: &[mapepire::protocol::Request]) -> String {
 
 /// Live dialect: first page 100 rows, no `cont_id`, `is_done` omitted/false.
 /// Stream must `sqlmore` with `cont_id` = opening request id and collect 101.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_stream_sqlmore_without_cont_id_uses_request_id() {
     use mapepire::ExecuteOptions;
@@ -220,7 +220,7 @@ async fn test_stream_sqlmore_without_cont_id_uses_request_id() {
 }
 
 /// Live dialect: two pages of 100 with no `cont_id` collect 200.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_stream_two_pages_without_cont_id_collects_200() {
     use mapepire::ExecuteOptions;
@@ -260,7 +260,7 @@ async fn test_stream_two_pages_without_cont_id_collects_200() {
 }
 
 /// `is_done: true` after one row (SYSDUMMY1) must not issue `sqlmore`.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_stream_skips_sqlmore_when_is_done_after_one_row() {
     use mapepire::protocol::Request;
@@ -293,7 +293,7 @@ async fn test_stream_skips_sqlmore_when_is_done_after_one_row() {
 }
 
 /// `is_done: true` after a full 3-row page (FETCH NEXT 3) must not `sqlmore`.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_stream_skips_sqlmore_when_is_done_after_full_small_page() {
     use mapepire::ExecuteOptions;
@@ -325,7 +325,7 @@ async fn test_stream_skips_sqlmore_when_is_done_after_full_small_page() {
 }
 
 /// Empty follow-up page without `is_done` is `Error::Internal` (no infinite poll).
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_stream_empty_page_without_is_done_is_internal() {
     let pages = vec![page(0, 1, None, false), page(0, 0, None, false)];

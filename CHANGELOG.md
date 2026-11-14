@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`rustls-aws-lc-rs` and `rustls-ring` Cargo features.** Consumers can opt
+  into the `aws-lc-rs` `CryptoProvider` with `default-features = false,
+  features = ["rustls-aws-lc-rs"]` without pulling `ring` into the
+  dependency graph. `rustls-tls` remains the default feature and enables
+  `rustls-ring`. `ClientConfig` and `WebPkiServerVerifier` now bind an
+  explicit `CryptoProvider` (honoring `CryptoProvider::get_default()` when
+  the application installed a custom/FIPS provider, otherwise selecting
+  `aws-lc-rs` or `ring`) instead of mutating process-global state or
+  panicking when both providers are unified in Cargo's feature graph.
+
+### Fixed
+
+- **`Reserved` transaction isolation under active queries.** `Reserved`
+  previously stored `u32::MAX` in `JobInner::in_flight` as a routing-skip
+  sentinel; sending a single request on the reserved connection wrapped
+  `u32::MAX.wrapping_add(1)` to `0`, allowing `Pool::execute*` routing scans
+  (`peek_idle` and `least_busy`) to dispatch unrelated statements onto an
+  exclusively reserved transactional connection and returning `u32::MAX`
+  from `Job::in_flight()`. `JobInner` now tracks reservation with a
+  dedicated `AtomicBool` synchronized with the routing registry, keeping
+  `in_flight()` accurate at all times.
+- **`Reserved` `rollback_on_drop` race on connection reuse.** Dropping an
+  uncommitted `Reserved` with `.rollback_on_drop()` previously returned the
+  connection to the pool before the spawned `ROLLBACK` task executed on the
+  wire, allowing the next checkout or routed query to interleave ahead of
+  `ROLLBACK`. `Drop` now retains the `Object<JobManager>` checkout until
+  `ROLLBACK` succeeds, and evicts the connection from the pool if `ROLLBACK`
+  fails or no Tokio runtime is active.
+- **`Executor` trait on `Reserved` tracks transaction state.**
+  `Executor::execute` and `Executor::execute_with` on `Reserved` previously
+  delegated straight to `Job`, bypassing `TxState` tracking and leaving
+  `rollback_on_drop` unarmed after `Executor::execute("BEGIN")`. Both now
+  delegate through `Reserved::execute` / `Reserved::execute_with`.
+- **`PoolBuilder::starting_size` opens `N` distinct connections.** Eager
+  warm-up previously dropped each `Object` inside the loop, recycling one
+  socket `N` times instead of opening `N` sockets, and did not reject
+  `starting_size > max_size`.
+- **`IdAllocator` collision-freedom across same-tick instances and counter
+  wraparound.** Mixes a process-wide monotonic 64-bit instance counter into
+  every allocator prefix and rolls over an epoch tag at `u64::MAX`,
+  preventing correlation-id collisions across back-to-back `Job`s or
+  concurrent `Rows::stream` cursors even on coarse system clocks.
+- **IPv6 literal formatting and `native-tls` handshake errors.** Bare and
+  bracketed IPv6 hosts (`::1` / `[::1]`) are normalized across TCP
+  addresses, TLS SNI, `wss://` URIs, and HTTP `Host` headers; `native-tls`
+  handshake failures now map to `Error::Transport` consistently with
+  `rustls`.
+- **Poison-safe internal mutex handling.** Pool routing and `Reserved`
+  `tx_state` mutexes recover inner state on poison rather than panicking
+  (preventing a double-panic abort if `Reserved` drops during unwind).
+
+### Security
+
+- **Tighten patched dependency floors in `Cargo.toml`:** `rustls =
+  "0.23.46"` (RUSTSEC-2026-0285, RUSTSEC-2026-0346, RUSTSEC-2026-0347,
+  RUSTSEC-2026-0348, RUSTSEC-2026-0349), `webpki-roots = "1.0.12"`
+  (RUSTSEC-2026-0381), `tokio = "1.54.1"` (RUSTSEC-2026-0384,
+  RUSTSEC-2026-0386, RUSTSEC-2025-0023, RUSTSEC-2023-0005), `tracing =
+  "0.1.40"` (RUSTSEC-2023-0078), `tokio-rustls = "0.26.6"`,
+  `rustls-pki-types = "1.16.0"`, `native-tls = "0.2.18"`, and `zeroize =
+  "1.8"`. MSRV remains `1.88`.
+- **HTTP Basic upgrade credential hygiene.** Zeroize both the intermediate
+  Base64 buffer and the `Authorization: Basic …` string on drop, and mark
+  the `Authorization` `HeaderValue` sensitive so `http::Request` `Debug`
+  redacts it.
+- **CI checkout credential hardening.** Set `persist-credentials: false` on
+  the remaining `actions/checkout` steps in `audit-cron.yml`,
+  `fuzz-cron.yml`, and `sbom.yml`.
+
 ## [1.0.0-rc.1] — 2026-08-28
 
 API freeze candidate versus [crates.io](https://crates.io/crates/mapepire)

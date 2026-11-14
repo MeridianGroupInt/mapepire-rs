@@ -123,6 +123,11 @@ pub(crate) struct JobInner {
     /// the caller, and decrements once per drained pending entry on
     /// socket-close paths.
     pub(crate) in_flight: Arc<AtomicU32>,
+    /// Set to `true` while this `Job` is exclusively held by a
+    /// [`crate::Reserved`] handle. Read by the pool's routing registry so
+    /// neither `peek_idle` nor `least_busy` ever routes one-shot work onto a
+    /// transactional connection, even while requests are actively in flight.
+    pub(crate) reserved: std::sync::atomic::AtomicBool,
 }
 
 /// A single open connection to a Mapepire daemon.
@@ -197,6 +202,7 @@ impl Job {
                 version,
                 initial_job,
                 in_flight,
+                reserved: std::sync::atomic::AtomicBool::new(false),
             }),
             _dispatcher: dispatcher,
         })
@@ -251,6 +257,21 @@ impl Job {
         self.inner
             .in_flight
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether this `Job` is currently reserved by [`crate::Reserved`].
+    #[must_use]
+    pub(crate) fn is_reserved(&self) -> bool {
+        self.inner
+            .reserved
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Update the exclusive-reservation flag for pool routing exclusion.
+    pub(crate) fn set_reserved(&self, reserved: bool) {
+        self.inner
+            .reserved
+            .store(reserved, std::sync::atomic::Ordering::Release);
     }
 
     /// Execute a SQL statement and return the [`crate::Rows`] handle.

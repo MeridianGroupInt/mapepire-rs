@@ -4,17 +4,17 @@
 //! daemon returns `output_parms` and `metadata.parameters`; serde used to
 //! drop them. QCMDEXC as SQL is ordinary `Job::execute` — no helper.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::{ParameterDetail, ParameterResult, QueryMetaData, QueryResult};
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use serde_json::{Value, json};
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn integer_detail(name: &str, mode: &str) -> ParameterDetail {
     ParameterDetail {
         type_name: "INTEGER".into(),
@@ -25,7 +25,7 @@ fn integer_detail(name: &str, mode: &str) -> ParameterDetail {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn integer_result(index: u32, name: &str, value: Option<Value>) -> ParameterResult {
     ParameterResult {
         index,
@@ -40,7 +40,7 @@ fn integer_result(index: u32, name: &str, value: Option<Value>) -> ParameterResu
 
 /// JS `procedures.test.ts` integer contract: IN/INOUT/OUT `[6, 4, 0]`
 /// → output values `None` / `0` / `10`.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn call_query_result(id: &str) -> QueryResult {
     QueryResult {
         id: id.to_string(),
@@ -73,7 +73,7 @@ fn call_query_result(id: &str) -> QueryResult {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_execute_with_call_returns_output_parms() {
     use mapepire::protocol::Request;

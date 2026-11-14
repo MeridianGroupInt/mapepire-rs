@@ -28,7 +28,6 @@
 
 use std::ops::Deref;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
 
 use deadpool::managed::Object;
 
@@ -57,9 +56,9 @@ enum TxState {
 /// Exclusive single-connection handle. Drops back to the pool on `Drop`.
 ///
 /// Construct via [`crate::Pool::acquire`]. The held connection is marked
-/// with `in_flight = u32::MAX` (a sentinel) so the routing scan in v0.3
-/// §7.3 / Task 24 / PRO-454 treats it as "fully busy" and never picks it
-/// for one-shot work — preserving exclusive transactional access.
+/// with a dedicated `reserved` flag so the routing scan in §7.3 never picks
+/// it for one-shot work — preserving exclusive transactional access while
+/// keeping [`crate::Job::in_flight`] accurate.
 ///
 /// `Reserved` is intentionally `!Clone`. The `rollback_on_drop()` opt-in
 /// (added in Task 15 / PRO-445) provides safety against forgotten
@@ -77,7 +76,10 @@ enum TxState {
 /// and goes straight to [`crate::Job::execute`]. State stays whatever it
 /// was. Useful for raw transaction-statement bypass; rare in practice.
 pub struct Reserved {
-    obj: Object<JobManager>,
+    /// Always `Some` until `Drop::drop` runs. Wrapped in `Option` so `Drop`
+    /// can move ownership into the asynchronous rollback task and keep the
+    /// connection checked out until `ROLLBACK` finishes on the wire.
+    obj: Option<Object<JobManager>>,
     /// Opt-in: fire ROLLBACK on drop. Set via [`Reserved::rollback_on_drop`];
     /// honoured by `Drop` (Task 16 / PRO-446).
     rollback_on_drop: bool,
@@ -91,14 +93,9 @@ pub struct Reserved {
 
 impl Reserved {
     pub(crate) fn new(obj: Object<JobManager>) -> Self {
-        // Mark the Job as routing-skip: `u32::MAX` is a sentinel, NOT a real
-        // in-flight count. The routing scan in Task 24 / PRO-454 reads this
-        // value and treats it as "this connection is exclusively held" — it
-        // will pick a different idle Job for one-shot routed work. Drop
-        // resets to 0 so the connection is routable again.
-        obj.inner.in_flight.store(u32::MAX, Ordering::Relaxed);
+        obj.set_reserved(true);
         Self {
-            obj,
+            obj: Some(obj),
             rollback_on_drop: false,
             tx_state: Mutex::new(TxState::NotStarted),
         }
@@ -107,11 +104,11 @@ impl Reserved {
     /// Opt-in safety: if this `Reserved` drops without an explicit
     /// `COMMIT`/`ROLLBACK`, fire a fire-and-forget `ROLLBACK` on drop.
     ///
-    /// The rollback runs via a runtime-guarded fire-and-forget spawn (the
-    /// crate's internal `spawn_best_effort` helper) so `Drop` never blocks.
-    /// If the rollback fails (e.g., the connection is already dead), the
-    /// error is silently dropped — the pool's next `recycle()` will pick up
-    /// the failed connection.
+    /// `Drop` spawns `ROLLBACK` on the active Tokio runtime so `Drop` never
+    /// blocks, keeps the connection checked out and reserved until `ROLLBACK`
+    /// succeeds on the wire, and evicts the connection from the pool via
+    /// `Object::take` if `ROLLBACK` fails or `Drop` runs outside a Tokio
+    /// runtime.
     ///
     /// **v0.4:** Drop fires `ROLLBACK` only when both (a) `rollback_on_drop`
     /// is set and (b) a `BEGIN` has been observed without a matching
@@ -178,7 +175,7 @@ impl Reserved {
     /// directly. The asymmetry vs. [`crate::Pool::execute_with`] is
     /// documented in Task 9 / PRO-587.
     pub async fn execute(&self, sql: &str) -> crate::Result<crate::Rows> {
-        let job: &Job = &self.obj;
+        let job: &Job = self;
         let result = Job::execute(job, sql).await;
         if result.is_ok() {
             Self::observe_sql(&self.tx_state, sql);
@@ -209,7 +206,7 @@ impl Reserved {
         sql: &str,
         params: &[serde_json::Value],
     ) -> crate::Result<crate::Rows> {
-        let job: &Job = &self.obj;
+        let job: &Job = self;
         let result = Job::execute_with(job, sql, params).await;
         if result.is_ok() {
             Self::observe_sql(&self.tx_state, sql);
@@ -229,7 +226,7 @@ impl Reserved {
         sql: &str,
         opts: crate::ExecuteOptions,
     ) -> crate::Result<crate::Rows> {
-        let job: &Job = &self.obj;
+        let job: &Job = self;
         let result = Job::execute_opts(job, sql, opts).await;
         if result.is_ok() {
             Self::observe_sql(&self.tx_state, sql);
@@ -248,7 +245,7 @@ impl Reserved {
         params: &[serde_json::Value],
         opts: crate::ExecuteOptions,
     ) -> crate::Result<crate::Rows> {
-        let job: &Job = &self.obj;
+        let job: &Job = self;
         let result = Job::execute_with_opts(job, sql, params, opts).await;
         if result.is_ok() {
             Self::observe_sql(&self.tx_state, sql);
@@ -302,7 +299,9 @@ impl Reserved {
     /// without spinning up a Job.
     fn observe_sql(state: &Mutex<TxState>, sql: &str) {
         let head = sql.split_whitespace().next().unwrap_or("");
-        let mut tx = state.lock().expect("tx_state mutex poisoned");
+        let mut tx = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if head.eq_ignore_ascii_case("BEGIN") {
             *tx = TxState::Started;
         } else if head.eq_ignore_ascii_case("COMMIT") || head.eq_ignore_ascii_case("ROLLBACK") {
@@ -316,59 +315,98 @@ impl Deref for Reserved {
     type Target = Job;
     fn deref(&self) -> &Job {
         // Object<JobManager> derefs to &Arc<Job>; Arc<Job> derefs to &Job.
-        &self.obj
+        let Some(obj) = &self.obj else {
+            unreachable!("Reserved::obj is Some until Drop::drop runs")
+        };
+        obj
+    }
+}
+
+/// Holds a checked-out [`Object<JobManager>`] during an asynchronous
+/// `rollback_on_drop` task.
+///
+/// If `release_clean` is called after `ROLLBACK` succeeds, the reservation
+/// flag is cleared and the connection returns to the pool's idle list. If the
+/// `ROLLBACK` fails or the spawned task is cancelled on runtime shutdown,
+/// `Drop` evicts the connection via [`Object::take`] so no subsequent caller
+/// can inherit an uncommitted transaction.
+struct RollbackGuard(Option<Object<JobManager>>);
+
+impl RollbackGuard {
+    fn release_clean(mut self) {
+        if let Some(obj) = self.0.take() {
+            obj.set_reserved(false);
+            drop(obj);
+        }
+    }
+}
+
+impl Drop for RollbackGuard {
+    fn drop(&mut self) {
+        if let Some(obj) = self.0.take() {
+            obj.set_reserved(false);
+            let _ = Object::take(obj);
+        }
     }
 }
 
 impl Drop for Reserved {
     fn drop(&mut self) {
-        // 1. If opt-in AND currently in-tx, fire a best-effort ROLLBACK. The dispatcher is still
-        //    alive (Reserved holds Object<JobManager> which holds Arc<Job>), so the request can be
-        //    enqueued; the future is spawned so Drop never blocks. spawn_best_effort guards on
-        //    Handle::try_current() — no destructor panic if there's no runtime.
-        //
-        //    v0.4 Task 19 / PRO-597: the gate is now active. Drop is a no-op when the connection
-        //    is not in-tx (state is NotStarted or Closed) — suppressing redundant ROLLBACKs after
-        //    an explicit COMMIT and on connections that never began a transaction.
-        //
-        //    Mutex poisoning during Drop: lock().expect(...) is intentional — a poisoned tx_state
-        //    mutex means a prior panic inside observe_sql, and surfacing the poison here is correct
-        //    (we are already on a teardown path).
         let in_tx = matches!(
-            *self.tx_state.lock().expect("tx_state mutex poisoned"),
+            *self
+                .tx_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             TxState::Started
         );
         let rolled_back = self.rollback_on_drop && in_tx;
-        if rolled_back {
-            let handle = self.obj.inner.handle.clone();
-            let id = self.obj.inner.ids.next();
-            crate::job_helpers::spawn_best_effort(async move {
+
+        #[cfg(feature = "tracing")]
+        tracing::trace!(rolled_back, in_tx, "Reserved dropped");
+
+        let Some(obj) = self.obj.take() else {
+            return;
+        };
+
+        if !rolled_back {
+            obj.set_reserved(false);
+            drop(obj);
+            return;
+        }
+
+        #[cfg(feature = "metrics")]
+        metrics::counter!(crate::observability::POOL_RESERVED_ROLLBACK_TOTAL).increment(1);
+
+        // Keep `obj` checked out (and `reserved == true`) until `ROLLBACK`
+        // completes on the wire so no concurrent `Pool::execute` or
+        // `Pool::acquire` can interleave statements ahead of the rollback.
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let handle = obj.inner.handle.clone();
+            let id = obj.inner.ids.next();
+            let guard = RollbackGuard(Some(obj));
+            rt.spawn(async move {
                 let req = crate::protocol::Request::Sql {
-                    id: id.clone(),
+                    id,
                     sql: "ROLLBACK".into(),
                     rows: None,
                     parameters: None,
                     terse: None,
                 };
-                let _ = handle.send(req).await;
+                if let Ok(crate::protocol::Response::QueryResult(q)) = handle.send(req).await
+                    && q.success
+                {
+                    guard.release_clean();
+                }
+                // Otherwise `guard` drops and evicts the dirty connection via `Object::take`.
             });
-            #[cfg(feature = "metrics")]
-            metrics::counter!(crate::observability::POOL_RESERVED_ROLLBACK_TOTAL).increment(1);
+        } else {
+            // Dropped outside any Tokio runtime: we cannot send `ROLLBACK`, so
+            // evict the connection rather than returning an open transaction to
+            // the pool. Dropping `Arc<Job>` closes the socket, causing Db2 to
+            // roll back server-side.
+            obj.set_reserved(false);
+            let _ = Object::take(obj);
         }
-
-        // 2. Emit a single trace event capturing the state-at-drop. Fires after the best-effort
-        //    ROLLBACK enqueue (so rolled_back reflects what we actually did) and before the
-        //    routing-skip sentinel reset (so observers see Reserved's last moment as a held
-        //    connection). The in_tx field distinguishes "opt-in unset" from "nothing to roll back".
-        #[cfg(feature = "tracing")]
-        tracing::trace!(rolled_back, in_tx, "Reserved dropped");
-
-        // 3. Reset the routing-skip sentinel so the Job is reusable. The fetch_add(1)/fetch_sub(1)
-        //    ping-pong on u32::MAX is benign for routing (Task 24 special-cases u32::MAX) but we
-        //    reset to 0 here so normal counting resumes after Drop. v0.4 may switch to a dedicated
-        //    `reserved: AtomicBool` flag for cleaner separation.
-        self.obj.inner.in_flight.store(0, Ordering::Relaxed);
-        // 4. Object<JobManager>'s own Drop returns the Job to the pool.
     }
 }
 

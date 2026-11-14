@@ -576,7 +576,10 @@ fn mint_self_signed_tls(sans: Vec<String>) -> (TlsAcceptor, Vec<u8>) {
 }
 
 fn tls_acceptor_from_der(cert_der: &[u8], key_der: Vec<u8>) -> TlsAcceptor {
-    let server_config = ServerConfig::builder()
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let server_config = ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("rustls protocol versions")
         .with_no_client_auth()
         .with_single_cert(
             vec![CertificateDer::from(cert_der.to_vec())],

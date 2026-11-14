@@ -12,8 +12,8 @@
 //! # Feature gate requirement
 // Test binaries pulling `mod common;` should gate the `mod common;`
 // declaration AND any items using common's exports with
-// `#[cfg(feature = "rustls-tls")]` — the mock harness is rustls-only
-// test infrastructure. (Use per-item cfg, NOT crate-level
+// `#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]` — the mock harness is
+// rustls-only test infrastructure. (Use per-item cfg, NOT crate-level
 // `#![cfg]`, since that would also exclude the crate-level `//!` doc
 // and trigger `missing_docs`.)
 

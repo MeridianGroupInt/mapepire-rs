@@ -5,10 +5,10 @@
 //! originating `Ping` request based on the response `id`. All three must
 //! complete (no deadlock, no misrouting), each returning a `Duration`.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_three_concurrent_pings_share_one_socket() {
     let job = common::spawn_mock_and_connect().await;

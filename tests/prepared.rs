@@ -5,15 +5,16 @@
 //!   `Query::execute_with(&params)` returns `Rows` with the canned `update_count`.
 //! - `Query::execute_batch(&[&params...])` returns `Vec<Rows>` with one entry per batch.
 //!
-//! Per-item `#[cfg(feature = "rustls-tls")]` gating; mock harness is rustls-only.
+//! Per-item `#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]` gating; mock
+//! harness is rustls-only.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn dml_qr(id: &str, count: i64) -> mapepire::QueryResult {
     use mapepire::{QueryMetaData, QueryResult};
 
@@ -41,12 +42,12 @@ fn dml_qr(id: &str, count: i64) -> mapepire::QueryResult {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn id_prefix(id: &str) -> &str {
     id.split_once('-').map_or(id, |(p, _)| p)
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn recorded_sql_ids(observed: &[mapepire::protocol::Request]) -> Vec<String> {
     use mapepire::protocol::Request;
     observed
@@ -61,7 +62,7 @@ fn recorded_sql_ids(observed: &[mapepire::protocol::Request]) -> Vec<String> {
         .collect()
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_prepare_then_execute() {
     use serde_json::json;
@@ -85,7 +86,7 @@ async fn test_prepare_then_execute() {
     assert!(!rows.has_results());
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_execute_batch() {
     use serde_json::json;
@@ -117,7 +118,7 @@ async fn test_execute_batch() {
 /// `Query::execute` / `execute_opts` / `execute_with_opts` with a server
 /// handle (`PrepareAndExecute` returns `cont_id`) send `execute` with the
 /// requested page size.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_query_execute_opts_with_cont_id() {
     use mapepire::{Error, ExecuteOptions, ProtocolError};
@@ -176,7 +177,7 @@ async fn test_query_execute_opts_with_cont_id() {
 }
 
 /// A `Query` prepared on job A issues ids from A's allocator, not job B's.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_query_uses_originating_job_allocator() {
     use serde_json::json;
@@ -224,7 +225,7 @@ async fn test_query_uses_originating_job_allocator() {
 
 /// Prepare on `AcceptAndConnect` yields no cursor; `Query::execute` then
 /// sees a Pong and surfaces Protocol (covers `execute_inner` catch-all).
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_query_execute_unexpected_is_protocol() {
     use mapepire::Error;

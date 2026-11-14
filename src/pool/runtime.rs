@@ -163,8 +163,8 @@ impl Pool {
     ///    this routes additional work onto a Job another caller has out without blocking on the
     ///    fair queue.
     /// 3. **Fair-queue fallback**: if no upgradeable Jobs are eligible (e.g., pool not yet warmed,
-    ///    or every Job is `Reserved`'s `u32::MAX` sentinel), wait via `pool.get()` honoring
-    ///    `acquire_timeout`.
+    ///    or every Job is exclusively reserved by [`crate::Reserved`]), wait via `pool.get()`
+    ///    honoring `acquire_timeout`.
     ///
     /// # Errors
     ///
@@ -562,9 +562,10 @@ impl Pool {
     /// connection until drop — `BEGIN`/`COMMIT` are guaranteed to land on
     /// the same Db2 job (spec §7.4).
     ///
-    /// While reserved, the underlying `Job`'s `in_flight` counter is set
-    /// to `u32::MAX` (a routing-skip sentinel) so the pool's least-busy-job
-    /// scan never picks this connection for one-shot work.
+    /// While reserved, the underlying `Job` is marked as reserved in the
+    /// routing registry so neither the idle fast path nor the least-busy-job
+    /// scan ever picks this connection for one-shot work, even while requests
+    /// are actively in flight on it.
     ///
     /// # Errors
     ///
@@ -593,14 +594,43 @@ impl Pool {
         tracing::instrument(skip(self), fields(acquired_in_micros = tracing::field::Empty))
     )]
     pub async fn acquire(&self) -> crate::Result<crate::Reserved> {
-        #[cfg(any(feature = "tracing", feature = "metrics"))]
+        struct UnreserveOnCancel<'a>(Option<&'a crate::Job>);
+        impl Drop for UnreserveOnCancel<'_> {
+            fn drop(&mut self) {
+                if let Some(job) = self.0 {
+                    job.set_reserved(false);
+                }
+            }
+        }
+
         let start = std::time::Instant::now();
         let obj = self.get_or_timeout().await?;
+        // Serialize with `peek_idle` / `least_busy` so no new routed call can
+        // upgrade this Job's `Weak` after this point.
+        self.registry.reserve(&obj);
+
+        // If a prior routed `Pool::execute` call upgraded `Weak<Job>` just
+        // before `reserve` ran, wait for its `Arc<Job>` clone to drop so no
+        // one-shot statement overlaps the caller's exclusive transaction.
+        let mut cancel_guard = UnreserveOnCancel(Some(&obj));
+        while self.registry.has_routed_refs(&obj) {
+            if let Some(timeout) = self.acquire_timeout
+                && start.elapsed() >= timeout
+            {
+                return Err(crate::Error::PoolExhausted { timeout });
+            }
+            tokio::time::sleep(Duration::from_micros(250)).await;
+        }
+        cancel_guard.0 = None;
+        drop(cancel_guard);
+
         // `Duration::as_micros()` returns u128 — saturate at u64::MAX
         // (~584 942 years) to satisfy clippy::cast_possible_truncation
         // without panicking on a hypothetically huge elapsed.
         #[cfg(any(feature = "tracing", feature = "metrics"))]
         let elapsed_micros = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        #[cfg(not(any(feature = "tracing", feature = "metrics")))]
+        let _ = start;
         #[cfg(feature = "tracing")]
         tracing::Span::current().record("acquired_in_micros", elapsed_micros);
         #[cfg(feature = "metrics")]

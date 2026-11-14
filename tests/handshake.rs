@@ -5,18 +5,18 @@
 //! the canned `Connected` response payload.
 //!
 //! The `mod common;` declaration and the test fn are gated by
-//! `#[cfg(feature = "rustls-tls")]` because the mock harness uses rustls
-//! server primitives. Under native-tls the file compiles to an empty test
+//! `#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]` because the mock harness
+//! uses rustls server primitives. Under native-tls the file compiles to an empty test
 //! binary (the crate-level doc above is unconditional and satisfies
 //! `missing_docs`).
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_connect_returns_version_and_job() {
     let job = common::spawn_mock_and_connect().await;
@@ -37,7 +37,7 @@ async fn test_connect_returns_version_and_job() {
     assert_eq!(job.in_flight(), 0, "fresh Job has 0 in-flight requests");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_connect_upgrade_request_target_is_db_slash() {
     use mapepire::{DaemonServer, Job, TlsConfig};
@@ -58,7 +58,7 @@ async fn test_connect_upgrade_request_target_is_db_slash() {
     assert_eq!(got, "/db/");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_connect_sends_http_basic() {
     use base64::Engine;
@@ -88,7 +88,7 @@ async fn test_connect_sends_http_basic() {
     assert_eq!(raw, b"USER:test-only");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_connect_json_auth_without_error_text() {
     use mapepire::{DaemonServer, Error, Job, TlsConfig};
@@ -110,7 +110,7 @@ async fn test_connect_json_auth_without_error_text() {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_connect_unexpected_response_is_protocol_error() {
     use mapepire::{DaemonServer, Error, Job, TlsConfig};
