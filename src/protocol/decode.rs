@@ -451,7 +451,7 @@ mod tests {
         if let Response::QueryResult(q) = r {
             assert!(!q.success);
             assert!(q.has_results);
-            assert!(q.data.is_empty());
+            assert_eq!(q.data.len(), 0);
         }
     }
 

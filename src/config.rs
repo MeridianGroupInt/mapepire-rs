@@ -406,13 +406,13 @@ mod tests {
     #[cfg(not(feature = "insecure-tls"))]
     #[test]
     fn insecure_variant_absent_without_feature() {
-        fn assert_no_insecure(cfg: TlsConfig) {
+        fn assert_no_insecure(cfg: &TlsConfig) {
             match cfg {
                 TlsConfig::Verified | TlsConfig::Ca(_) => {}
             }
         }
-        assert_no_insecure(TlsConfig::Verified);
-        assert_no_insecure(TlsConfig::Ca(vec![0x00]));
+        assert_no_insecure(&TlsConfig::Verified);
+        assert_no_insecure(&TlsConfig::Ca(vec![0x00]));
     }
 
     #[test]

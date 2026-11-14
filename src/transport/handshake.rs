@@ -82,10 +82,7 @@ pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<ConnectedDis
     );
     let http_host = tls::format_http_host(&server.host);
     let authorization = basic_authorization(&server.user, server.password.expose());
-    let mut auth_header =
-        tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&authorization)
-            .map_err(|_| Error::Internal("invalid basic authorization header".into()))?;
-    auth_header.set_sensitive(true);
+    let auth_header = parse_auth_header(&authorization)?;
     // Copied into `auth_header`; wipe the temporary `Basic …` buffer immediately.
     drop(authorization);
 
@@ -160,6 +157,17 @@ fn basic_authorization(user: &str, pass: &str) -> Zeroizing<String> {
     let material = Zeroizing::new(format!("{user}:{pass}"));
     let encoded = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(&*material));
     Zeroizing::new(format!("Basic {}", *encoded))
+}
+
+/// Parse an `Authorization` header value and mark it sensitive so `Debug`
+/// output redacts credentials.
+fn parse_auth_header(
+    value: &str,
+) -> crate::Result<tokio_tungstenite::tungstenite::http::HeaderValue> {
+    let mut auth_header = tokio_tungstenite::tungstenite::http::HeaderValue::from_str(value)
+        .map_err(|_| Error::Internal("invalid basic authorization header".into()))?;
+    auth_header.set_sensitive(true);
+    Ok(auth_header)
 }
 
 /// Map a tungstenite upgrade failure onto crate [`Error`].
@@ -266,12 +274,16 @@ mod tests {
     fn test_authorization_header_is_marked_sensitive_in_debug() {
         let pass = dummy_pass();
         let auth = basic_authorization("USER", &pass);
-        let mut hv = tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&auth)
-            .expect("valid header value");
-        hv.set_sensitive(true);
+        let hv = parse_auth_header(&auth).expect("valid header value");
         assert!(hv.is_sensitive());
         let dbg = format!("{hv:?}");
         assert_eq!(dbg, "Sensitive");
         assert!(!dbg.contains(&*auth));
+
+        let err = parse_auth_header("Basic \n").expect_err("control char rejected");
+        assert!(matches!(
+            err,
+            Error::Internal(ref msg) if msg == "invalid basic authorization header"
+        ));
     }
 }

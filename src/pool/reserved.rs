@@ -315,36 +315,35 @@ impl Deref for Reserved {
     type Target = Job;
     fn deref(&self) -> &Job {
         // Object<JobManager> derefs to &Arc<Job>; Arc<Job> derefs to &Job.
-        let Some(obj) = &self.obj else {
-            unreachable!("Reserved::obj is Some until Drop::drop runs")
-        };
-        obj
+        // `Reserved::obj` is always `Some` until `Drop::drop` runs.
+        self.obj.as_deref().unwrap_or_else(|| unreachable!())
     }
 }
 
 /// Holds a checked-out [`Object<JobManager>`] during an asynchronous
 /// `rollback_on_drop` task.
 ///
-/// If `release_clean` is called after `ROLLBACK` succeeds, the reservation
-/// flag is cleared and the connection returns to the pool's idle list. If the
+/// If `clean` is set to `true` after `ROLLBACK` succeeds, `Drop` clears the
+/// reservation flag and returns the connection to the pool's idle list. If
 /// `ROLLBACK` fails or the spawned task is cancelled on runtime shutdown,
 /// `Drop` evicts the connection via [`Object::take`] so no subsequent caller
 /// can inherit an uncommitted transaction.
-struct RollbackGuard(Option<Object<JobManager>>);
+struct RollbackGuard {
+    obj: Option<Object<JobManager>>,
+    clean: bool,
+}
 
 impl RollbackGuard {
-    fn release_clean(mut self) {
-        if let Some(obj) = self.0.take() {
-            obj.set_reserved(false);
-            drop(obj);
-        }
+    fn finish(mut self, clean: bool) {
+        self.clean = clean;
     }
 }
 
 impl Drop for RollbackGuard {
     fn drop(&mut self) {
-        if let Some(obj) = self.0.take() {
-            obj.set_reserved(false);
+        let obj = self.obj.take().unwrap_or_else(|| unreachable!());
+        obj.set_reserved(false);
+        if !self.clean {
             let _ = Object::take(obj);
         }
     }
@@ -364,10 +363,7 @@ impl Drop for Reserved {
         #[cfg(feature = "tracing")]
         tracing::trace!(rolled_back, in_tx, "Reserved dropped");
 
-        let Some(obj) = self.obj.take() else {
-            return;
-        };
-
+        let obj = self.obj.take().unwrap_or_else(|| unreachable!());
         if !rolled_back {
             obj.set_reserved(false);
             drop(obj);
@@ -383,7 +379,10 @@ impl Drop for Reserved {
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             let handle = obj.inner.handle.clone();
             let id = obj.inner.ids.next();
-            let guard = RollbackGuard(Some(obj));
+            let guard = RollbackGuard {
+                obj: Some(obj),
+                clean: false,
+            };
             rt.spawn(async move {
                 let req = crate::protocol::Request::Sql {
                     id,
@@ -392,12 +391,10 @@ impl Drop for Reserved {
                     parameters: None,
                     terse: None,
                 };
-                if let Ok(crate::protocol::Response::QueryResult(q)) = handle.send(req).await
-                    && q.success
-                {
-                    guard.release_clean();
-                }
-                // Otherwise `guard` drops and evicts the dirty connection via `Object::take`.
+                guard.finish(matches!(
+                    handle.send(req).await,
+                    Ok(crate::protocol::Response::QueryResult(q)) if q.success
+                ));
             });
         } else {
             // Dropped outside any Tokio runtime: we cannot send `ROLLBACK`, so

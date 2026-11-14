@@ -170,11 +170,10 @@ mod tests {
             if pfx == epoch0_prefix {
                 assert!(c >= u64::MAX - 64, "unexpected epoch-0 counter value: {c}");
                 epoch0_count += 1;
-            } else if pfx == epoch1_prefix {
+            } else {
+                pretty_assertions::assert_eq!(pfx, epoch1_prefix);
                 assert!(c < 191, "unexpected epoch-1 counter value: {c}");
                 epoch1_count += 1;
-            } else {
-                panic!("unexpected id prefix in {id}");
             }
         }
         pretty_assertions::assert_eq!(epoch0_count, 65);

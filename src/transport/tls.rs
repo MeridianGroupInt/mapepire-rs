@@ -34,17 +34,38 @@ pub(crate) type TlsStream = tokio_native_tls::TlsStream<TcpStream>;
 /// `aws-lc-rs` are unified in the dependency graph.
 #[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
-    if let Some(p) = rustls::crypto::CryptoProvider::get_default() {
-        return Arc::clone(p);
-    }
-    #[cfg(feature = "rustls-aws-lc-rs")]
-    {
-        Arc::new(rustls::crypto::aws_lc_rs::default_provider())
-    }
-    #[cfg(all(not(feature = "rustls-aws-lc-rs"), feature = "rustls-ring"))]
-    {
-        Arc::new(rustls::crypto::ring::default_provider())
-    }
+    rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(default_crypto_provider)
+}
+
+#[cfg(feature = "rustls-aws-lc-rs")]
+fn default_crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls::crypto::aws_lc_rs::default_provider())
+}
+
+#[cfg(all(not(feature = "rustls-aws-lc-rs"), feature = "rustls-ring"))]
+fn default_crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls::crypto::ring::default_provider())
+}
+
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
+fn client_config_builder(
+    provider: Arc<rustls::crypto::CryptoProvider>,
+) -> crate::Result<rustls::ConfigBuilder<rustls::ClientConfig, rustls::WantsVerifier>> {
+    rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| Error::Internal(format!("tls protocol versions: {e}")))
+}
+
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
+fn build_webpki_verifier(
+    roots: rustls::RootCertStore,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+) -> crate::Result<Arc<rustls::client::WebPkiServerVerifier>> {
+    rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider)
+        .build()
+        .map_err(|e| Error::Internal(format!("tls verifier: {e}")))
 }
 
 /// Strip optional `[...]` brackets from an IPv6 literal so TLS SNI /
@@ -93,14 +114,12 @@ pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<TlsStream> {
 
 #[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> crate::Result<TlsStream> {
-    use rustls::{ClientConfig, RootCertStore};
+    use rustls::RootCertStore;
     use rustls_pki_types::ServerName;
     use tokio_rustls::TlsConnector;
 
     let provider = crypto_provider();
-    let builder = ClientConfig::builder_with_provider(Arc::clone(&provider))
-        .with_safe_default_protocol_versions()
-        .map_err(|e| Error::Internal(format!("tls protocol versions: {e}")))?;
+    let builder = client_config_builder(Arc::clone(&provider))?;
 
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -113,12 +132,7 @@ async fn tls_handshake(server: &DaemonServer, tcp: TcpStream) -> crate::Result<T
             roots
                 .add(cert)
                 .map_err(|e| Error::Internal(format!("invalid Ca cert: {e}")))?;
-            let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(
-                Arc::new(roots),
-                Arc::clone(&provider),
-            )
-            .build()
-            .map_err(|e| Error::Internal(format!("tls verifier: {e}")))?;
+            let inner = build_webpki_verifier(roots, Arc::clone(&provider))?;
             builder
                 .dangerous()
                 .with_custom_certificate_verifier(Arc::new(PinOrWebpki {
@@ -396,7 +410,6 @@ pub async fn fetch_certificate_from(
     connect_address: &str,
     port: u16,
 ) -> crate::Result<Vec<u8>> {
-    use rustls::ClientConfig;
     use rustls_pki_types::ServerName;
     use tokio_rustls::TlsConnector;
 
@@ -410,9 +423,7 @@ pub async fn fetch_certificate_from(
 
     tracing_warn_insecure_once();
 
-    let config = ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|e| Error::Internal(format!("tls protocol versions: {e}")))?
+    let config = client_config_builder(provider)?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(NoVerify))
         .with_no_client_auth();
@@ -589,12 +600,68 @@ mod tests {
             !provider.cipher_suites.is_empty(),
             "selected CryptoProvider must expose cipher suites"
         );
-        let builder = rustls::ClientConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions();
+        let builder = client_config_builder(provider);
         assert!(
             builder.is_ok(),
             "ClientConfig::builder_with_provider must succeed"
         );
+    }
+
+    #[test]
+    fn test_client_config_builder_and_webpki_verifier_reject_invalid_inputs() {
+        let mut empty_provider = (*crypto_provider()).clone();
+        empty_provider.cipher_suites.clear();
+        assert!(matches!(
+            client_config_builder(Arc::new(empty_provider)),
+            Err(Error::Internal(ref msg)) if msg.contains("tls protocol versions:")
+        ));
+
+        let err = build_webpki_verifier(rustls::RootCertStore::empty(), crypto_provider())
+            .expect_err("empty roots must fail");
+        assert!(matches!(
+            err,
+            Error::Internal(ref msg) if msg.contains("tls verifier:")
+        ));
+    }
+
+    #[cfg(feature = "insecure-tls")]
+    #[tokio::test]
+    async fn test_connect_insecure_tls_accepts_self_signed_certificate() {
+        let provider = crypto_provider();
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("rcgen");
+        let cert_der: Vec<u8> = cert.der().as_ref().to_vec();
+        let key_der = signing_key.serialize_der();
+        let server_config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("safe default protocol versions")
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(cert_der)],
+                PrivatePkcs8KeyDer::from(key_der).into(),
+            )
+            .expect("server config");
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("local_addr").port();
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            acceptor.accept(tcp).await
+        });
+        let server = DaemonServer::builder()
+            .host("localhost")
+            .connect_address("127.0.0.1")
+            .port(port)
+            .user("u")
+            .password(dummy_pass())
+            .tls(TlsConfig::Insecure)
+            .build()
+            .expect("builder");
+        let client = connect(&server).await;
+        assert!(client.is_ok(), "Insecure TLS handshake failed: {client:?}");
+        let _ = server_task.await;
     }
 
     #[tokio::test]

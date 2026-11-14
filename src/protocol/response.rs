@@ -777,7 +777,7 @@ mod tests {
         );
         let back: QueryMetaData = serde_json::from_value(json).unwrap();
         assert!(back.job.is_none());
-        assert!(back.parameters.is_empty());
+        assert_eq!(back.parameters.len(), 0);
     }
 
     #[test]
@@ -830,7 +830,7 @@ mod tests {
         let json = r#"{"id":"u1","success":true,"has_results":false,"update_count":3,"data":[]}"#;
         let q: QueryResult = serde_json::from_str(json).unwrap();
         assert!(q.is_done, "omitted is_done on DML is done (no cursor)");
-        assert!(q.data.is_empty());
+        assert_eq!(q.data.len(), 0);
     }
 
     #[test]
@@ -894,7 +894,7 @@ mod tests {
         let q: QueryResult = serde_json::from_str(CALL_OUT_JSON).unwrap();
         assert!(!q.has_results);
         assert_eq!(q.update_count, 0);
-        assert!(q.data.is_empty());
+        assert_eq!(q.data.len(), 0);
         assert_eq!(q.parameter_count, Some(3));
         assert_eq!(
             q.metadata

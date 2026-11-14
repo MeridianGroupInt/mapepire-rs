@@ -521,3 +521,39 @@ async fn executor_trait_on_reserved_tracks_tx_state_for_rollback_on_drop() {
         "BEGIN via Executor trait on Reserved must arm rollback_on_drop"
     );
 }
+
+/// Regression test: if an uncommitted `Reserved` with `rollback_on_drop()` is
+/// dropped outside any Tokio runtime (e.g. moved onto a plain OS thread),
+/// `Drop` cannot spawn `ROLLBACK` and must evict the connection from the pool
+/// via `Object::take` rather than returning dirty transactional state to the
+/// idle queue.
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rollback_on_drop_outside_tokio_runtime_evicts_dirty_connection() {
+    use common::spawn_mock_pool;
+
+    let (pool, _mock) = spawn_mock_pool(1).await;
+
+    let conn = Box::pin(pool.acquire())
+        .await
+        .expect("acquire")
+        .rollback_on_drop();
+    drop(Box::pin(conn.begin()).await.expect("begin"));
+
+    std::thread::spawn(move || {
+        assert!(
+            tokio::runtime::Handle::try_current().is_err(),
+            "plain OS thread must not have an active Tokio runtime handle"
+        );
+        drop(conn);
+    })
+    .join()
+    .expect("join plain OS thread");
+
+    let status = pool.status();
+    assert_eq!(
+        status.size, 0,
+        "dirty connection dropped outside a Tokio runtime must be evicted: {status:?}"
+    );
+    assert_eq!(status.available, 0);
+}

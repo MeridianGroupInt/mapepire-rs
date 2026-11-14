@@ -83,7 +83,7 @@ pub async fn spawn_mock_and_connect() -> Job {
         .port(addr.port())
         .user("TESTUSER")
         .password("testpass".to_string())
-        .tls(TlsConfig::Ca(cert_der))    // pin the mock's self-signed cert
+        .tls(TlsConfig::Ca(cert_der)) // pin the mock's self-signed cert
         .build()
         .expect("build DaemonServer");
     Job::connect(&server)

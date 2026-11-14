@@ -207,3 +207,75 @@ async fn reserved_with_inflight_query_is_never_routed() {
     drop(pause);
     conn_task.await.expect("join tx task");
 }
+
+/// Regression test: if a Tier-2 routed `Pool::execute` upgrades a `Weak<Job>`
+/// while `Pool::acquire` is mid-recycle (`Job::ping`), `acquire()` waits in
+/// `while self.registry.has_routed_refs(&obj)` and, if `acquire_timeout`
+/// expires first, `UnreserveOnCancel::drop` clears `reserved` back to `false`
+/// so the connection is not permanently wedged.
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acquire_waits_for_routed_refs_and_unreserves_on_timeout() {
+    use std::time::Duration;
+
+    use common::spawn_pool_mock_and_server;
+
+    let (server_arc, mock) = spawn_pool_mock_and_server();
+    let pool = Box::pin(
+        mapepire::Pool::builder(server_arc)
+            .max_size(1)
+            .acquire_timeout(Some(Duration::from_millis(120)))
+            .build(),
+    )
+    .await
+    .expect("pool builds");
+
+    // Pre-warm the single slot so it sits in deadpool's idle list and will
+    // run `JobManager::recycle` (`Ping`) on the next `acquire()`.
+    {
+        let warmup = Box::pin(pool.acquire()).await.expect("warmup acquire");
+        drop(warmup);
+    }
+
+    // Pause every mock response for 75ms.
+    // 1. `acquire()` starts `recycle()` (`Ping` #1, completes at ~75ms).
+    // 2. While `Ping` is in flight (`in_flight == 1`, not yet reserved), a routed
+    //    `pool.execute(...)` upgrades `Weak<Job>` via `least_busy_scan` and queues `Sql` behind
+    //    `Ping` (completes at ~150ms).
+    // 3. When `Ping` finishes at ~75ms, `acquire()` reserves the Job and sees
+    //    `has_routed_refs(&obj) == true` until ~150ms, timing out at 120ms and firing
+    //    `UnreserveOnCancel::drop`.
+    let pause = mock.pause_responses(Duration::from_millis(75));
+
+    let acquire_pool = pool.clone();
+    let acquire_task = tokio::spawn(async move { Box::pin(acquire_pool.acquire()).await });
+
+    // Give `acquire_task` a moment to pop the idle slot and enqueue `Ping`.
+    tokio::time::sleep(Duration::from_millis(15)).await;
+
+    let execute_pool = pool.clone();
+    let execute_task = tokio::spawn(async move {
+        Box::pin(execute_pool.execute("SELECT ROUTED_DURING_RECYCLE FROM SYSIBM.SYSDUMMY1")).await
+    });
+
+    let Err(err) = acquire_task.await.expect("join acquire_task") else {
+        panic!("expected acquire to time out waiting for routed ref");
+    };
+    assert!(
+        matches!(err, mapepire::Error::PoolExhausted { .. }),
+        "expected acquire to time out waiting for routed ref, got {err:?}"
+    );
+
+    execute_task
+        .await
+        .expect("join execute_task")
+        .expect("routed execute succeeds");
+    drop(pause);
+
+    // Because `UnreserveOnCancel::drop` cleared `reserved`, the connection is
+    // still healthy and routable / acquirable afterwards.
+    let conn = Box::pin(pool.acquire())
+        .await
+        .expect("re-acquire after UnreserveOnCancel");
+    drop(conn);
+}
