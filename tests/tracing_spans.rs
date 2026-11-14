@@ -2,8 +2,8 @@
 //! field on `Pool::execute`, plus the synchronous `Reserved` Drop trace
 //! event.
 //!
-//! Per-item `#[cfg(all(feature = "rustls-tls", feature = "tracing"))]`
-//! gating since the mock harness is rustls-only and the spans only fire
+//! Per-item `#[cfg(all(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"), feature =
+//! "tracing"))]` gating since the mock harness is rustls-only and the spans only fire
 //! when tracing is enabled. Crate-level `#![cfg]` is intentionally avoided —
 //! it would strip the `//!` doc comment and trip the crate-wide
 //! `missing_docs = "deny"` lint.
@@ -25,10 +25,16 @@
 //! that's filled in once routing decides which §7.3 tier handled the
 //! request). Standard tracing-book pattern for span-shape assertions.
 
-#[cfg(all(feature = "rustls-tls", feature = "tracing"))]
+#[cfg(all(
+    any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"),
+    feature = "tracing"
+))]
 mod common;
 
-#[cfg(all(feature = "rustls-tls", feature = "tracing"))]
+#[cfg(all(
+    any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"),
+    feature = "tracing"
+))]
 mod capture {
     //! Tiny `tracing` layer that records span openings, span field
     //! updates, and events into an `Arc<Mutex<Vec<String>>>`.
@@ -133,7 +139,10 @@ mod capture {
     }
 }
 
-#[cfg(all(feature = "rustls-tls", feature = "tracing"))]
+#[cfg(all(
+    any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"),
+    feature = "tracing"
+))]
 fn install_capture(buf: capture::Buffer) -> tracing::dispatcher::DefaultGuard {
     use tracing_subscriber::layer::SubscriberExt;
 
@@ -147,7 +156,10 @@ fn install_capture(buf: capture::Buffer) -> tracing::dispatcher::DefaultGuard {
     tracing::subscriber::set_default(subscriber)
 }
 
-#[cfg(all(feature = "rustls-tls", feature = "tracing"))]
+#[cfg(all(
+    any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"),
+    feature = "tracing"
+))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pool_execute_emits_pool_execute_span_with_tier_field() {
     use common::spawn_mock_pool;
@@ -201,7 +213,10 @@ async fn pool_execute_emits_pool_execute_span_with_tier_field() {
     );
 }
 
-#[cfg(all(feature = "rustls-tls", feature = "tracing"))]
+#[cfg(all(
+    any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"),
+    feature = "tracing"
+))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reserved_drop_emits_trace_event_with_rolled_back() {
     use common::spawn_mock_pool;

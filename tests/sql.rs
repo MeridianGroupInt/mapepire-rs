@@ -5,15 +5,16 @@
 //!   row data is recoverable via `into_dynamic()` / `Row::get`.
 //! - DML yields `update_count() == Some(3)` and `has_results() == false`.
 //!
-//! Per-item `#[cfg(feature = "rustls-tls")]` gating; mock harness is rustls-only.
+//! Per-item `#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]` gating; mock
+//! harness is rustls-only.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn select_query_result(id: &str) -> mapepire::QueryResult {
     use mapepire::{Column, QueryMetaData, QueryResult};
     use serde_json::{Map, Value, json};
@@ -64,7 +65,7 @@ fn select_query_result(id: &str) -> mapepire::QueryResult {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn dml_query_result(id: &str, count: i64) -> mapepire::QueryResult {
     use mapepire::{QueryMetaData, QueryResult};
 
@@ -91,7 +92,7 @@ fn dml_query_result(id: &str, count: i64) -> mapepire::QueryResult {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_select_returns_rows_with_data() {
     // The mock writes the request id into the QueryResult.id at response time,
@@ -125,7 +126,7 @@ async fn test_select_returns_rows_with_data() {
     assert_eq!(age, 30);
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_dml_returns_update_count() {
     let job = common::connect_to_mock(common::MockBehavior::Pages {

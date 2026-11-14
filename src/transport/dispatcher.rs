@@ -303,8 +303,15 @@ async fn run(
                         in_flight.fetch_add(1, Ordering::Relaxed);
                         // Entries for cancelled futures (caller dropped reply_rx) remain
                         // here until the matching response arrives and is silently discarded
-                        // or shutdown drains. Acceptable for v0.2; revisit if leak grows.
-                        pending.insert(id, Pending { reply, kind });
+                        // or shutdown drains. If a duplicate correlation id ever arrives,
+                        // keep `in_flight` aligned with `pending.len()` and fail the
+                        // displaced waiter explicitly.
+                        if let Some(displaced) = pending.insert(id, Pending { reply, kind }) {
+                            in_flight.fetch_sub(1, Ordering::Relaxed);
+                            let _ = displaced.reply.send(Err(Error::Internal(
+                                "duplicate in-flight request correlation id".into(),
+                            )));
+                        }
                     }
                     None => {
                         // All handles dropped; exit cleanly.
@@ -676,5 +683,101 @@ mod tests {
             }),
             PendingKind::Other
         );
+    }
+
+    struct ChannelTransport {
+        out_tx: mpsc::UnboundedSender<Bytes>,
+        in_rx: mpsc::UnboundedReceiver<Result<Bytes, TransportError>>,
+    }
+
+    impl futures::Sink<Bytes> for ChannelTransport {
+        type Error = TransportError;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
+            self.out_tx.send(item).map_err(|_| TransportError::Closed)
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl futures::Stream for ChannelTransport {
+        type Item = Result<Bytes, TransportError>;
+
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            self.in_rx.poll_recv(cx)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_in_flight_correlation_id_displaces_earlier_waiter() {
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+        let (in_tx, in_rx) = mpsc::unbounded_channel();
+        let in_flight = Arc::new(AtomicU32::new(0));
+        let dispatcher = Dispatcher::spawn(
+            Box::pin(ChannelTransport { out_tx, in_rx }),
+            Arc::clone(&in_flight),
+        );
+        let h1 = dispatcher.handle();
+        let h2 = dispatcher.handle();
+
+        let first =
+            tokio::spawn(async move { h1.send(Request::Ping { id: "dup-1".into() }).await });
+        // Wait until the first request has been written to the transport.
+        let _ = out_rx.recv().await.expect("first frame");
+
+        let second =
+            tokio::spawn(async move { h2.send(Request::Ping { id: "dup-1".into() }).await });
+        // Wait until the duplicate request has been written to the transport.
+        let _ = out_rx.recv().await.expect("second frame");
+
+        // The displaced first waiter must fail with an explicit Internal error,
+        // and `in_flight` must remain 1 (aligned with `pending.len()`).
+        let first_err = first.await.expect("join first").expect_err("displaced");
+        assert!(matches!(
+            first_err,
+            Error::Internal(ref msg) if msg == "duplicate in-flight request correlation id"
+        ));
+        pretty_assertions::assert_eq!(in_flight.load(Ordering::Relaxed), 1);
+
+        // Delivering the response resolves the second waiter and returns `in_flight` to 0.
+        in_tx
+            .send(Ok(Bytes::from_static(
+                b"{\"id\":\"dup-1\",\"success\":true}",
+            )))
+            .expect("send reply");
+        let second_resp = second.await.expect("join second").expect("second ok");
+        assert!(matches!(second_resp, Response::Pong { id } if id == "dup-1"));
+        pretty_assertions::assert_eq!(in_flight.load(Ordering::Relaxed), 0);
+
+        // Exercise ChannelTransport::poll_close as well.
+        let mut dummy = ChannelTransport {
+            out_tx: mpsc::unbounded_channel().0,
+            in_rx: mpsc::unbounded_channel().1,
+        };
+        futures::SinkExt::close(&mut dummy)
+            .await
+            .expect("close dummy channel transport");
     }
 }

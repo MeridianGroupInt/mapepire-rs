@@ -3,17 +3,17 @@
 //! mapepire-js `SQLJob.clcommand` does not throw on `success: false` with
 //! `data`; `Job::cl` returns [`mapepire::ClOutcome`] the same way.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::{DaemonServer, Job, QueryResult, TlsConfig};
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use serde_json::{Map, Value, json};
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn job_log_row(
     message_id: &str,
     severity: Value,
@@ -35,7 +35,7 @@ fn job_log_row(
     row
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn cl_success_result() -> QueryResult {
     QueryResult {
         id: "placeholder".into(),
@@ -60,7 +60,7 @@ fn cl_success_result() -> QueryResult {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn cl_failure_result() -> QueryResult {
     QueryResult {
         id: "placeholder".into(),
@@ -85,7 +85,7 @@ fn cl_failure_result() -> QueryResult {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 async fn connect_cl(behavior: common::MockBehavior) -> Job {
     let (addr, cert_der) = common::spawn_mock(behavior);
     let server = DaemonServer::builder()
@@ -101,7 +101,7 @@ async fn connect_cl(behavior: common::MockBehavior) -> Job {
         .expect("Job::connect against mock")
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_cl_untagged_success_returns_job_log_entries() {
     let job = connect_cl(common::MockBehavior::ClThen {
@@ -121,7 +121,7 @@ async fn test_cl_untagged_success_returns_job_log_entries() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_cl_untagged_cpf0006_is_ok_with_job_log() {
     let job = connect_cl(common::MockBehavior::ClThen {

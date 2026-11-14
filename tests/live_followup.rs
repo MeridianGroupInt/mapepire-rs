@@ -4,17 +4,17 @@
 //! `prepare`, and untagged ping still failed on a live Jetty Mapepire
 //! daemon. Two of those decode misses killed the dispatcher.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::{Column, QueryMetaData, QueryResult};
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use serde_json::{Map, Value, json};
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn int_row(id: &str, value: i64) -> QueryResult {
     let mut row: Map<String, Value> = Map::new();
     row.insert("1".into(), json!(value));
@@ -48,7 +48,7 @@ fn int_row(id: &str, value: i64) -> QueryResult {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_execute_with_sends_prepare_sql_execute() {
     use mapepire::protocol::Request;
@@ -96,7 +96,7 @@ async fn test_execute_with_sends_prepare_sql_execute() {
     assert!(json.contains(r#""rows":100"#), "missing rows:100 in {json}");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_prepare_then_execute_twice() {
     let job = common::connect_to_mock(common::MockBehavior::PrepareAndExecute {
@@ -120,7 +120,7 @@ async fn test_prepare_then_execute_twice() {
     assert_eq!(v11, 11);
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_ping_then_sql_on_same_job() {
     let job = common::connect_to_mock(common::MockBehavior::Pages {
@@ -137,7 +137,7 @@ async fn test_ping_then_sql_on_same_job() {
     drop(rows);
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_getdbjob_and_getversion_after_ping() {
     let job = common::connect_to_mock(common::MockBehavior::AcceptAndConnect).await;
@@ -149,7 +149,7 @@ async fn test_getdbjob_and_getversion_after_ping() {
     assert_eq!(db_job, "MOCK/QUSER/000001");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_unknown_frame_does_not_kill_dispatcher() {
     let job = common::connect_to_mock(common::MockBehavior::UnknownTypeThenPages {
@@ -171,7 +171,7 @@ async fn test_unknown_frame_does_not_kill_dispatcher() {
     drop(rows);
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_execute_sends_rows_100() {
     use mapepire::protocol::Request;
@@ -205,7 +205,7 @@ async fn test_execute_sends_rows_100() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_execute_opts_terse_decodes_array_rows() {
     use mapepire::ExecuteOptions;
@@ -249,7 +249,7 @@ async fn test_execute_opts_terse_decodes_array_rows() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_execute_opts_terse_missing_columns_is_protocol_error() {
     use mapepire::{Error, ExecuteOptions, ProtocolError, QueryMetaData, QueryResult};
@@ -294,7 +294,7 @@ async fn test_execute_opts_terse_missing_columns_is_protocol_error() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_execute_opts_rows_zero_rejected() {
     use mapepire::{Error, ExecuteOptions, ProtocolError};
@@ -316,7 +316,7 @@ async fn test_execute_opts_rows_zero_rejected() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_execute_with_opts_rows_zero_rejected() {
     use mapepire::{Error, ExecuteOptions, ProtocolError};
@@ -339,7 +339,7 @@ async fn test_execute_with_opts_rows_zero_rejected() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_prepare_without_cont_id_then_two_execute_with() {
     use mapepire::protocol::Request;
@@ -405,7 +405,7 @@ async fn test_prepare_without_cont_id_then_two_execute_with() {
 
 /// Live prepare (no `cont_id`) + `Query::execute_opts` sends
 /// `prepare_sql_execute` with the requested page size and skips `sqlclose`.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_prepare_without_cont_id_execute_opts_sends_rows() {
     use mapepire::ExecuteOptions;

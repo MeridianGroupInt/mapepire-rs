@@ -76,20 +76,26 @@ pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<ConnectedDis
     // 2. WebSocket Upgrade. Live Jetty Mapepire serves `/db/` and 403s without HTTP Basic. Password
     //    is not placed on the query string or in the subsequent JSON `Connect` body. URI host and
     //    HTTP Host are the TLS name (`server.host`), not `connect_address`.
-    let url = format!("wss://{}:{}{WS_PATH}", server.host, server.port);
+    let url = format!(
+        "wss://{}{WS_PATH}",
+        tls::format_host_port(&server.host, server.port)
+    );
+    let http_host = tls::format_http_host(&server.host);
     let authorization = basic_authorization(&server.user, server.password.expose());
+    let auth_header = parse_auth_header(&authorization)?;
+    // Copied into `auth_header`; wipe the temporary `Basic …` buffer immediately.
+    drop(authorization);
+
     let ws_request = WsRequest::builder()
         .uri(&url)
-        .header("Host", &server.host)
-        .header("Authorization", &authorization)
+        .header("Host", &http_host)
+        .header("Authorization", auth_header)
         .header("Upgrade", "websocket")
         .header("Connection", "Upgrade")
         .header("Sec-WebSocket-Version", "13")
         .header("Sec-WebSocket-Key", generate_key())
         .body(())
         .map_err(|e| Error::Internal(format!("malformed ws request: {e}")))?;
-    // Copied into the request headers; do not log this value.
-    drop(authorization);
 
     let (ws_stream, _http_response) = match client_async(ws_request, tls_stream).await {
         Ok(pair) => pair,
@@ -144,12 +150,24 @@ pub(crate) async fn connect(server: &DaemonServer) -> crate::Result<ConnectedDis
 
 /// Build `Authorization: Basic …` from `user:password`.
 ///
-/// Concatenates into a [`zeroize::Zeroizing<String>`] so the plaintext pair
-/// is wiped after Base64 encoding. The returned header value is not logged.
-fn basic_authorization(user: &str, pass: &str) -> String {
+/// Wraps the plaintext pair, the intermediate Base64 buffer, and the returned
+/// header value in [`zeroize::Zeroizing<String>`] so every heap copy is wiped
+/// on drop. Callers also mark the resulting HTTP `HeaderValue` sensitive.
+fn basic_authorization(user: &str, pass: &str) -> Zeroizing<String> {
     let material = Zeroizing::new(format!("{user}:{pass}"));
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&*material);
-    format!("Basic {encoded}")
+    let encoded = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(&*material));
+    Zeroizing::new(format!("Basic {}", *encoded))
+}
+
+/// Parse an `Authorization` header value and mark it sensitive so `Debug`
+/// output redacts credentials.
+fn parse_auth_header(
+    value: &str,
+) -> crate::Result<tokio_tungstenite::tungstenite::http::HeaderValue> {
+    let mut auth_header = tokio_tungstenite::tungstenite::http::HeaderValue::from_str(value)
+        .map_err(|_| Error::Internal("invalid basic authorization header".into()))?;
+    auth_header.set_sensitive(true);
+    Ok(auth_header)
 }
 
 /// Map a tungstenite upgrade failure onto crate [`Error`].
@@ -250,5 +268,22 @@ mod tests {
                 "Internal message should mention 404, got {msg}"
             );
         }
+    }
+
+    #[test]
+    fn test_authorization_header_is_marked_sensitive_in_debug() {
+        let pass = dummy_pass();
+        let auth = basic_authorization("USER", &pass);
+        let hv = parse_auth_header(&auth).expect("valid header value");
+        assert!(hv.is_sensitive());
+        let dbg = format!("{hv:?}");
+        assert_eq!(dbg, "Sensitive");
+        assert!(!dbg.contains(&*auth));
+
+        let err = parse_auth_header("Basic \n").expect_err("control char rejected");
+        assert!(matches!(
+            err,
+            Error::Internal(ref msg) if msg == "invalid basic authorization header"
+        ));
     }
 }

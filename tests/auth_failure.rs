@@ -5,17 +5,17 @@
 //! `Job::connect` returns `Err(Error::Auth(...))` carrying the daemon's
 //! error text.
 //!
-//! Per-item `#[cfg(feature = "rustls-tls")]` gating — the mock harness uses
-//! rustls server primitives. Crate-level `//!` doc unconditional so
+//! Per-item `#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]` gating — the mock
+//! harness uses rustls server primitives. Crate-level `//!` doc unconditional so
 //! `missing_docs` is satisfied under native-tls.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_connect_with_bad_password_returns_auth_error() {
     use mapepire::{DaemonServer, Error, Job, TlsConfig};
@@ -47,7 +47,7 @@ async fn test_connect_with_bad_password_returns_auth_error() {
     }
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_connect_without_reaching_json_auth_returns_http_403() {
     use mapepire::{DaemonServer, Error, Job, TlsConfig};

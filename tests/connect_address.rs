@@ -4,18 +4,18 @@
 //! clients set `host("ibmi.example").connect_address("127.0.0.1")`.
 //! Using the loopback IP as `host` without a matching leaf pin fails closed.
 //!
-//! Gated `#[cfg(feature = "rustls-tls")]` because the mock harness is
-//! rustls-only. Do **not** use `TlsConfig::Insecure` here.
+//! Gated `#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]` because the mock
+//! harness is rustls-only. Do **not** use `TlsConfig::Insecure` here.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::{DaemonServer, Job, TlsConfig};
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_connect_address_splits_tcp_from_sni() {
     let probe = common::UpgradeProbe::new();
@@ -48,7 +48,7 @@ async fn test_connect_address_splits_tcp_from_sni() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_host_ip_against_dns_cert_fails_without_matching_pin_name_fallback() {
     // host=127.0.0.1, cert SAN=ibmi.example. TlsConfig::Verified cannot talk

@@ -164,16 +164,18 @@ version string.
 
 | Feature | Default | Purpose |
 |---|---|---|
-| `rustls-tls` | **on** | Pure-Rust TLS via `rustls` with the `ring` `CryptoProvider`. [`TlsConfig::Ca`] is a leaf pin (SAN skipped on exact DER match). |
+| `rustls-tls` | **on** | Default `rustls` backend (enables `rustls-ring`). [`TlsConfig::Ca`] is a leaf pin (SAN skipped on exact DER match). |
+| `rustls-ring` | off (via `rustls-tls`) | Pure-Rust TLS via `rustls` with the `ring` `CryptoProvider`. |
+| `rustls-aws-lc-rs` | off | `rustls` TLS with the `aws-lc-rs` `CryptoProvider` (pair with `default-features = false` to omit `ring`). |
 | `native-tls` | off | OS-platform TLS via `native-tls` (OpenSSL CN fallback for CN-only IBM i certs) |
 | `insecure-tls` | off | Compile-time gate for `TlsConfig::Insecure` (skip server-cert validation; **never use in production** — CN-only IBM i certs use [`TlsConfig::Ca`], not this) |
 | `serde-config` | off | `DaemonServerSpec` DTO for loading from config files (TOML/YAML/JSON via consumer's choice of parser) |
 | `tracing` | off | [`tracing`](https://docs.rs/tracing) span instrumentation on every public dispatch entry point (`Job::execute`, `Pool::execute`, `Reserved::*`). Per-pool [`ParameterLogging`](https://docs.rs/mapepire/latest/mapepire/enum.ParameterLogging.html) governs whether parameter values appear on spans. |
 | `metrics` | off | [`metrics`](https://docs.rs/metrics) facade integration. Counters / gauges / histograms documented at [`mapepire::observability`](https://docs.rs/mapepire/latest/mapepire/observability/index.html). |
 
-A `compile_error!` guard fires when neither `rustls-tls` nor `native-tls`
-is enabled — disabling default features requires an explicit alternate
-TLS backend selection.
+A `compile_error!` guard fires when none of `rustls-tls`, `rustls-ring`,
+`rustls-aws-lc-rs`, or `native-tls` is enabled — disabling default features
+requires an explicit alternate TLS backend selection.
 
 ## Observability (optional)
 

@@ -187,11 +187,9 @@ impl Executor for Reserved {
         &'a self,
         sql: &'a str,
     ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
-        // Reserved derefs to &Job; we route through the Job impl so the
-        // in_flight bookkeeping (set to u32::MAX while reserved) remains
-        // consistent.
-        let job: &Job = self;
-        Box::pin(async move { Job::execute(job, sql).await })
+        // Route through `Reserved::execute` so transaction state (`TxState`)
+        // is observed for `rollback_on_drop` even when called generically.
+        Box::pin(Reserved::execute(self, sql))
     }
 
     fn execute_with<'a>(
@@ -199,8 +197,7 @@ impl Executor for Reserved {
         sql: &'a str,
         params: &'a [serde_json::Value],
     ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
-        let job: &Job = self;
-        Box::pin(async move { Job::execute_with(job, sql, params).await })
+        Box::pin(Reserved::execute_with(self, sql, params))
     }
 
     fn execute_opts<'a>(
@@ -208,7 +205,7 @@ impl Executor for Reserved {
         sql: &'a str,
         opts: ExecuteOptions,
     ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
-        Box::pin(async move { Reserved::execute_opts(self, sql, opts).await })
+        Box::pin(Reserved::execute_opts(self, sql, opts))
     }
 
     fn execute_with_opts<'a>(
@@ -217,6 +214,6 @@ impl Executor for Reserved {
         params: &'a [serde_json::Value],
         opts: ExecuteOptions,
     ) -> Pin<Box<dyn Future<Output = crate::Result<Rows>> + Send + 'a>> {
-        Box::pin(async move { Reserved::execute_with_opts(self, sql, params, opts).await })
+        Box::pin(Reserved::execute_with_opts(self, sql, params, opts))
     }
 }

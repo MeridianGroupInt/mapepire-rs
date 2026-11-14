@@ -11,10 +11,10 @@
 //! `tokio::time::timeout` to bound waits; this test verifies the pattern works
 //! end-to-end.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_half_open_socket_ping_times_out() {
     use std::time::Duration;

@@ -5,25 +5,25 @@
 //! name checks; a non-matching pin still uses `WebPkiServerVerifier`.
 //! `TlsConfig::Verified` must not skip name checks.
 //!
-//! Gated `#[cfg(feature = "rustls-tls")]` because the mock harness is
-//! rustls-only. Do **not** use `TlsConfig::Insecure` here.
+//! Gated `#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]` because the mock
+//! harness is rustls-only. Do **not** use `TlsConfig::Insecure` here.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::{DaemonServer, Job, TlsConfig};
 
 /// id-ce-subjectAltName (2.5.29.17) as a DER OID encoding.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 const SAN_OID_DER: &[u8] = &[0x06, 0x03, 0x55, 0x1d, 0x11];
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn der_has_san(der: &[u8]) -> bool {
     der.windows(SAN_OID_DER.len()).any(|w| w == SAN_OID_DER)
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 fn server(port: u16, tls: TlsConfig) -> DaemonServer {
     DaemonServer::builder()
         .host("127.0.0.1")
@@ -35,7 +35,7 @@ fn server(port: u16, tls: TlsConfig) -> DaemonServer {
         .expect("DaemonServer builder fields all set")
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_ca_pin_accepts_cn_only_leaf() {
     let (addr, cert_der) =
@@ -51,7 +51,7 @@ async fn test_ca_pin_accepts_cn_only_leaf() {
         .expect("TlsConfig::Ca pin must accept a CN-only leaf");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_ca_pin_rejects_mismatched_leaf() {
     let (presented_der, presented_key) = common::mint_cn_only("127.0.0.1");
@@ -73,7 +73,7 @@ async fn test_ca_pin_rejects_mismatched_leaf() {
         .expect_err("mismatched Ca pin must fail closed");
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_verified_rejects_cn_only_leaf() {
     let (addr, cert_der) =

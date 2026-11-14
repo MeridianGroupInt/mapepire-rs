@@ -26,8 +26,18 @@ include = [
 
 [features]
 default = ["rustls-tls"]
-rustls-tls = [
+rustls-tls = ["rustls-ring"]
+rustls-ring = [
     "dep:rustls",
+    "rustls/ring",
+    "dep:tokio-rustls",
+    "dep:rustls-pki-types",
+    "dep:webpki-roots",
+    "tokio-tungstenite/rustls-tls-webpki-roots",
+]
+rustls-aws-lc-rs = [
+    "dep:rustls",
+    "rustls/aws-lc-rs",
     "dep:tokio-rustls",
     "dep:rustls-pki-types",
     "dep:webpki-roots",
@@ -47,35 +57,35 @@ metrics = ["dep:metrics"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { version = "1.8", features = ["derive"] }
 # Required: HTTP Basic on the WebSocket upgrade (`src/transport/handshake.rs`)
 # and, under `serde-config`, decoding pinned-CA DER in `TlsConfigSpec`.
 base64 = "0.23.1"
-tokio = { version = "1.23.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 futures = "0.3"
 pin-project-lite = "0.2"
 async-trait = "0.1"
 deadpool = { version = "0.13", default-features = false, features = ["managed", "rt_tokio_1"] }
 bytes = "1.11.1"
-tracing = { version = "0.1", optional = true }
+tracing = { version = "0.1.40", optional = true }
 metrics = { version = "0.24.6", optional = true }
 # Optional TLS stacks — pulled by their respective feature flags above.
-# `ring` is on the *library* rustls dep so `ClientConfig::builder()` has a
-# process-level CryptoProvider. `std`+`tls12` alone panics at handshake;
-# tests previously hid that via the rustls *dev-dep* `ring` feature.
-rustls = { version = "0.23.43", optional = true, default-features = false, features = ["std", "tls12", "ring"] }
-tokio-rustls = { version = "0.26.4", optional = true, default-features = false }
-rustls-pki-types = { version = "1.15.1", optional = true }
-webpki-roots = { version = "1.0.9", optional = true }
-native-tls = { version = "0.2", optional = true }
+# CryptoProvider features (`rustls/ring`, `rustls/aws-lc-rs`) are activated by
+# `rustls-ring` (and `rustls-tls`) or `rustls-aws-lc-rs` so consumers who opt
+# into `rustls-aws-lc-rs` with `default-features = false` do not pull `ring`.
+rustls = { version = "0.23.46", optional = true, default-features = false, features = ["std", "tls12"] }
+tokio-rustls = { version = "0.26.6", optional = true, default-features = false }
+rustls-pki-types = { version = "1.16.0", optional = true }
+webpki-roots = { version = "1.0.12", optional = true }
+native-tls = { version = "0.2.18", optional = true }
 tokio-native-tls = { version = "0.3", optional = true }
 
 [dev-dependencies]
 insta = { version = "1", features = ["json", "yaml"] }
 proptest = "1"
 pretty_assertions = "1"
-tokio = { version = "1.23.1", features = ["full", "test-util"] }
+tokio = { version = "1.54.1", features = ["full", "test-util"] }
 tokio-test = "0.4"
 # Test-only `tracing-subscriber` so the Task 10 / PRO-588 integration test
 # can install a custom `Layer` that captures span open + `record(...)`
@@ -98,11 +108,11 @@ tracing-subscriber = { version = "0.3.20", default-features = false, features = 
 # and which pulls `pem -> base64 0.22`, colliding with our own `base64 0.23`
 # under cargo-deny's `multiple-versions = "deny"`.
 rcgen = { version = "0.14.9", default-features = false, features = ["crypto", "ring"] }
-tokio-rustls = { version = "0.26.4", default-features = false }
+tokio-rustls = { version = "0.26.6", default-features = false }
 # Library rustls now enables `ring` too. This matching dev-dep is kept so
 # tests still pin the provider if the lib feature set drifts. Redundant
 # with the library dep after issue 5b; leave unless cargo-deny complains.
-rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 # `metrics-util`'s `debugging` feature exposes `DebuggingRecorder` +
 # `Snapshotter` for the Task 13 metrics integration test
 # (`tests/metrics_smoke.rs`). `default-features = false` keeps the

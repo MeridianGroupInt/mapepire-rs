@@ -24,6 +24,8 @@ jobs:
           - round_trip
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # libFuzzer integration in cargo-fuzz requires a nightly toolchain.
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2

@@ -9,15 +9,15 @@
 //!   session) and yields the same connection again.
 //!
 //! The mock harness is rustls-only test infrastructure, so the `mod common;`
-//! declaration and the test fn are gated by `#[cfg(feature = "rustls-tls")]`
-//! at item level (NOT crate-level `#![cfg]` — that would also exclude the
+//! declaration and the test fn are gated by `#[cfg(any(feature = "rustls-ring", feature =
+//! "rustls-aws-lc-rs"))]` at item level (NOT crate-level `#![cfg]` — that would also exclude the
 //! crate-level `//!` doc comment and trip `missing_docs = "deny"`; see the
 //! note in `tests/common/mod.rs`).
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manager_create_and_recycle() {
     use common::{MockBehavior, spawn_mock_and_server};
@@ -40,11 +40,10 @@ async fn manager_create_and_recycle() {
     // precedent: the acquire future contains the manager's `create()` state
     // machine (TLS handshake + first request/response cycle).
     let conn = Box::pin(pool.acquire()).await.expect("acquire");
-    // `Reserved::new` (Task 13) marks the Job with the `u32::MAX` routing-skip
-    // sentinel so the §7.3 scan never picks an exclusively-held connection.
-    // Confirming the sentinel is set verifies `pool.acquire()` returned a
-    // properly-initialized Reserved on top of a freshly-created Job.
-    assert_eq!(conn.in_flight(), u32::MAX);
+    // `Reserved` uses a dedicated reservation flag rather than corrupting
+    // `in_flight`, so a freshly acquired connection reports 0 in-flight
+    // requests until work is actually dispatched on it.
+    assert_eq!(conn.in_flight(), 0);
     // Drop returns the connection to the pool (and clears the Reserved
     // sentinel so `recycle()` can ping on the next acquire).
     drop(conn);
@@ -69,7 +68,7 @@ async fn manager_create_and_recycle() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pool_execute_one_shot() {
     use common::{MockBehavior, spawn_mock_and_server};
@@ -90,7 +89,7 @@ async fn pool_execute_one_shot() {
     let _ = Box::pin(pool.execute("SELECT 1 FROM SYSIBM.SYSDUMMY1")).await;
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reserved_derefs_to_job() {
     use common::{MockBehavior, spawn_mock_and_server};

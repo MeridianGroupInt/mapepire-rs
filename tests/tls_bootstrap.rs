@@ -12,17 +12,26 @@
 //! Direct fetch-then-connect-on-same-mock requires multi-connection mock
 //! support; deferred to v0.3 if needed.
 //!
-//! Gated `#[cfg(all(feature = "insecure-tls", feature = "rustls-tls"))]`
-//! because `fetch_certificate` requires `insecure-tls`, and `mod common` pulls
-//! in rustls types that require `rustls-tls`. Both features must be enabled.
+//! Gated `#[cfg(all(feature = "insecure-tls", any(feature = "rustls-ring", feature =
+//! "rustls-aws-lc-rs")))]` because `fetch_certificate` requires `insecure-tls`, and `mod common`
+//! pulls in rustls types that require a rustls backend feature. Both must be enabled.
 
-#[cfg(all(feature = "insecure-tls", feature = "rustls-tls"))]
+#[cfg(all(
+    feature = "insecure-tls",
+    any(feature = "rustls-ring", feature = "rustls-aws-lc-rs")
+))]
 mod common;
 
-#[cfg(all(feature = "insecure-tls", feature = "rustls-tls"))]
+#[cfg(all(
+    feature = "insecure-tls",
+    any(feature = "rustls-ring", feature = "rustls-aws-lc-rs")
+))]
 use pretty_assertions::assert_eq;
 
-#[cfg(all(feature = "insecure-tls", feature = "rustls-tls"))]
+#[cfg(all(
+    feature = "insecure-tls",
+    any(feature = "rustls-ring", feature = "rustls-aws-lc-rs")
+))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_fetch_certificate_returns_mock_cert_bytes() {
     use mapepire::DaemonServer;
@@ -41,7 +50,10 @@ async fn test_fetch_certificate_returns_mock_cert_bytes() {
     );
 }
 
-#[cfg(all(feature = "insecure-tls", feature = "rustls-tls"))]
+#[cfg(all(
+    feature = "insecure-tls",
+    any(feature = "rustls-ring", feature = "rustls-aws-lc-rs")
+))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_fetch_certificate_from_splits_sni_from_tcp() {
     use mapepire::DaemonServer;

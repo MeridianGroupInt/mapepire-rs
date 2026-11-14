@@ -9,18 +9,19 @@
 //!    the dispatcher).
 //!
 //! The mock harness is rustls-only test infrastructure, so the `mod common;`
-//! declaration and the test fn are gated by `#[cfg(feature = "rustls-tls")]`.
+//! declaration and the test fn are gated by `#[cfg(any(feature = "rustls-ring", feature =
+//! "rustls-aws-lc-rs"))]`.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use std::sync::Arc;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ping_increments_then_resets_in_flight() {
     let job = common::spawn_mock_and_connect().await;

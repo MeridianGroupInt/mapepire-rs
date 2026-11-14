@@ -25,10 +25,10 @@
 //! if `Reserved` were broken — so this test pins the observable side of the
 //! invariant via the request recorder instead.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reserved_runs_begin_dml_commit_on_one_socket() {
     use std::time::Duration;
@@ -164,7 +164,7 @@ async fn reserved_runs_begin_dml_commit_on_one_socket() {
 /// parameterized UPDATE / COMMIT through it. Assert that
 /// `MockHandle::last_socket_for_sql` returns the **same** socket id for all
 /// three statements.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reserved_pins_transaction_to_one_socket() {
     use common::spawn_mock_pool;
@@ -221,7 +221,7 @@ async fn reserved_pins_transaction_to_one_socket() {
     drop(conn);
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drop_with_rollback_on_drop_sends_rollback() {
     use std::time::Duration;
@@ -262,7 +262,7 @@ async fn drop_with_rollback_on_drop_sends_rollback() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drop_without_rollback_on_drop_does_not_send_rollback() {
     use std::time::Duration;
@@ -330,7 +330,7 @@ async fn drop_without_rollback_on_drop_does_not_send_rollback() {
 /// `COMMIT` already issued, dropping `Reserved` is a no-op — Task 19's
 /// tightened v0.4 contract suppresses the redundant `ROLLBACK` because
 /// `tx_state` already transitioned to `Closed` on the COMMIT.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_commit_suppresses_drop_rollback() {
     use std::time::Duration;
@@ -397,4 +397,163 @@ async fn explicit_commit_suppresses_drop_rollback() {
         rollback_count, 0,
         "v0.4 contract: explicit COMMIT must suppress Drop ROLLBACK, got {rollback_count} (full trace: {observed:?})"
     );
+}
+
+/// Regression test: dropping a `Reserved` with `rollback_on_drop` while in a
+/// transaction keeps the connection checked out and reserved until `ROLLBACK`
+/// completes, so an immediate follow-up `pool.execute` on a 1-slot pool never
+/// interleaves ahead of `ROLLBACK`.
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rollback_on_drop_completes_before_connection_reuse() {
+    use std::time::Duration;
+
+    use common::spawn_mock_pool_with_recorder;
+    use mapepire::protocol::{QueryResult, Request};
+    use mapepire::{Column, QueryMetaData};
+
+    let canned = || QueryResult {
+        id: "placeholder".into(),
+        success: true,
+        execution_time: 0.0,
+        has_results: false,
+        update_count: 0,
+        metadata: QueryMetaData {
+            column_count: 0,
+            columns: Vec::<Column>::new(),
+            job: None,
+            parameters: vec![],
+        },
+        data: Vec::new(),
+        cont_id: None,
+        is_done: true,
+        error: None,
+        sqlcode: None,
+        sqlstate: None,
+        parameter_count: None,
+        output_parms: vec![],
+    };
+    // BEGIN, UPDATE, ROLLBACK, plus follow-up SELECT.
+    let pages = vec![canned(), canned(), canned(), canned()];
+
+    let (server_arc, recorder) = spawn_mock_pool_with_recorder(pages);
+    let pool = Box::pin(
+        mapepire::Pool::builder(server_arc)
+            .max_size(1)
+            .acquire_timeout(Some(Duration::from_secs(2)))
+            .build(),
+    )
+    .await
+    .expect("pool builds");
+
+    {
+        let conn = Box::pin(pool.acquire())
+            .await
+            .expect("acquire")
+            .rollback_on_drop();
+        drop(Box::pin(conn.begin()).await.expect("begin"));
+        drop(
+            Box::pin(conn.execute("UPDATE T SET C = 1"))
+                .await
+                .expect("dml"),
+        );
+    }
+
+    // Immediately issue a one-shot query on the same 1-slot pool without
+    // sleeping; it must wait for ROLLBACK to finish and therefore arrive
+    // strictly after ROLLBACK on the wire.
+    drop(
+        Box::pin(pool.execute("SELECT AFTER_ROLLBACK FROM SYSIBM.SYSDUMMY1"))
+            .await
+            .expect("post-rollback select"),
+    );
+
+    let observed = recorder.lock().expect("recorder mutex").clone();
+    let sql_order: Vec<&str> = observed
+        .iter()
+        .filter_map(|r| match r {
+            Request::Sql { sql, .. } => Some(sql.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sql_order,
+        vec![
+            "BEGIN",
+            "UPDATE T SET C = 1",
+            "ROLLBACK",
+            "SELECT AFTER_ROLLBACK FROM SYSIBM.SYSDUMMY1"
+        ],
+        "ROLLBACK must complete before the connection is reused: {observed:?}"
+    );
+}
+
+/// Regression test: driving `Reserved` through `Executor::execute` and
+/// `Executor::execute_with` updates `TxState` so `rollback_on_drop` fires
+/// `ROLLBACK` on an uncommitted transaction.
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn executor_trait_on_reserved_tracks_tx_state_for_rollback_on_drop() {
+    use std::time::Duration;
+
+    use common::spawn_mock_pool;
+    use mapepire::Executor;
+
+    let (pool, mock) = spawn_mock_pool(1).await;
+
+    {
+        let conn = Box::pin(pool.acquire())
+            .await
+            .expect("acquire")
+            .rollback_on_drop();
+        let exe: &dyn Executor = &conn;
+        drop(exe.execute("BEGIN").await.expect("Executor::execute BEGIN"));
+        drop(
+            exe.execute_with("UPDATE T SET C = ?", &[serde_json::json!(99)])
+                .await
+                .expect("Executor::execute_with UPDATE"),
+        );
+    }
+
+    let arrived = mock.wait_for_sql("ROLLBACK", Duration::from_secs(2)).await;
+    assert!(
+        arrived,
+        "BEGIN via Executor trait on Reserved must arm rollback_on_drop"
+    );
+}
+
+/// Regression test: if an uncommitted `Reserved` with `rollback_on_drop()` is
+/// dropped outside any Tokio runtime (e.g. moved onto a plain OS thread),
+/// `Drop` cannot spawn `ROLLBACK` and must evict the connection from the pool
+/// via `Object::take` rather than returning dirty transactional state to the
+/// idle queue.
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rollback_on_drop_outside_tokio_runtime_evicts_dirty_connection() {
+    use common::spawn_mock_pool;
+
+    let (pool, _mock) = spawn_mock_pool(1).await;
+
+    let conn = Box::pin(pool.acquire())
+        .await
+        .expect("acquire")
+        .rollback_on_drop();
+    drop(Box::pin(conn.begin()).await.expect("begin"));
+
+    std::thread::spawn(move || {
+        assert!(
+            tokio::runtime::Handle::try_current().is_err(),
+            "plain OS thread must not have an active Tokio runtime handle"
+        );
+        drop(conn);
+    })
+    .join()
+    .expect("join plain OS thread");
+
+    let status = pool.status();
+    assert_eq!(
+        status.size, 0,
+        "dirty connection dropped outside a Tokio runtime must be evicted: {status:?}"
+    );
+    assert_eq!(status.available, 0);
 }

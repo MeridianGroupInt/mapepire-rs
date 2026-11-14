@@ -1,8 +1,8 @@
 //! Metrics-feature integration test: verify Task 12's emission sites
 //! actually fire by snapshotting via [`metrics_util::debugging::DebuggingRecorder`].
 //!
-//! Per-item `#[cfg(all(feature = "rustls-tls", feature = "metrics"))]`
-//! gating since the mock harness is rustls-only and the emission sites
+//! Per-item `#[cfg(all(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"), feature =
+//! "metrics"))]` gating since the mock harness is rustls-only and the emission sites
 //! only fire when `metrics` is enabled. Crate-level `#![cfg]` is
 //! intentionally avoided — it would strip the `//!` doc and trip the
 //! crate-wide `missing_docs = "deny"` lint.
@@ -28,10 +28,16 @@
 //! fires `POOL_CREATE_TOTAL` as a side effect of pool warm-up. One
 //! global recorder install, one snapshot, multi-assertion.
 
-#[cfg(all(feature = "rustls-tls", feature = "metrics"))]
+#[cfg(all(
+    any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"),
+    feature = "metrics"
+))]
 mod common;
 
-#[cfg(all(feature = "rustls-tls", feature = "metrics"))]
+#[cfg(all(
+    any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"),
+    feature = "metrics"
+))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pool_emits_documented_metric_names() {
     use common::spawn_mock_pool;

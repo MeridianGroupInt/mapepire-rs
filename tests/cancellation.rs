@@ -10,10 +10,10 @@
 //! fails. The pending `HashMap` entry is reaped on the next response (silently
 //! discarded) or on shutdown drain. No leak in operation; no panic.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_dropped_ping_does_not_break_subsequent_calls() {
     use std::time::Duration;
@@ -63,7 +63,7 @@ async fn test_dropped_ping_does_not_break_subsequent_calls() {
 /// only reaped on shutdown drain. A subsequent `ping()` issues a fresh id,
 /// the mock responds with `Pong`, and the dispatcher routes it normally —
 /// proving cancellation did not corrupt the connection state.
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_inflight_ping_cancellation_preserves_connection() {
     let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();

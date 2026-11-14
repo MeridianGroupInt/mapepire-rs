@@ -3,19 +3,19 @@
 //! SQLSTATE 42505 (no Visual Explain authority) is
 //! [`mapepire::Error::Server`], not a crate protocol failure.
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 mod common;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::protocol::Request;
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use mapepire::{Error, ErrorResponse};
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use pretty_assertions::assert_eq;
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 use serde_json::json;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_visual_explain_untagged_vedata() {
     let (job, recorder) = common::connect_to_mock_with_recorder(vec![]).await;
@@ -47,7 +47,7 @@ async fn test_visual_explain_untagged_vedata() {
     );
 }
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))]
 #[tokio::test]
 async fn test_visual_explain_42505_is_server() {
     let job = common::connect_to_mock(common::MockBehavior::ReturnError(ErrorResponse {

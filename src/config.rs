@@ -9,14 +9,14 @@ use crate::password::Password;
 ///
 /// The variants exist at the type level in v0.1. Their runtime semantics
 /// land with the transport layer in v0.2 — the active TLS backend is
-/// selected at compile time via the `rustls-tls` (default) and
-/// `native-tls` Cargo features.
+/// selected at compile time via the `rustls-tls` (default, `ring`),
+/// `rustls-ring`, `rustls-aws-lc-rs`, and `native-tls` Cargo features.
 #[derive(Debug, Clone, Default)]
 pub enum TlsConfig {
     /// Verify the server certificate against system / `webpki` roots (default).
     ///
-    /// In v0.2 this requires the `rustls-tls` or `native-tls` feature; v0.1
-    /// only declares the type.
+    /// Requires one of the `rustls-tls`, `rustls-ring`, `rustls-aws-lc-rs`, or
+    /// `native-tls` features.
     #[default]
     Verified,
 
@@ -25,7 +25,8 @@ pub enum TlsConfig {
     /// Use this with the bytes returned by `DaemonServer::fetch_certificate`
     /// to bootstrap trust on a self-signed daemon.
     ///
-    /// On the `rustls-tls` backend, if the server presents a leaf whose DER
+    /// On the `rustls` backends (`rustls-tls`, `rustls-ring`,
+    /// `rustls-aws-lc-rs`), if the server presents a leaf whose DER
     /// equals this pin, name checks (SAN / CN) are skipped — TLS already
     /// proved possession of the matching private key. IBM i Mapepire daemons
     /// often ship CN-only self-signed certificates that rustls 0.23 would
@@ -405,13 +406,13 @@ mod tests {
     #[cfg(not(feature = "insecure-tls"))]
     #[test]
     fn insecure_variant_absent_without_feature() {
-        fn assert_no_insecure(cfg: TlsConfig) {
+        fn assert_no_insecure(cfg: &TlsConfig) {
             match cfg {
                 TlsConfig::Verified | TlsConfig::Ca(_) => {}
             }
         }
-        assert_no_insecure(TlsConfig::Verified);
-        assert_no_insecure(TlsConfig::Ca(vec![0x00]));
+        assert_no_insecure(&TlsConfig::Verified);
+        assert_no_insecure(&TlsConfig::Ca(vec![0x00]));
     }
 
     #[test]
