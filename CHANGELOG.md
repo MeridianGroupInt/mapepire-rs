@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-11-14
+
+First SemVer-stable release on [crates.io](https://crates.io/crates/mapepire),
+promoted from **1.0.0-rc.1** (see `[1.0.0-rc.1]` below for the full list of
+breaking API-freeze changes relative to **0.7.2**) with `aws-lc-rs` TLS
+provider support, pool/transaction concurrency fixes, and tightened security
+dependency floors.
+
 ### Added
 
 - **`rustls-aws-lc-rs` and `rustls-ring` Cargo features.** Consumers can opt
@@ -893,7 +901,8 @@ harness used to validate them.
 - README badges (CI, Audit, deps.rs, MSRV from Cargo.toml, License).
 - PR template, issue templates, CODEOWNERS.
 
-[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v1.0.0-rc.1...HEAD
+[Unreleased]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.2...v1.0.0-rc.1
 [0.7.2]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/MeridianGroupInt/mapepire-rs/compare/v0.7.0...v0.7.1
