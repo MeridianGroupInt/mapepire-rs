@@ -64,6 +64,11 @@ regressions are treated as **P0**:
   values without an explicit opt-in. Changing the default is a breaking
   change and requires a security review.
 
+## Advisories
+
+For each security fix we publish a GitHub Security Advisory for `mapepire` and request a RustSec
+advisory. Fixed versions are listed in the advisory and in [CHANGELOG.md](CHANGELOG.md).
+
 ## Yank policy
 
 Confirmed CVEs in the crate or in any unpatchable transitive dependency
